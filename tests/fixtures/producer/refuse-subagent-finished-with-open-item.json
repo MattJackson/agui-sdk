@@ -1,0 +1,32 @@
+{
+  "description": "a subagent finishing while a message it opened is open",
+  "covers": [
+    "STRM-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "h"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    }
+  ],
+  "verdict": {
+    "refuse": "OpenAtFinish",
+    "at": 3
+  }
+}

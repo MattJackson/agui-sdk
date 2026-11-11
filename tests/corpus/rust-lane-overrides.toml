@@ -1,0 +1,29 @@
+# The Rust lane's overrides of upstream stream-fixture expectations
+# (TEST-PLAN §3, read by agui_test_support::overrides). Each entry names the
+# plan item that allows it, says why in `intentional`, and lists exactly the
+# expectation keys it removes or replaces; every other key of the fixture's
+# `expect` still applies. The only plan item allowed is A2.
+#
+# api-rev seeded this file with a prose-only D3 entry; it is restated here in
+# the oracle's format so the lane can check it (one file, one entry).
+
+[[override]]
+fixture = "unknown-enum-value-role-fatal"
+plan = "A2"
+intentional = """
+D3 / PROC-17: the spec wins. An unknown value of a closed string set is \
+stripped with a warning and is never fatal. TEXT_MESSAGE_START.role is optional \
+(absent means assistant), so the unknown role 'narrator' is removed from the \
+event, a warning names /role, and the message streams as an assistant message. \
+The upstream fixture asserts the TypeScript lane's admitted gap (fatal), which \
+its own description says contradicts the specification."""
+remove = ["errorContains"]
+
+[override.expect]
+outcome = "completed"
+warnings = ["/role"]
+eventTypes = ["RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"]
+eventPaths = { "1.messageId" = "m-unknown-role" }
+eventAbsentPaths = ["1.role"]
+messageCount = 1
+messages = [{ id = "m-unknown-role", role = "assistant", content = "the role above is the only defect in this stream" }]

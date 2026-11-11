@@ -1,0 +1,42 @@
+{
+  "description": "a tool result reusing a text message's id",
+  "covers": [
+    "BASIC-15"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "search"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c1"
+    },
+    {
+      "type": "TOOL_CALL_RESULT",
+      "messageId": "m1",
+      "toolCallId": "c1",
+      "content": "ok"
+    }
+  ],
+  "verdict": {
+    "refuse": "DuplicateMessageId",
+    "at": 5
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "description": "standalone events and snapshots appear anywhere inside an open run, even mid-message",
+  "covers": [
+    "STRM-06",
+    "SNAP-03"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "STATE_SNAPSHOT",
+      "snapshot": {
+        "n": 1
+      }
+    },
+    {
+      "type": "STATE_DELTA",
+      "delta": [
+        {
+          "op": "replace",
+          "path": "/n",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "type": "CUSTOM",
+      "name": "note",
+      "value": null
+    },
+    {
+      "type": "RAW",
+      "event": {
+        "vendor": true
+      }
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "a1",
+      "activityType": "search",
+      "content": {
+        "q": "a"
+      }
+    },
+    {
+      "type": "ACTIVITY_DELTA",
+      "messageId": "a1",
+      "activityType": "search",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/found",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "type": "REASONING_ENCRYPTED_VALUE",
+      "subtype": "message",
+      "entityId": "m1",
+      "encryptedValue": "opaque"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m1",
+      "delta": "x"
+    },
+    {
+      "type": "MESSAGES_SNAPSHOT",
+      "messages": []
+    },
+    {
+      "type": "STATE_SNAPSHOT",
+      "snapshot": {
+        "n": 3
+      }
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

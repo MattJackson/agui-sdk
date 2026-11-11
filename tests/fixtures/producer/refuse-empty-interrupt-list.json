@@ -1,0 +1,27 @@
+{
+  "description": "an interrupt outcome carrying no interrupt",
+  "covers": [
+    "SUB-17"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "interrupt",
+        "interrupts": []
+      }
+    }
+  ],
+  "verdict": {
+    "refuse": "Outcome",
+    "at": 1
+  }
+}

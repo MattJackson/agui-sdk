@@ -1,0 +1,32 @@
+{
+  "description": "cache parts adding up beyond inputTokens (parts are not additions)",
+  "covers": [
+    "LIFE-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "usage": [
+        {
+          "inputTokens": 10,
+          "outputTokens": 5,
+          "totalTokens": 15,
+          "cachedInputTokens": 8,
+          "cacheWriteInputTokens": 4
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 1
+  }
+}

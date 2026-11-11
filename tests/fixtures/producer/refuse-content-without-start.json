@@ -1,0 +1,23 @@
+{
+  "description": "content for a message that is not open",
+  "covers": [
+    "STRM-02"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m9",
+      "delta": "x"
+    }
+  ],
+  "verdict": {
+    "refuse": "NotOpen",
+    "at": 1
+  }
+}

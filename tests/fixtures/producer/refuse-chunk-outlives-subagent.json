@@ -1,0 +1,38 @@
+{
+  "description": "an id-less continuation of a subagent's chunk stream after that subagent's terminal",
+  "covers": [
+    "STRM-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "half ",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "late",
+      "subagentRunId": "s1"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 4
+  }
+}

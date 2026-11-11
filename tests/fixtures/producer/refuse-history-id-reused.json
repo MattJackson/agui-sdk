@@ -1,0 +1,37 @@
+{
+  "description": "an activity reusing the id of a history message",
+  "covers": [
+    "BASIC-15"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0",
+      "input": {
+        "threadId": "t-prod",
+        "runId": "r1",
+        "messages": [
+          {
+            "id": "u1",
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      }
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "u1",
+      "activityType": "search",
+      "content": {
+        "q": "a"
+      }
+    }
+  ],
+  "verdict": {
+    "refuse": "DuplicateMessageId",
+    "at": 1
+  }
+}

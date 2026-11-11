@@ -1,0 +1,32 @@
+{
+  "description": "a reopening START disagreeing with the message's role",
+  "covers": [
+    "TEXT-06"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "user"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 3
+  }
+}

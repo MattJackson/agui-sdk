@@ -1,0 +1,28 @@
+{
+  "description": "an event after RUN_FINISHED other than RUN_STARTED or RUN_ERROR",
+  "covers": [
+    "LIFE-37"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    }
+  ],
+  "verdict": {
+    "refuse": "AfterClose",
+    "at": 2
+  }
+}

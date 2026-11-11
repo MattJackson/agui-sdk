@@ -1,0 +1,28 @@
+{
+  "description": "opening a message whose id is already open",
+  "covers": [
+    "STRM-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    }
+  ],
+  "verdict": {
+    "refuse": "AlreadyOpen",
+    "at": 2
+  }
+}

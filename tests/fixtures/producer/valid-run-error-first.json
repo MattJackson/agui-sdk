@@ -1,0 +1,24 @@
+{
+  "description": "a stream may begin with RUN_ERROR (the run failed before it began)",
+  "covers": [
+    "LIFE-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_ERROR",
+      "message": "could not start"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r2"
+    }
+  ],
+  "verdict": "ok"
+}

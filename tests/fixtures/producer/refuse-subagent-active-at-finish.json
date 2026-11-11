@@ -1,0 +1,29 @@
+{
+  "description": "finishing a run while an invocation is active",
+  "covers": [
+    "SUB-10",
+    "SUB-33"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": {
+    "refuse": "OpenAtFinish",
+    "at": 2
+  }
+}

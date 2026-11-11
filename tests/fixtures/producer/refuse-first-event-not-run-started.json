@@ -1,0 +1,29 @@
+{
+  "description": "an event before RUN_STARTED",
+  "covers": [
+    "LIFE-01",
+    "LIFE-02"
+  ],
+  "events": [
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": {
+    "refuse": "FirstEvent",
+    "at": 0
+  }
+}

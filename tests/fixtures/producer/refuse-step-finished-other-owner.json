@@ -1,0 +1,32 @@
+{
+  "description": "STEP_FINISHED with an attribution other than its STEP_STARTED",
+  "covers": [
+    "SUB-22"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "plan"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 3
+  }
+}

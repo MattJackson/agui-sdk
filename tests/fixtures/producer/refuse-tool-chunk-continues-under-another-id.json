@@ -1,0 +1,34 @@
+{
+  "description": "a continuation chunk naming a different toolCallId does not continue the open call: it opens a new one, which then lacks its toolCallName",
+  "covers": [
+    "STRM-17"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c1",
+      "toolCallName": "search",
+      "delta": "{\"q\":"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c1",
+      "delta": "\"agui\""
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c2",
+      "delta": "}"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 3
+  }
+}

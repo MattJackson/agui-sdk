@@ -1,0 +1,24 @@
+{
+  "description": "RUN_STARTED while a run is active",
+  "covers": [
+    "LIFE-44"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "verdict": {
+    "refuse": "NestedRun",
+    "at": 1
+  }
+}

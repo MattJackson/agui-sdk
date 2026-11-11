@@ -1,0 +1,41 @@
+{
+  "description": "a run whose subagent suspended for input finishing as success",
+  "covers": [
+    "INTR-02"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1",
+      "outcome": {
+        "type": "suspended",
+        "interruptIds": [
+          "i1"
+        ]
+      }
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "success"
+      }
+    }
+  ],
+  "verdict": {
+    "refuse": "Outcome",
+    "at": 3
+  }
+}

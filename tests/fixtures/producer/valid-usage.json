@@ -1,0 +1,33 @@
+{
+  "description": "token usage whose parts sit inside their totals",
+  "covers": [
+    "LIFE-26",
+    "LIFE-29"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "usage": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "inputTokens": 100,
+          "outputTokens": 50,
+          "totalTokens": 150,
+          "cachedInputTokens": 60,
+          "cacheWriteInputTokens": 40,
+          "reasoningTokens": 50
+        }
+      ]
+    }
+  ],
+  "verdict": "ok"
+}

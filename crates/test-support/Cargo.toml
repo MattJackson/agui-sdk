@@ -1,0 +1,32 @@
+[package]
+name = "agui-test-support"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Test harness for agui-sdk: spec cache, corpus oracle, mocks, counting allocator, proptest strategies, traceability gate."
+
+# Development tooling only: never published, never a dependency of agui-sdk
+# itself (it is a dev-dependency of the root crate). Kept small: tokio for the
+# hand-rolled HTTP/1 mock server, toml for spec.lock and the ledger files,
+# proptest for the strategy library.
+[dependencies]
+agui-sdk = { path = "../..", features = ["client", "server", "proto"] }
+proptest = { version = "1.4", default-features = false, features = ["std"] }
+serde = { version = "1.0.190", features = ["derive"] }
+serde_json = "1.0.108"
+tokio = { version = "1.38", default-features = false, features = ["net", "io-util", "rt", "rt-multi-thread", "sync", "time"] }
+# The HTTPS mock in `http_mock` (ring, no aws-lc): both already in the
+# client's dependency graph.
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "ring"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+[[bin]]
+name = "agui-trace"
+path = "src/bin/agui-trace.rs"
+
+[[bin]]
+name = "agui-fuzz-seed"
+path = "src/bin/agui-fuzz-seed.rs"

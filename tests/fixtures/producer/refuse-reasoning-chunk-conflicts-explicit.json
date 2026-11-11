@@ -1,0 +1,28 @@
+{
+  "description": "a reasoning chunk continuing an explicitly opened reasoning message",
+  "covers": [
+    "STRM-09"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "REASONING_MESSAGE_START",
+      "messageId": "r1",
+      "role": "reasoning"
+    },
+    {
+      "type": "REASONING_MESSAGE_CHUNK",
+      "messageId": "r1",
+      "delta": "x"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 2
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "description": "CUSTOM closes the lane's chunk stream; the id-less continuation has no referent",
+  "covers": [
+    "STRM-17"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "a"
+    },
+    {
+      "type": "CUSTOM",
+      "name": "n",
+      "value": 1
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "b"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 3
+  }
+}

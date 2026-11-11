@@ -1,0 +1,33 @@
+{
+  "description": "a MESSAGES_SNAPSHOT listing one id twice",
+  "covers": [
+    "TEXT-08"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "MESSAGES_SNAPSHOT",
+      "messages": [
+        {
+          "id": "m1",
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "id": "m1",
+          "role": "user",
+          "content": "b"
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "refuse": "DuplicateMessageId",
+    "at": 1
+  }
+}

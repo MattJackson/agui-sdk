@@ -1,0 +1,47 @@
+{
+  "description": "a TOOL_CALL_RESULT for a frontend tool call",
+  "covers": [
+    "TOOL-24"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0",
+      "input": {
+        "threadId": "t-prod",
+        "runId": "r1",
+        "messages": [],
+        "tools": [
+          {
+            "name": "confirm",
+            "description": "frontend tool confirm",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "confirm"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c1"
+    },
+    {
+      "type": "TOOL_CALL_RESULT",
+      "messageId": "tr1",
+      "toolCallId": "c1",
+      "content": "ok"
+    }
+  ],
+  "verdict": {
+    "refuse": "Outcome",
+    "at": 3
+  }
+}

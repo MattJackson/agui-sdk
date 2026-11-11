@@ -1,0 +1,28 @@
+{
+  "description": "announcing an id that is already active",
+  "covers": [
+    "SUB-08"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    }
+  ],
+  "verdict": {
+    "refuse": "SubagentIdentity",
+    "at": 2
+  }
+}

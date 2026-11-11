@@ -1,0 +1,70 @@
+{
+  "description": "chunks open, continue (repeating identical fields) and are closed by the next item or the run terminal",
+  "covers": [
+    "STRM-11",
+    "STRM-13",
+    "STRM-14",
+    "STRM-17",
+    "CHG-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "role": "assistant",
+      "delta": "a"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "b"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "role": "assistant",
+      "delta": "c"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c1",
+      "toolCallName": "search",
+      "parentMessageId": "m1",
+      "delta": "{"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "delta": "}"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c1",
+      "toolCallName": "search"
+    },
+    {
+      "type": "REASONING_MESSAGE_CHUNK",
+      "messageId": "rm1",
+      "delta": "think"
+    },
+    {
+      "type": "REASONING_MESSAGE_CHUNK",
+      "delta": "ing"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m2",
+      "delta": "next"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

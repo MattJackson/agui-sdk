@@ -1,0 +1,23 @@
+{
+  "description": "TOOL_CALL_ARGS for a call that is not open",
+  "covers": [
+    "STRM-02"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TOOL_CALL_ARGS",
+      "toolCallId": "c1",
+      "delta": "{}"
+    }
+  ],
+  "verdict": {
+    "refuse": "NotOpen",
+    "at": 1
+  }
+}

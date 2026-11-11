@@ -1,0 +1,29 @@
+{
+  "description": "a STATE_DELTA whose path is not an RFC 6901 pointer",
+  "covers": [
+    "ARCH-04",
+    "SCHF-02"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STATE_DELTA",
+      "delta": [
+        {
+          "op": "add",
+          "path": "n",
+          "value": 1
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 1
+  }
+}

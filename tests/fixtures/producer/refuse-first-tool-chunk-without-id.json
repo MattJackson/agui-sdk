@@ -1,0 +1,23 @@
+{
+  "description": "a first TOOL_CALL_CHUNK with toolCallName but no toolCallId; a name alone cannot open a call",
+  "covers": [
+    "STRM-14"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallName": "search",
+      "delta": "{"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 1
+  }
+}

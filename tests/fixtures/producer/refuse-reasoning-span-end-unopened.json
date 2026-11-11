@@ -1,0 +1,22 @@
+{
+  "description": "closing a span that was not opened",
+  "covers": [
+    "REAS-04"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "REASONING_END",
+      "messageId": "r1"
+    }
+  ],
+  "verdict": {
+    "refuse": "NotOpen",
+    "at": 1
+  }
+}

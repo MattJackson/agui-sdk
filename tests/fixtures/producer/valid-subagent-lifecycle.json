@@ -1,0 +1,69 @@
+{
+  "description": "an announced invocation is attributed, nests a child naming it as parent, and closes before the run finishes",
+  "covers": [
+    "SUB-01",
+    "SUB-13"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m1",
+      "delta": "x"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s2",
+      "name": "helper",
+      "parentSubagentRunId": "s1"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan",
+      "subagentRunId": "s2"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "plan",
+      "subagentRunId": "s2"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s2"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1",
+      "outcome": {
+        "type": "success"
+      }
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

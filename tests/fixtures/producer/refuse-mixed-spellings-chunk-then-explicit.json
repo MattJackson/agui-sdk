@@ -1,0 +1,28 @@
+{
+  "description": "an item opened by a chunk continued with an explicit event",
+  "covers": [
+    "STRM-09"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "a"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m1",
+      "delta": "x"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 2
+  }
+}

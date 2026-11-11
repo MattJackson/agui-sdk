@@ -1,0 +1,98 @@
+{
+  "description": "frontend calls left unanswered finish the run as success naming them in order; a backend call is answered in-run",
+  "covers": [
+    "TOOL-12",
+    "TOOL-28",
+    "LIFE-06",
+    "CHG-03",
+    "TOOL-25",
+    "TOOL-29"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0",
+      "input": {
+        "threadId": "t-prod",
+        "runId": "r1",
+        "messages": [],
+        "tools": [
+          {
+            "name": "confirm",
+            "description": "frontend tool confirm",
+            "parameters": {
+              "type": "object"
+            }
+          },
+          {
+            "name": "pick",
+            "description": "frontend tool pick",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "confirm",
+      "parentMessageId": "m1"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c1"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c2",
+      "toolCallName": "lookup",
+      "parentMessageId": "m1"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c2"
+    },
+    {
+      "type": "TOOL_CALL_RESULT",
+      "messageId": "tr2",
+      "toolCallId": "c2",
+      "content": "ok"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c3",
+      "toolCallName": "pick",
+      "parentMessageId": "m1"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c3"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "success",
+        "pendingToolCallIds": [
+          "c1",
+          "c3"
+        ]
+      }
+    }
+  ],
+  "verdict": "ok"
+}

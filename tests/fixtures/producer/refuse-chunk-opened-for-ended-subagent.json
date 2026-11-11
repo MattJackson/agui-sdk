@@ -1,0 +1,33 @@
+{
+  "description": "a chunk stream opened for an invocation that has ended",
+  "covers": [
+    "STRM-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "h"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "x",
+      "subagentRunId": "s1"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 3
+  }
+}

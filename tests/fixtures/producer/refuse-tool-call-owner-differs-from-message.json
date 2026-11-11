@@ -1,0 +1,42 @@
+{
+  "description": "a tool call tagged to a different owner than the message carrying it (an untagged call would inherit the message's owner)",
+  "covers": [
+    "TOOL-02",
+    "SUB-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s2",
+      "name": "other"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "search",
+      "parentMessageId": "m1",
+      "subagentRunId": "s2"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 4
+  }
+}

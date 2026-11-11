@@ -1,0 +1,23 @@
+{
+  "description": "RUN_FINISHED naming a different run than RUN_STARTED",
+  "covers": [
+    "RUNIN-05"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r2"
+    }
+  ],
+  "verdict": {
+    "refuse": "Identity",
+    "at": 1
+  }
+}

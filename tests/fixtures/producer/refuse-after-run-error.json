@@ -1,0 +1,26 @@
+{
+  "description": "nothing but RUN_STARTED after RUN_ERROR",
+  "covers": [
+    "LIFE-41"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_ERROR",
+      "message": "a"
+    },
+    {
+      "type": "RUN_ERROR",
+      "message": "b"
+    }
+  ],
+  "verdict": {
+    "refuse": "AfterClose",
+    "at": 2
+  }
+}

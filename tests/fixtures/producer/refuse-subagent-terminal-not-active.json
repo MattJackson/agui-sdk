@@ -1,0 +1,22 @@
+{
+  "description": "SUBAGENT_FINISHED for an invocation never announced",
+  "covers": [
+    "SUB-10"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    }
+  ],
+  "verdict": {
+    "refuse": "NotOpen",
+    "at": 1
+  }
+}

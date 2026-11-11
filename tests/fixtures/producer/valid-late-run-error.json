@@ -1,0 +1,35 @@
+{
+  "description": "a late RUN_ERROR may follow RUN_FINISHED, and a new run may follow it",
+  "covers": [
+    "LIFE-39"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    },
+    {
+      "type": "RUN_ERROR",
+      "message": "flush failed"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r2"
+    }
+  ],
+  "verdict": "ok"
+}

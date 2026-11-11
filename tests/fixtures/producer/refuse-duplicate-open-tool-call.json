@@ -1,0 +1,28 @@
+{
+  "description": "opening a tool call whose id is already open",
+  "covers": [
+    "STRM-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "f"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "f"
+    }
+  ],
+  "verdict": {
+    "refuse": "AlreadyOpen",
+    "at": 2
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "description": "opening a step whose name is already open",
+  "covers": [
+    "LIFE-49"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan"
+    }
+  ],
+  "verdict": {
+    "refuse": "AlreadyOpen",
+    "at": 2
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "description": "a timestamp beyond 2^53-1",
+  "covers": [
+    "ARCH-04"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "s",
+      "timestamp": 9007199254740992
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 1
+  }
+}

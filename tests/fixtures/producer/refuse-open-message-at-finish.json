@@ -1,0 +1,28 @@
+{
+  "description": "a message still open at RUN_FINISHED",
+  "covers": [
+    "STRM-03"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": {
+    "refuse": "OpenAtFinish",
+    "at": 2
+  }
+}

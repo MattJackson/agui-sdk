@@ -1,0 +1,30 @@
+{
+  "description": "a continuation chunk repeating role with another value",
+  "covers": [
+    "CHG-01",
+    "STRM-17"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "a"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "role": "user",
+      "delta": "b"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 2
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "description": "finishing a step that was never opened",
+  "covers": [
+    "LIFE-50"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "plan"
+    }
+  ],
+  "verdict": {
+    "refuse": "NotOpen",
+    "at": 1
+  }
+}

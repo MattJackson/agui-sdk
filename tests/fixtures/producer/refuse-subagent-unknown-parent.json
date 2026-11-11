@@ -1,0 +1,24 @@
+{
+  "description": "naming a parent invocation not announced in this run",
+  "covers": [
+    "SUB-28"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s2",
+      "name": "helper",
+      "parentSubagentRunId": "s1"
+    }
+  ],
+  "verdict": {
+    "refuse": "SubagentIdentity",
+    "at": 1
+  }
+}

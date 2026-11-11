@@ -1,0 +1,40 @@
+{
+  "description": "a patch replacing the activity content root with an array",
+  "covers": [
+    "ACT-15"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "a1",
+      "activityType": "search",
+      "content": {
+        "q": "a"
+      }
+    },
+    {
+      "type": "ACTIVITY_DELTA",
+      "messageId": "a1",
+      "activityType": "search",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "",
+          "value": [
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 2
+  }
+}

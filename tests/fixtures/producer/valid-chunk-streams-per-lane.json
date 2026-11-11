@@ -1,0 +1,76 @@
+{
+  "description": "parent and subagent chunk streams interleave, each in its own lane, closed by explicit events and terminals",
+  "covers": [
+    "STRM-15",
+    "STRM-19",
+    "SUB-29",
+    "STRM-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "h"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "a"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m2",
+      "delta": "b",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "c"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "d",
+      "subagentRunId": "s1",
+      "role": "assistant"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c1",
+      "toolCallName": "f",
+      "parentMessageId": "m1",
+      "delta": "{"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "delta": "}",
+      "toolCallName": "f"
+    },
+    {
+      "type": "TOOL_CALL_RESULT",
+      "messageId": "res1",
+      "toolCallId": "c1",
+      "content": "ok"
+    },
+    {
+      "type": "REASONING_MESSAGE_CHUNK",
+      "messageId": "rm1",
+      "delta": "think"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

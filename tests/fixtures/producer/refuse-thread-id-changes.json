@@ -1,0 +1,29 @@
+{
+  "description": "a later run on the stream carries a different threadId",
+  "covers": [
+    "RUNIN-04"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "other",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "verdict": {
+    "refuse": "Identity",
+    "at": 2
+  }
+}

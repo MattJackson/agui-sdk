@@ -1,0 +1,56 @@
+{
+  "description": "a frontend-tool stop reported as an interrupt",
+  "covers": [
+    "TOOL-26"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0",
+      "input": {
+        "threadId": "t-prod",
+        "runId": "r1",
+        "messages": [],
+        "tools": [
+          {
+            "name": "confirm",
+            "description": "frontend tool confirm",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "confirm"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c1"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "interrupt",
+        "interrupts": [
+          {
+            "id": "i1",
+            "reason": "tool",
+            "toolCallId": "c1"
+          }
+        ]
+      }
+    }
+  ],
+  "verdict": {
+    "refuse": "Outcome",
+    "at": 3
+  }
+}

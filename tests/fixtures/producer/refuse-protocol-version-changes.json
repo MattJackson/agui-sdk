@@ -1,0 +1,29 @@
+{
+  "description": "a live producer changes its declared version mid-stream",
+  "covers": [
+    "VER-28"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.1"
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 2
+  }
+}

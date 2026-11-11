@@ -1,0 +1,41 @@
+{
+  "description": "an event tagged with an invocation that already finished in this run is not refused: the spec forbids re-announcing the id (SUB-09), not a later provenance tag, and TS accepts it",
+  "covers": [
+    "SUB-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "done",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "CUSTOM",
+      "name": "provenance",
+      "value": 1,
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

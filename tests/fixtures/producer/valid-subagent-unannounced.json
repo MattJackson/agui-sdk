@@ -1,0 +1,36 @@
+{
+  "description": "events may be attributed without announcing the invocation",
+  "covers": [
+    "SUB-11"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant",
+      "subagentRunId": "s9"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m1",
+      "delta": "x",
+      "subagentRunId": "s9"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

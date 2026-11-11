@@ -1,0 +1,34 @@
+{
+  "description": "announcing an id already finished in this run",
+  "covers": [
+    "SUB-03",
+    "SUB-09",
+    "BASIC-18"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    }
+  ],
+  "verdict": {
+    "refuse": "SubagentIdentity",
+    "at": 3
+  }
+}

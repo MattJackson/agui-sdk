@@ -1,0 +1,24 @@
+{
+  "description": "a first TOOL_CALL_CHUNK without toolCallName",
+  "covers": [
+    "STRM-14",
+    "CHG-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TOOL_CALL_CHUNK",
+      "toolCallId": "c1",
+      "delta": "{"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 1
+  }
+}

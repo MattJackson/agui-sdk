@@ -1,0 +1,57 @@
+{
+  "description": "a stream carries several runs in sequence; each closes before the next opens",
+  "covers": [
+    "LIFE-38",
+    "LIFE-43",
+    "SSE-11"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "MESSAGES_SNAPSHOT",
+      "messages": [
+        {
+          "id": "u1",
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m2",
+      "role": "assistant"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m2",
+      "delta": "x"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m2"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r2"
+    }
+  ],
+  "verdict": "ok"
+}

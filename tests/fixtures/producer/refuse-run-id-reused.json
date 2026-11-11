@@ -1,0 +1,29 @@
+{
+  "description": "a second run on the thread reuses the first run's runId",
+  "covers": [
+    "BASIC-14"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "verdict": {
+    "refuse": "Identity",
+    "at": 2
+  }
+}

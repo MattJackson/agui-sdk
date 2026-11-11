@@ -1,0 +1,23 @@
+{
+  "description": "a subagent lifecycle event with an empty subagentRunId",
+  "covers": [
+    "SUB-06"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "",
+      "name": "helper"
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 1
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "description": "an activity is created by a snapshot, patched, and kept by an untagged replace:false snapshot",
+  "covers": [
+    "ACT-08",
+    "ACT-10"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "a1",
+      "activityType": "search",
+      "content": {
+        "q": "a"
+      },
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "ACTIVITY_DELTA",
+      "messageId": "a1",
+      "activityType": "search",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/n",
+          "value": 1
+        }
+      ],
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "a1",
+      "activityType": "search",
+      "content": {
+        "q": "b"
+      },
+      "replace": false
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

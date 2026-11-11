@@ -1,0 +1,30 @@
+{
+  "description": "reasoning content tagged with another owner than its start",
+  "covers": [
+    "SUB-21"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "REASONING_MESSAGE_START",
+      "messageId": "r1",
+      "role": "reasoning",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "REASONING_MESSAGE_CONTENT",
+      "messageId": "r1",
+      "delta": "x",
+      "subagentRunId": "s2"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 2
+  }
+}

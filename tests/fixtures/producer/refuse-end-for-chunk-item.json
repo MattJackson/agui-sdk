@@ -1,0 +1,27 @@
+{
+  "description": "TEXT_MESSAGE_END sent for a chunk-assembled message (its end is synthesized)",
+  "covers": [
+    "STRM-09"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "messageId": "m1",
+      "delta": "x"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 2
+  }
+}

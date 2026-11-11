@@ -1,0 +1,34 @@
+{
+  "description": "a reopening TEXT_MESSAGE_START attributes the message to a different owner",
+  "covers": [
+    "TEXT-06"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 3
+  }
+}

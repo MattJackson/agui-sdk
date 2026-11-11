@@ -1,0 +1,48 @@
+{
+  "description": "interrupt and cancelled outcomes close runs",
+  "covers": [
+    "INTR-01",
+    "LIFE-10"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "interrupt",
+        "interrupts": [
+          {
+            "id": "i1",
+            "reason": "approval"
+          },
+          {
+            "id": "i2",
+            "reason": "input"
+          }
+        ]
+      }
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "outcome": {
+        "type": "cancelled"
+      }
+    }
+  ],
+  "verdict": "ok"
+}

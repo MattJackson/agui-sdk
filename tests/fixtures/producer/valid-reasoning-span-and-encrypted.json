@@ -1,0 +1,70 @@
+{
+  "description": "a span holding two reasoning messages, an encrypted value anywhere, and a snapshot restating the artefact",
+  "covers": [
+    "REAS-05",
+    "REAS-19",
+    "REAS-18"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "REASONING_START",
+      "messageId": "span1"
+    },
+    {
+      "type": "REASONING_MESSAGE_START",
+      "messageId": "rm1",
+      "role": "reasoning"
+    },
+    {
+      "type": "REASONING_ENCRYPTED_VALUE",
+      "subtype": "message",
+      "entityId": "rm1",
+      "encryptedValue": "opaque"
+    },
+    {
+      "type": "REASONING_MESSAGE_CONTENT",
+      "messageId": "rm1",
+      "delta": "a"
+    },
+    {
+      "type": "REASONING_MESSAGE_END",
+      "messageId": "rm1"
+    },
+    {
+      "type": "REASONING_MESSAGE_START",
+      "messageId": "rm2",
+      "role": "reasoning"
+    },
+    {
+      "type": "REASONING_MESSAGE_END",
+      "messageId": "rm2"
+    },
+    {
+      "type": "REASONING_END",
+      "messageId": "span1"
+    },
+    {
+      "type": "MESSAGES_SNAPSHOT",
+      "messages": [
+        {
+          "id": "rm1",
+          "role": "reasoning",
+          "content": "a",
+          "encryptedValue": "opaque"
+        }
+      ]
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

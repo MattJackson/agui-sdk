@@ -1,0 +1,47 @@
+{
+  "description": "a parent and a subagent may each hold a step of the same name",
+  "covers": [
+    "SUB-22"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "plan",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "plan"
+    },
+    {
+      "type": "SUBAGENT_FINISHED",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1"
+    }
+  ],
+  "verdict": "ok"
+}

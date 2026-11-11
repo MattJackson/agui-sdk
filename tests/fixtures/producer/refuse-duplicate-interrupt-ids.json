@@ -1,0 +1,36 @@
+{
+  "description": "two interrupts with one id in a run",
+  "covers": [
+    "INTR-04"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "interrupt",
+        "interrupts": [
+          {
+            "id": "i1",
+            "reason": "a"
+          },
+          {
+            "id": "i1",
+            "reason": "b"
+          }
+        ]
+      }
+    }
+  ],
+  "verdict": {
+    "refuse": "DuplicateInterrupt",
+    "at": 1
+  }
+}

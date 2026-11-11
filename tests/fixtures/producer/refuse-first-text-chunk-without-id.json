@@ -1,0 +1,23 @@
+{
+  "description": "a first TEXT_MESSAGE_CHUNK without messageId",
+  "covers": [
+    "STRM-11",
+    "CHG-01"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_CHUNK",
+      "delta": "a"
+    }
+  ],
+  "verdict": {
+    "refuse": "ChunkDiscipline",
+    "at": 1
+  }
+}

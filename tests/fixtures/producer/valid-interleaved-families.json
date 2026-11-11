@@ -1,0 +1,88 @@
+{
+  "description": "messages, tool calls, reasoning and steps interleave, each keeping its own discipline",
+  "covers": [
+    "STRM-05"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant"
+    },
+    {
+      "type": "REASONING_START",
+      "messageId": "rs1"
+    },
+    {
+      "type": "REASONING_MESSAGE_START",
+      "messageId": "rm1",
+      "role": "reasoning"
+    },
+    {
+      "type": "TOOL_CALL_START",
+      "toolCallId": "c1",
+      "toolCallName": "search",
+      "parentMessageId": "m1"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m1",
+      "delta": "x"
+    },
+    {
+      "type": "REASONING_MESSAGE_CONTENT",
+      "messageId": "rm1",
+      "delta": "hm"
+    },
+    {
+      "type": "TOOL_CALL_ARGS",
+      "toolCallId": "c1",
+      "delta": "{}"
+    },
+    {
+      "type": "TEXT_MESSAGE_END",
+      "messageId": "m1"
+    },
+    {
+      "type": "REASONING_MESSAGE_END",
+      "messageId": "rm1"
+    },
+    {
+      "type": "REASONING_END",
+      "messageId": "rs1"
+    },
+    {
+      "type": "TOOL_CALL_END",
+      "toolCallId": "c1"
+    },
+    {
+      "type": "TOOL_CALL_RESULT",
+      "messageId": "tr1",
+      "toolCallId": "c1",
+      "content": "ok"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "plan"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "success"
+      }
+    }
+  ],
+  "verdict": "ok"
+}

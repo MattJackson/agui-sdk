@@ -1,0 +1,41 @@
+{
+  "description": "TEXT_MESSAGE_CONTENT tagged with another owner than its START",
+  "covers": [
+    "SUB-18",
+    "SUB-19"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s1",
+      "name": "helper"
+    },
+    {
+      "type": "SUBAGENT_STARTED",
+      "subagentRunId": "s2",
+      "name": "helper"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1",
+      "role": "assistant",
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "TEXT_MESSAGE_CONTENT",
+      "messageId": "m1",
+      "delta": "x",
+      "subagentRunId": "s2"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 4
+  }
+}

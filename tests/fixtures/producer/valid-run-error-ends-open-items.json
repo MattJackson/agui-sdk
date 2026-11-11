@@ -1,0 +1,47 @@
+{
+  "description": "RUN_ERROR ends a run with items still open; the next run starts clean",
+  "covers": [
+    "STRM-05",
+    "SSE-11"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "TEXT_MESSAGE_START",
+      "messageId": "m1"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "s"
+    },
+    {
+      "type": "RUN_ERROR",
+      "message": "boom"
+    },
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r2",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "s"
+    },
+    {
+      "type": "STEP_FINISHED",
+      "stepName": "s"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r2"
+    }
+  ],
+  "verdict": "ok"
+}

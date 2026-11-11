@@ -1,0 +1,30 @@
+{
+  "description": "a step still open at a cancelling RUN_FINISHED",
+  "covers": [
+    "LIFE-12"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "STEP_STARTED",
+      "stepName": "plan"
+    },
+    {
+      "type": "RUN_FINISHED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "outcome": {
+        "type": "cancelled"
+      }
+    }
+  ],
+  "verdict": {
+    "refuse": "OpenAtFinish",
+    "at": 2
+  }
+}

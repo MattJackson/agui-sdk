@@ -1,0 +1,18 @@
+{
+  "description": "RUN_STARTED declaring a version that is not MAJOR.MINOR",
+  "covers": [
+    "ARCH-04"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "one"
+    }
+  ],
+  "verdict": {
+    "refuse": "InvalidValue",
+    "at": 0
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "description": "a replace:false snapshot attributed to another owner",
+  "covers": [
+    "ACT-08"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "a1",
+      "activityType": "search",
+      "content": {
+        "q": "a"
+      },
+      "subagentRunId": "s1"
+    },
+    {
+      "type": "ACTIVITY_SNAPSHOT",
+      "messageId": "a1",
+      "activityType": "search",
+      "content": {
+        "q": "a"
+      },
+      "replace": false,
+      "subagentRunId": "s2"
+    }
+  ],
+  "verdict": {
+    "refuse": "OwnerMismatch",
+    "at": 2
+  }
+}

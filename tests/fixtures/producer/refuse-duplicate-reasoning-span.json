@@ -1,0 +1,26 @@
+{
+  "description": "opening a reasoning span already open",
+  "covers": [
+    "REAS-02"
+  ],
+  "events": [
+    {
+      "type": "RUN_STARTED",
+      "threadId": "t-prod",
+      "runId": "r1",
+      "protocolVersion": "1.0"
+    },
+    {
+      "type": "REASONING_START",
+      "messageId": "r1"
+    },
+    {
+      "type": "REASONING_START",
+      "messageId": "r1"
+    }
+  ],
+  "verdict": {
+    "refuse": "AlreadyOpen",
+    "at": 2
+  }
+}
