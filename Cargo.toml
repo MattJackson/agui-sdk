@@ -147,6 +147,50 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 tokio = { version = "1.44.2", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "io-util"] }
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 
+# Bench gate (TEST-PLAN §9, docs/PERFORMANCE.md): criterion-free harness in
+# benches/support, budgets in benches/budgets.toml.
+[[bench]]
+name = "protocol_types"
+harness = false
+[[bench]]
+name = "sse_decode"
+harness = false
+[[bench]]
+name = "proto_decode"
+harness = false
+[[bench]]
+name = "proto_codec"
+harness = false
+required-features = ["proto"]
+[[bench]]
+name = "pipeline_push_json"
+harness = false
+[[bench]]
+name = "pipeline_push_value"
+harness = false
+[[bench]]
+name = "reducer_deltas"
+harness = false
+[[bench]]
+name = "messages_snapshot"
+harness = false
+[[bench]]
+name = "patch_apply"
+harness = false
+[[bench]]
+name = "server_emit_encode"
+harness = false
+[[bench]]
+name = "server_runner"
+harness = false
+required-features = ["server"]
+[[bench]]
+name = "pipeline_linearity"
+harness = false
+[[bench]]
+name = "http_transport"
+harness = false
+required-features = ["client"]
 [[test]]
 name = "transport_http"
 required-features = ["client"]
@@ -167,6 +211,10 @@ required-features = ["axum"]
 [[test]]
 name = "interop_ts"
 required-features = ["client", "axum"]
+[[bench]]
+name = "client_run"
+harness = false
+required-features = ["client"]
 # Readable stacks for flamegraph/samply without full debug info.
 [profile.bench]
 debug = "line-tables-only"

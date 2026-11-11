@@ -1,0 +1,209 @@
+# Performance budgets for the bench gate (benches/support/mod.rs; TEST-PLAN §9,
+# docs/PERFORMANCE.md). Read by every bench binary under `cargo bench`.
+#
+# allocs_per_event: the marginal allocation count per event between the
+#   smallest and largest input (fixed setup cancels). Deterministic, so it is
+#   compared EXACTLY: a change in either direction is a bug or a deliberate edit
+#   to this file in the same PR, with the reason in the description. A case
+#   without it fails until the measured value is recorded. The values are the
+#   default-feature build's, which CI's perf job runs.
+# map_dependent = true: the count changes with `serde_json`'s map type, so a
+#   `preserve-order` build (and so `--all-features`) prints it ungated; for
+#   example pipeline_push_json/text_heavy measures 1.542 there.
+# min_mb_per_s: loose throughput floor that catches cliffs on a shared runner.
+#   0 = not set yet (set it from a green run on the reference runner, with a
+#   wide margin).
+# Computed ceilings (owned strings, log2 growth, no document clone) are asserted
+# in the bench code itself.
+
+[gate]
+# Hard: ×8 input may cost at most 8 × this in allocations ...
+alloc_linearity = 1.15
+# ... and 8 × this in time (×16; looser: shared runners are noisy, and
+# pipeline_push_value/text_heavy measured ×12.75 on CI against an earlier ×12
+# while it measures ×7–8 when quiet; a quadratic is ×64, so it still fails by
+# a factor of 4).
+time_linearity = 2.0
+# The in-cache pair a case adds with `time_scales = [a, b]` is held to 8 × this
+# (×16 for ×8 input). Its own bound, not `time_linearity`:
+# messages_snapshot/reconcile measured ×12.15 for it on CI against the
+# strict ×12. A quadratic is ×64, so it still
+# fails by a factor of 4. docs/PERFORMANCE.md, "Time linearity and the cache".
+time_scales_linearity = 2.0
+
+# SseDecoder, 0 allocations per event in steady state.
+[case."sse_decode/1KiB"]
+allocs_per_event = 0
+min_mb_per_s = 0
+
+[case."sse_decode/64KiB"]
+allocs_per_event = 0
+min_mb_per_s = 0
+
+# framing is zero-copy for frames inside one chunk.
+[case."proto_decode/framing"]
+allocs_per_event = 0
+min_mb_per_s = 0
+
+# decode allocates only the resulting value's nodes: per event of the
+# typical stream, its strings and the map/array nodes holding them.
+[case."proto_decode/decode"]
+allocs_per_event = 7.119
+map_dependent = true
+min_mb_per_s = 0
+
+# below the owned-strings ceiling asserted in the bench. Per
+# content delta only its text (the event's `Arc` is recycled and a repeated
+# id shares the recent buffer); the rest is the run's ids, the reducer's
+# message and tool-call entries, state values and one `Arc` per non-delta
+# event. Frames are written with sorted keys (`type` last): the enforcer
+# presents the discriminator first, so nothing is buffered for it.
+[case."pipeline_push_json/text_heavy"]
+allocs_per_event = 1.509
+map_dependent = true
+min_mb_per_s = 0
+
+# the strings arrive owned in the `Value`s (built outside the measured
+# region) and are moved into the event, so this is pipeline_push_json minus
+# the strings the parse itself allocates.
+[case."pipeline_push_value/text_heavy"]
+allocs_per_event = 0.542
+map_dependent = true
+min_mb_per_s = 0
+
+# API.md §8: amortized String growth only (log2 ceiling asserted in
+# the bench). The application drops each update, so the reducer recycles the
+# event's Arc and the marginal count per delta is 0.
+[case."reducer_deltas/one_message"]
+allocs_per_event = 0
+min_mb_per_s = 0
+
+# The application keeps every update: exactly one Arc<Event> per delta.
+#
+# Time: every kept update stays live (221 bytes each, constant), so ×1 to ×8
+# is 22 MB to 177 MB of live heap. 177 MB outgrows the caches and glibc's
+# trim threshold, so on Linux runners the time per delta steps up between
+# ×2 and ×4 (2-CPU Linux, ns per delta: 60, 66, 71, 110, 140 at ×0.125, ×1,
+# ×2, ×4, ×8) while the bytes per delta stay flat (no text is copied). ×1 to
+# ×8 measured ×10.5–17.1 there (qa: ×17.08), over the strict ×12. That range
+# is held to 8 × 3 = ×24, and 12.5k to 100k deltas (×0.125 to ×1, 2.8 to
+# 22 MB, measured ×8.1–9.6) to the in-cache 8 × 2 = ×16. A copy of the text per delta is
+# ×64 in both. docs/PERFORMANCE.md, "Time linearity and the cache".
+[case."reducer_deltas/one_message_held"]
+allocs_per_event = 1
+min_mb_per_s = 0
+time_linearity = 3.0
+time_scales = [0.125, 1]
+
+# O(n) reconcile; one allocation per message (its content copied into
+# the history, which the shared event also keeps).
+#
+# Time: ×1 to ×8 is 10k to 80k messages, and 80k outgrow the caches, so the
+# time per message rises ~1.4–1.75× there (and keeps wobbling above, flat
+# below) though the work is linear: 8 × 1.5 flaked at ×12.8–14. That range
+# is held to 8 × 3 = ×24 instead, and 1.25k to 10k (×0.125 to ×1, in cache,
+# measured ×7.9–9.5 locally, ×12.15 once on CI) to the in-cache
+# 8 × 2 = ×16 (`[gate] time_scales_linearity`). A real O(n²) is ×64 at ×8
+# input in either range. docs/PERFORMANCE.md, "Time linearity and the cache".
+[case."messages_snapshot/reconcile"]
+allocs_per_event = 1
+min_mb_per_s = 0
+# Out of cache (x1 to x8, 10k to 80k held messages) shared CI runners read
+# x18.3, x18.8, x25.1 and x26.0 on unchanged code while the in-cache pair
+# stays at x9; x32 keeps a factor of 2 to a quadratic (x64).
+time_linearity = 4.0
+time_scales = [0.125, 1]
+
+# M tiny snapshots against N held activity messages (M = N): one allocation
+# per snapshot (the event's Arc), none for the held history. Same cache
+# wobble as `reconcile` (80k held ids outgrow the caches), so the same
+# allowance; a quadratic path is ×64 at ×8.
+[case."messages_snapshot/tiny_snapshots_vs_held_activity"]
+allocs_per_event = 1
+min_mb_per_s = 0
+time_linearity = 3.0
+time_scales = [0.125, 1]
+
+# Tiny snapshots that swap a held activity into a user message and drop it
+# again: two snapshots per held activity, an allocation each (the event's
+# Arc). The drops walk the held tail, which the reconcile work bank bounds;
+# an unbounded walk is quadratic (×64 at ×8).
+[case."messages_snapshot/alternating_class_swap_drops"]
+allocs_per_event = 2
+min_mb_per_s = 0
+time_linearity = 3.0
+time_scales = [0.125, 1]
+
+# Tiny snapshots that restate a duplicated call id's two holders around N
+# held activities: each is O(snapshot) (the mapping falls back through the
+# holder set, never a scan); the allocations are the restated messages.
+[case."messages_snapshot/alternating_duplicate_call_holder"]
+allocs_per_event = 7
+min_mb_per_s = 0
+time_linearity = 3.0
+time_scales = [0.125, 1]
+
+# A reopen under a new parent keeps the call in place: no allocation but the
+# event's Arc and the diagnostic.
+[case."reducer_deltas/reopen_new_parent"]
+allocs_per_event = 1
+min_mb_per_s = 0
+time_linearity = 3.0
+
+# never a document clone (bytes ceiling asserted in the bench). Per
+# operation: the `add` operands cloned in (one map and its key for each of the
+# third of operations that add `{"i": n}`); the undo log is one reserved
+# allocation per patch, and the rollback of a failing patch allocates nothing.
+[case."patch_apply/apply"]
+allocs_per_event = 0.667
+map_dependent = true
+min_mb_per_s = 0
+
+[case."patch_apply/failing"]
+allocs_per_event = 0.667
+map_dependent = true
+min_mb_per_s = 0
+
+# 0 allocations per event in the encoder after warm-up. The verifier is
+# O(1) with 0 amortized allocations (ids are Arc clones).
+#
+# Time: the pre-built typed events are the working set (17.7k at ×1, 141.6k
+# at ×8; bytes written per event flat, 93.2 to 94.1 SSE and 43.2 to 44.1
+# protobuf), and ×8 outgrows the qa runner's caches: ×1 to ×8 measured
+# ×14.97 (SSE) and ×12.06 (protobuf) there, over the strict ×12. On an Apple
+# M-series laptop the time per event stays within 1.2× from ×0.125 to ×64
+# (SSE 82-99 ns, protobuf 187-220 ns, no trend above ×8): 2.2k to 17.7k
+# events (×0.125 to ×1, in cache) measured ×8.15 / ×7.74, and ×16 to ×64
+# ×4.10 / ×4.07 for ×4 input. So ×1 to ×8 is held to 8 × 3 = ×24 and ×0.125
+# to ×1 to the in-cache ×16; a quadratic path is ×64 at ×8 in either range.
+# docs/PERFORMANCE.md, "Time linearity and the cache".
+[case."server_emit_encode/sse"]
+allocs_per_event = 0
+min_mb_per_s = 0
+time_linearity = 3.0
+time_scales = [0.125, 1]
+
+[case."server_emit_encode/proto"]
+allocs_per_event = 0
+min_mb_per_s = 0
+time_linearity = 3.0
+time_scales = [0.125, 1]
+
+# the client run loop over an in-memory transport, on the same stream as
+# pipeline_push_json/text_heavy: equal marginal count (the client adds 0 per
+# event; updates are Arc clones, views borrow), with or without an observer.
+[case."client_run/await"]
+allocs_per_event = 1.509
+map_dependent = true
+min_mb_per_s = 0
+
+[case."client_run/iterate_observed"]
+allocs_per_event = 1.509
+map_dependent = true
+min_mb_per_s = 0
+
+# Rollback of k added members of an object of 20k members (preserve-order
+# builds only): a key per add; the rollback allocates nothing.
+[case."patch_apply/wide_object_rollback"]
+allocs_per_event = 1
+min_mb_per_s = 0
