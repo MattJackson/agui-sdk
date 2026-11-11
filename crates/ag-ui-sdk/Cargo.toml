@@ -1,0 +1,49 @@
+[package]
+name = "ag-ui-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Alias of agui-sdk: AG-UI 1.0 protocol types plus a conformant client and server."
+documentation = "https://docs.rs/ag-ui-sdk"
+readme = "README.md"
+keywords = ["ag-ui", "agent", "protocol", "sse", "llm"]
+categories = [
+    "network-programming",
+    "api-bindings",
+    "asynchronous",
+    "web-programming::http-client",
+    "web-programming::http-server",
+]
+include = ["/src/**/*.rs", "/Cargo.toml", "/LICENSE", "/README.md"]
+
+[features]
+# Mirrors agui-sdk's features one to one; see agui-sdk's crate docs.
+default = []
+client = ["agui-sdk/client"]
+rustls = ["agui-sdk/rustls"]
+rustls-native-roots = ["agui-sdk/rustls-native-roots"]
+native-tls = ["agui-sdk/native-tls"]
+server = ["agui-sdk/server"]
+axum = ["agui-sdk/axum"]
+proto = ["agui-sdk/proto"]
+stream = ["agui-sdk/stream"]
+preserve-order = ["agui-sdk/preserve-order"]
+tracing = ["agui-sdk/tracing"]
+log = ["agui-sdk/log"]
+
+[dependencies]
+# Exact pin: the alias is the same release as agui-sdk, never a range of them.
+# Keep it equal to [workspace.package] version in the root Cargo.toml.
+agui-sdk = { version = "=0.9.0", path = "../..", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }

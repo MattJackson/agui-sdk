@@ -1,0 +1,163 @@
+[package]
+name = "agui-sdk"
+version.workspace = true
+edition = "2021"
+# MSRV policy (docs/API.md "MSRV"): the whole crate, every feature but
+# native-tls, builds on 1.75; native-tls needs 1.80 (docs/DECISIONS.md D1).
+# Dependency requirements stay loose enough that 1.75-compatible
+# releases satisfy them (hyper-util 0.1.20, axum-core 0.5.2, tokio 1.53); the
+# committed Cargo.lock is the MSRV lock, written by a cargo >= 1.84 with
+# CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback (openssl and openssl-sys
+# then raised to their advisory-clean releases) and checked with
+# `cargo +1.75 check --locked` for every feature but native-tls and
+# `cargo +1.80 check --all-features --locked`.
+rust-version = "1.75"
+authors = ["Matthew Jackson <matthew@pq.io>"]
+description = "AG-UI 1.0 protocol for Rust: protocol types plus a conformant client and server over SSE and protobuf."
+license = "MIT"
+repository = "https://github.com/MattJackson/agui-sdk"
+homepage = "https://github.com/MattJackson/agui-sdk"
+documentation = "https://docs.rs/agui-sdk"
+readme = "README.md"
+keywords = ["ag-ui", "agent", "protocol", "sse", "llm"]
+categories = [
+    "network-programming",
+    "api-bindings",
+    "asynchronous",
+    "web-programming::http-client",
+    "web-programming::http-server",
+]
+# Allowlist: the library source plus the files a crates.io user needs. Tests,
+# benches, test keys, CI and repository tooling stay in the repository (cargo
+# drops the [[test]]/[[bench]] targets below from the published manifest).
+include = ["/src/**/*.rs", "/Cargo.toml", "/LICENSE", "/README.md", "/CHANGELOG.md"]
+
+[workspace]
+members = ["crates/ag-ui-sdk"]
+resolver = "2"
+
+[workspace.package]
+# The one version both crates carry (they release in lockstep). Bump it here
+# and in the alias crate's exact `agui-sdk = "=X.Y.Z"` requirement.
+version = "0.9.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/MattJackson/agui-sdk"
+authors = ["Matthew Jackson <matthew@pq.io>"]
+
+[features]
+## Default: protocol types, diagnostics, errors, bounded patch and the sans-IO
+## pipeline. Dependencies: serde and serde_json only.
+default = []
+## Async HTTP client (SSE, plus protobuf with `proto`) over hyper 1 (HTTP/1.1)
+## and tokio. Plain `http://` only: add `rustls` or `native-tls` for HTTPS.
+client = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:tokio",
+    "dep:bytes",
+    "dep:memchr",
+    "dep:pin-project-lite",
+    "dep:tower-service",
+]
+## HTTPS for `client` through rustls 0.23 (ring provider, webpki-roots). Implies `client`.
+rustls = ["client", "dep:hyper-rustls", "dep:rustls", "dep:webpki-roots"]
+## Also trust the operating system's root store (rustls-native-certs). Implies `rustls`.
+rustls-native-roots = ["rustls", "hyper-rustls/native-tokio", "dep:rustls-native-certs"]
+## HTTPS for `client` through the platform stack (hyper-tls). Implies `client`.
+## Needs Rust 1.80, the one feature above the 1.75 MSRV: its advisory-clean
+## openssl does (docs/DECISIONS.md D1, docs/API.md "MSRV").
+native-tls = ["client", "dep:hyper-tls", "dep:native-tls", "dep:tokio-native-tls"]
+## Runtime-agnostic producer: Agent, RunContext, Runner, encoders. No tokio.
+server = ["dep:bytes", "dep:pin-project-lite"]
+## axum 0.8 integration through axum-core 0.5 (`FromRequest`/`IntoResponse`
+## types, no Router). Implies `server`.
+axum = ["server", "dep:axum-core", "dep:http", "dep:http-body", "dep:http-body-util", "dep:tokio"]
+## Protobuf wire (`application/vnd.ag-ui.event+proto`) for whichever of
+## client/server is enabled; also exposes `agui_sdk::proto`.
+proto = ["dep:bytes"]
+## `futures_core::Stream` impls for the crate's own async streams
+## (public dependency on futures-core 0.3 under this feature only).
+stream = ["dep:futures-core"]
+## Insertion-ordered JSON objects (`serde_json/preserve_order`): typed events
+## keep JS member order, so the protobuf encoder reproduces the upstream byte
+## corpus from typed events too (PB-12). Unifies across the dependency graph.
+preserve-order = ["serde_json/preserve_order"]
+## Route diagnostics to `tracing` (preferred when a subscriber is installed).
+tracing = ["dep:tracing"]
+## Route diagnostics to `log` when no tracing subscriber takes them.
+log = ["dep:log"]
+
+[dependencies]
+serde = { version = "1.0.200", default-features = false, features = ["std", "derive", "rc"] }
+serde_json = { version = "1.0.120", default-features = false, features = ["std"] }
+
+bytes = { version = "1.11.1", default-features = false, features = ["std"], optional = true }
+memchr = { version = "2.7", default-features = false, features = ["std"], optional = true }
+pin-project-lite = { version = "0.2.14", optional = true }
+futures-core = { version = "0.3.30", default-features = false, features = ["std"], optional = true }
+
+hyper = { version = "1.4", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1.7", default-features = false, features = ["client-legacy", "http1", "tokio"], optional = true }
+http = { version = "1.1", default-features = false, features = ["std"], optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1.2", optional = true }
+tokio = { version = "1.44.2", default-features = false, features = ["time", "net"], optional = true }
+# The connector trait hyper-util's pooled client is generic over (no extra
+# package: hyper-util already depends on it).
+tower-service = { version = "0.3", optional = true }
+
+hyper-rustls = { version = "0.27.3", default-features = false, features = ["http1", "ring", "tls12", "webpki-tokio"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12", "ring"], optional = true }
+webpki-roots = { version = "1.0.10", optional = true }
+# Named directly so `TlsRoots::Native` can be combined with added roots (no
+# extra package: `hyper-rustls/native-tokio` already depends on it).
+rustls-native-certs = { version = "0.8", optional = true }
+
+hyper-tls = { version = "0.6", optional = true }
+native-tls = { version = "0.2.12", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
+
+axum-core = { version = "0.5.2", optional = true }
+
+tracing = { version = "0.1.40", default-features = false, features = ["std"], optional = true }
+log = { version = "0.4.20", default-features = false, features = ["std"], optional = true }
+
+[dev-dependencies]
+# Counting global allocator for the allocation-budget tests and benches. The
+# crate forbids `unsafe_code`, so the `GlobalAlloc` impl has to come from a
+# dependency.
+stats_alloc = "0.1.10"
+# Minimal executor for the runtime-agnostic server tests (no tokio in `server`).
+futures-executor = { version = "0.3.30", default-features = false, features = ["std"] }
+# Property tests. Below 1.6 so the dev build still resolves on the 1.75 MSRV.
+proptest = { version = ">=1.4, <1.6", default-features = false, features = ["std"] }
+# The protobuf tests compare decoded numbers with `serde_json`'s parse of the
+# same text; make that parse correctly rounded, as `JSON.parse` is.
+serde_json = { version = "1.0.108", features = ["float_roundtrip"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+# Producer transport tests a real local TCP server through the axum
+# glue (axum is a dev-dependency only; the `axum` feature uses axum-core).
+tokio = { version = "1.44.2", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "io-util"] }
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
+
+# Readable stacks for flamegraph/samply without full debug info.
+[profile.bench]
+debug = "line-tables-only"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
