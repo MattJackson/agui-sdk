@@ -33,7 +33,7 @@ categories = [
 include = ["/src/**/*.rs", "/Cargo.toml", "/LICENSE", "/README.md", "/CHANGELOG.md"]
 
 [workspace]
-members = ["crates/ag-ui-sdk"]
+members = ["crates/ag-ui-sdk", "xtask"]
 resolver = "2"
 
 [workspace.package]

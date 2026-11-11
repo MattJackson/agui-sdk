@@ -1,0 +1,25 @@
+# Upstream AG-UI data the test suite reads at test time. Nothing listed here is
+# vendored: `cargo xtask spec-fetch` downloads the GitHub archive of `commit`,
+# checks `sha256`, extracts `paths` into .spec-cache/<commit>/ (gitignored),
+# and checks `tree_sha256` and `schema_sha256` on what it extracted.
+# Bump deliberately, in its own PR, with `cargo xtask spec-bump <sha>`: it
+# refuses a commit whose schema.json is not byte-identical to the one published
+# at `schema_url`, and rewrites the hashes below.
+upstream = "https://github.com/ag-ui-protocol/ag-ui"
+commit = "deefd3833c15b353348ba90eae0fad6113021759"
+# SHA-256 of https://codeload.github.com/<owner>/<repo>/tar.gz/<commit>.
+sha256 = "856fdb1fc09a404717acffa7044afa9bc8dbee8db93d3c2ad344cbde4922702e"
+# SHA-256 over the extracted `paths`: the sorted lines
+# "<sha256 of file>  <path>\n". Independent of archive compression.
+tree_sha256 = "111fffb45a3f46576f10434d998ab3db8db2be677e44c76fc7080ddd61549766"
+# The published schema, byte-identical to spec/1.0/schema.json at `commit`.
+schema_url = "https://ag-ui.com/spec/1.0/schema.json"
+schema_sha256 = "4b5c93226838a0e72d88e6c5df20633c686c49fcb75d9be2815c6cbf9e48e71a"
+paths = [
+  "spec/1.0/schema.json",
+  "spec/1.0/proto-freeze.txt",
+  "spec/1.0/conformance/streams",
+  "spec/1.0/fixtures",
+  "sdks/typescript/packages/proto/src/proto",
+  "sdks/typescript/packages/proto/__tests__/__fixtures__/bytes",
+]

@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Repository tasks for agui-sdk: spec fetch, code generation, drift and traceability checks."
+
+# No dependencies: downloads shell out to `curl` and `tar`, SHA-256 and the
+# JSON reader are in-crate, and spec.lock is parsed by hand.
+[dependencies]
