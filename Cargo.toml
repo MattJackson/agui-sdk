@@ -147,6 +147,26 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 tokio = { version = "1.44.2", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "io-util"] }
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 
+[[test]]
+name = "transport_http"
+required-features = ["client"]
+[[test]]
+name = "proxy_env"
+required-features = ["client"]
+[[test]]
+name = "transport_sse"
+required-features = ["client"]
+[[test]]
+name = "transport_contract"
+required-features = ["client", "axum"]
+[[test]]
+name = "transport_sse_server"
+required-features = ["axum"]
+# Opt-in (AGUI_INTEROP=1) interop with the TypeScript reference; its Node half
+# is interop/ts/. Neither is packaged.
+[[test]]
+name = "interop_ts"
+required-features = ["client", "axum"]
 # Readable stacks for flamegraph/samply without full debug info.
 [profile.bench]
 debug = "line-tables-only"

@@ -1,0 +1,16 @@
+{
+  "name": "agui-sdk-ts-interop",
+  "private": true,
+  "description": "Interop harness: the TypeScript AG-UI client and encoder against agui-sdk (Rust). Run by tests/interop_ts.rs with AGUI_INTEROP=1 after `npm ci`. Not published; excluded from the crate.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@ag-ui/client": "1.0.4",
+    "@ag-ui/core": "1.0.4",
+    "@ag-ui/encoder": "1.0.4",
+    "zod": "4.6.7"
+  }
+}
