@@ -1,0 +1,48 @@
+# cargo-deny policy. Runs in dev.yml and qa.yml as `cargo deny --all-features
+# check`, so a dependency that adds a disallowed licence, a RustSec advisory, a
+# duplicate major or a git/unknown-registry source fails the build rather than
+# a review.
+#
+# The allow-list was checked against the real tree (`cargo deny --all-features
+# list`, 2026-11): every entry below is used by at least one crate, and no
+# crate needs a licence that is not listed. An allow-list entry nothing uses is
+# a hole, so drop one when the last crate needing it goes. Dual-licensed crates
+# (memchr: Unlicense OR MIT; r-efi: MIT OR Apache-2.0 OR LGPL-2.1-or-later)
+# are satisfied by their permissive alternative.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every RustSec advisory (vulnerability, unmaintained, unsound, notice) fails
+# the build unless it is listed here with a reason and a review date.
+ignore = []
+
+[licenses]
+# Permissive licences only: everything here is compatible with shipping this
+# crate as MIT without extra obligations on downstream users.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace (ag-ui-sdk -> agui-sdk) carry a
+# version too, so they are not wildcards; this keeps workspace-internal path
+# deps from tripping the rule while xtask/fuzz crates stay unpublished.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

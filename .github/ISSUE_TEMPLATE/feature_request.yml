@@ -1,0 +1,32 @@
+name: Feature request
+description: Something agui-sdk should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Changes to the protocol itself belong upstream at https://github.com/ag-ui-protocol/ag-ui.
+        This crate implements AG-UI 1.0 as specified; it does not extend it.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you building, and what does the current API force you to work around?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behaviour
+      render: rust
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Would this break existing code?
+      options: ["No, additive", "Yes", "Not sure"]
+    validations:
+      required: true

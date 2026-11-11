@@ -1,0 +1,16 @@
+/target
+# Upstream spec data downloaded by `cargo xtask spec-fetch` (pinned by spec.lock).
+/.spec-cache
+.DS_Store
+
+# cargo-fuzz output. Crash reproducers worth keeping become regression tests;
+# the raw artifacts, the grown corpus and coverage data stay local.
+/fuzz/target
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/coverage
+
+# cargo-llvm-cov and cargo-mutants output.
+lcov.info
+/mutants.out
+/mutants.out.old

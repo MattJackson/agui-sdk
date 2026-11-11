@@ -1,0 +1,97 @@
+version = 1
+
+# REUSE (https://reuse.software) licensing declarations for agui-sdk.
+#
+# REUSE's rule is that *every* file must say who owns it and under what terms.
+# The declarations live here rather than as a header in every file, because a
+# lockfile, `.gitignore`, a TOML manifest or a workflow has nowhere good to put
+# one, and a licence block at the top of README.md costs readers more attention
+# than it earns.
+#
+# Two files are deliberately NOT covered by a block here, because they carry
+# their own inline declaration: CODE_OF_CONDUCT.md (the Contributor Covenant,
+# CC-BY-4.0, not this project's work) and LICENSE itself (REUSE ignores it).
+#
+# ---------------------------------------------------------------------------
+# What is NOT in this repository, and why there are no third-party licences
+# ---------------------------------------------------------------------------
+# The conformance suite tests against the upstream AG-UI specification (JSON
+# Schema, fixtures, proto definitions) published by the AG-UI project. That
+# material is *fetched at test time* (`cargo xtask spec-fetch`, pinned to an
+# upstream commit and sha256 by `spec.lock`) into `.spec-cache/`, which is
+# gitignored, and is never committed or packaged. `spec.lock` itself is ours:
+# it holds a URL, a commit id, a hash and a list of paths, not upstream text.
+# So the repository holds only first-party work, everything is MIT under one
+# copyright, and LICENSES/ needs only MIT.txt (plus CC-BY-4.0.txt for the Code
+# of Conduct).
+#
+# If that ever changes — a `.proto` file or a fixture vendored into the tree —
+# the vendored path needs its own block below naming the upstream copyright
+# holder and licence, plus that licence's text in LICENSES/. Do not let it
+# fall into one of the MIT blocks: that would be a false claim of authorship
+# over someone else's work. `reuse lint` cannot catch this for you, because a
+# glob that matches the file makes it "compliant" whatever the truth is.
+#
+# `precedence` decides who wins when a file also has an inline header. It is
+# set deliberately per block and the reasoning is with each one.
+
+# ---------------------------------------------------------------------------
+# Manifests, tool configuration, prose and CI. All first-party, all MIT.
+# `aggregate`: these files never get inline headers, and if one ever did the
+# two declarations would say the same thing anyway.
+# ---------------------------------------------------------------------------
+[[annotations]]
+path = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "**/Cargo.toml",
+    "**/Cargo.lock",
+    "clippy.toml",
+    "rustfmt.toml",
+    "deny.toml",
+    "rust-toolchain.toml",
+    "spec.lock",
+    ".cargo/**",
+    ".gitignore",
+    "**/.gitignore",
+    ".gitattributes",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "ROADMAP.md",
+    "SECURITY.md",
+    "docs/**",
+    ".github/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Matthew Jackson <matthew@pq.io>"
+SPDX-License-Identifier = "MIT"
+
+# ---------------------------------------------------------------------------
+# The crates, their tests, benches, examples, fuzz targets and build tooling.
+#
+# `closest` (REUSE's default, stated explicitly because it is a decision): an
+# inline `// SPDX-...` header in a file wins, and this block is the fallback.
+# If the sources grow headers later — the better end state, because the licence
+# then survives a file being copied out of the repo — they take over with no
+# window in which a file is declared twice or not at all.
+#
+# `fuzz/**` covers the fuzz targets and any committed seed inputs, which are
+# first-party. The grown corpus and crash artifacts are gitignored.
+# ---------------------------------------------------------------------------
+[[annotations]]
+path = [
+    "src/**",
+    "crates/**",
+    "tests/**",
+    "benches/**",
+    "examples/**",
+    "fuzz/**",
+    "xtask/**",
+    "proto/**",
+    "interop/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Matthew Jackson <matthew@pq.io>"
+SPDX-License-Identifier = "MIT"

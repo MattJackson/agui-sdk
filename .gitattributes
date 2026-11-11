@@ -1,0 +1,10 @@
+# Every text file is LF in the index and in every checkout, Windows included.
+# Tests compare committed files byte for byte (tests/spec_drift.rs regenerates
+# src/pipeline/shapes.rs and src/proto/fields.rs and compares them with the
+# checkout; the corpus and fixture lanes read JSON and SSE bytes), so a CRLF
+# checkout from `core.autocrlf=true` (the Windows runner default) would fail
+# them without any real drift.
+* text=auto eol=lf
+
+# Binary test data: never converted, never diffed as text.
+*.der binary

@@ -1,0 +1,2 @@
+# Keep MSRV-aware lints from suggesting APIs newer than Cargo.toml's rust-version.
+msrv = "1.75"

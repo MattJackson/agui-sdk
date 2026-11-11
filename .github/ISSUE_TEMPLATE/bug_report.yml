@@ -1,0 +1,51 @@
+name: Bug report
+description: agui-sdk does something wrong, panics, or disagrees with the AG-UI 1.0 spec.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through private reporting, not here: see SECURITY.md.
+        A failing test or a minimal event stream is worth more than a page of description.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Crate version or commit, and which crate (agui-sdk or ag-ui-sdk).
+      placeholder: agui-sdk 0.9.0
+    validations:
+      required: true
+  - type: input
+    id: features
+    attributes:
+      label: Enabled features
+      placeholder: default, or e.g. client, sse, proto
+    validations:
+      required: true
+  - type: input
+    id: toolchain
+    attributes:
+      label: Rust toolchain and OS
+      placeholder: rustc 1.75.0 on x86_64-unknown-linux-gnu
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: If the spec says otherwise, quote the clause and link it.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Code, or the exact events / bytes on the wire (SSE text or protobuf hex).
+      render: rust
+    validations:
+      required: true
+  - type: input
+    id: spec
+    attributes:
+      label: Spec requirement ID (if known)
+      description: The requirement ID from docs/SPEC-MAP.md this violates.
