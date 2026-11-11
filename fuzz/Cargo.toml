@@ -1,0 +1,92 @@
+# cargo-fuzz targets (TEST-PLAN §8). Own workspace, so the root workspace and
+# the published crates never see libfuzzer. Run with nightly:
+#
+#   cargo xtask spec-fetch
+#   cargo run -p agui-test-support --bin agui-fuzz-seed -- fuzz/corpus
+#   cargo +nightly fuzz run <target> -- -max_total_time=60
+#
+# Targets never touch the network or the filesystem. A crash becomes a
+# regression unit test next to the code it found.
+[package]
+name = "agui-sdk-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+agui-sdk = { path = "..", features = ["client", "server", "proto"] }
+libfuzzer-sys = "0.4"
+serde_json = "1.0.108"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "sse_decoder"
+path = "fuzz_targets/sse_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_frames"
+path = "fuzz_targets/proto_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_decode"
+path = "fuzz_targets/proto_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "enforce_event"
+path = "fuzz_targets/enforce_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pipeline_json"
+path = "fuzz_targets/pipeline_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patch_apply"
+path = "fuzz_targets/patch_apply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admit_input"
+path = "fuzz_targets/admit_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "expiry_parse"
+path = "fuzz_targets/expiry_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "version_parse"
+path = "fuzz_targets/version_parse.rs"
+test = false
+doc = false
+bench = false
