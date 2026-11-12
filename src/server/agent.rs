@@ -18,9 +18,10 @@ use super::RunContext;
 /// a panic) the run ends in `RUN_ERROR`. If the error is an
 /// [`agui_sdk::Error`](crate::Error) marked [`public`](crate::Error::public),
 /// its code and message are sent; otherwise the client sees a generic
-/// `agent.failed` and the detail goes to diagnostics only (LIFE-21). For a
-/// failure you want to describe yourself, return
-/// [`RunOutcome::failed`] instead.
+/// `agent.failed` and the detail is dropped: it is neither sent nor
+/// reported to the diagnostic sink (LIFE-21). Log it yourself before
+/// returning if you need it. For a failure you want to describe yourself,
+/// return [`RunOutcome::failed`] instead.
 ///
 /// # Frontend tools
 ///
