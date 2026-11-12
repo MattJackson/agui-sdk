@@ -729,10 +729,12 @@ impl<T: Transport> Thread<T> {
 
     /// Takes in the outcome of the run started last: the report's history,
     /// state, interrupts and pending calls, or, for an error, its partial
-    /// report (LIFE-19). Clears the staged answers that run sent. An error
-    /// with no partial report (nothing was delivered: a refused request, a
-    /// connect failure) changes nothing but the in-flight mark, so the
-    /// staged answers are sent again by the next run.
+    /// report (LIFE-19); after the history limit ended a run, that report
+    /// includes the one undelivered event that crossed the limit
+    /// ([`Error`](crate::Error)). Clears the staged answers that run sent.
+    /// An error with no partial report (nothing was delivered: a refused
+    /// request, a connect failure) changes nothing but the in-flight mark,
+    /// so the staged answers are sent again by the next run.
     ///
     /// The outcome is matched by the run the request named
     /// ([`RunReport::requested_run_id`]), so a stream on which the producer

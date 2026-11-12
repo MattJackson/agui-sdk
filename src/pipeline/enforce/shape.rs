@@ -5,8 +5,8 @@
 //! small `Copy` values that borrow the `static` table, built on demand as the
 //! walk descends: nothing is initialised at run time and nothing allocates.
 //! Objects list their members sorted by name and unions their arms sorted by
-//! discriminator value, so every lookup is a binary search over a short
-//! slice.
+//! discriminator value. A lookup is a linear scan of that short slice that
+//! compares length and first byte before any text (see `position`).
 //!
 //! The table says what JSON Schema says; this module adds the reading the
 //! receive path needs:

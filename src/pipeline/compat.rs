@@ -38,13 +38,15 @@
 //! [`Boundary::upgrade_input`] applies the same content and null rules to a
 //! run input: on the client before the input is enforced and sent (legacy
 //! binary parts are upgraded for every peer, silently, because the upgrade
-//! loses nothing). Server admission does not apply it, as in the reference
-//! implementations, where request parsing does not pass through the event
-//! boundary. A server that accepts 0.x inputs can check the body size, parse
-//! it to a `Value`, call `upgrade_input`, serialize it back to bytes and pass
-//! those to `server::input::admit`, so size limits, enforcement and
-//! diagnostics still run. `admit_input` applies the version policy only and
-//! is not a substitute for enforcing a hostile body.
+//! loses nothing). Server admission does not apply the legacy-binary content
+//! upgrade, as in the reference implementations, where request parsing does
+//! not pass through the event boundary; its enforcement does read the
+//! registry's input nulls as absent (D9), so `upgrade_input` is needed there
+//! only to accept legacy binary parts. A server that accepts them can check
+//! the body size, parse it to a `Value`, call `upgrade_input`, serialize it
+//! back to bytes and pass those to `server::input::admit`, so size limits,
+//! enforcement and diagnostics still run. `admit_input` applies the version
+//! policy only and is not a substitute for enforcing a hostile body.
 //!
 //! # The era shims
 //!
@@ -211,7 +213,9 @@ impl Boundary {
     /// The client calls this on every outgoing input, whatever the peer, before
     /// [`EraShims::downgrade_input`] and enforcement; the binary upgrade is
     /// lossless there and therefore silent. Server admission does not call
-    /// it; a server that accepts older clients' inputs may call it on the
+    /// it, so it does not upgrade legacy binary parts (its enforcement
+    /// already reads the registry's input nulls as absent, D9); a server
+    /// that accepts older clients' binary parts may call it on the
     /// parsed body (after the size check) and serialize the result back into
     /// `server::input::admit`, which still enforces the input. Only
     /// lossy steps and `null` reads are reported, with [`Scope::RunInput`].

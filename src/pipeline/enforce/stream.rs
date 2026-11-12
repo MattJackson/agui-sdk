@@ -5,7 +5,9 @@
 //! shape of the position it stands on. The target type's own `Deserialize`
 //! drives it, and sees only enforced material: undescribed members are
 //! skipped before their key reaches the visitor, a `null` in an optional
-//! position is skipped when the compatibility shim is on, an unrecognised
+//! position the optional-null registry lists is skipped when the
+//! compatibility shim is on (any other optional `null` is a type mismatch),
+//! an unrecognised
 //! closed-set value or union member in an optional position or list is
 //! skipped, and a malformed known value stops the parse with a [`Fault`].
 //! Strings without escapes are lent to the visitor straight from the frame.

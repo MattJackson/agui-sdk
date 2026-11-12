@@ -255,6 +255,9 @@ impl Enforcer {
 /// # Errors
 ///
 /// [`ErrorCode::InvalidValue`] with a pointer;
+/// [`ErrorCode::MalformedEvent`] (no pointer) for bytes that are not JSON;
+/// [`ErrorCode::LimitExceeded`] for a document over the entry or depth
+/// budget;
 /// [`ErrorCode::InvalidConfig`] for an unknown anchor.
 pub fn validate_strict(anchor: &str, document: &[u8]) -> Result<()> {
     let shape = anchor_shape(anchor)?;
@@ -278,7 +281,9 @@ pub fn validate_strict(anchor: &str, document: &[u8]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// As [`validate_strict`] for malformed known values.
+/// [`ErrorCode::InvalidValue`] with a pointer for a malformed known value;
+/// [`ErrorCode::LimitExceeded`] for a document over the entry or depth
+/// budget; [`ErrorCode::InvalidConfig`] for an unknown anchor.
 pub fn enforce_document(anchor: &str, document: Value, reporter: &mut Reporter) -> Result<Value> {
     let shape = anchor_shape(anchor)?;
     let opts = Options::lenient(false);

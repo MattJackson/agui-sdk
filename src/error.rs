@@ -259,7 +259,10 @@ impl fmt::Display for ErrorKind {
 /// Invariants: `kind() == code().kind()`; `is_retryable()` implies
 /// `!run_started()`; when the run had started, a client error carries the
 /// partial report of everything delivered before the failure (LIFE-19,
-/// TRN-11).
+/// TRN-11). One exception: when the history limit
+/// ([`max_history_bytes`](crate::pipeline::Limits::max_history_bytes)) ends
+/// the run, the partial history also holds the effect of the one event that
+/// crossed the limit, which was not delivered.
 pub struct Error {
     inner: Box<ErrorInner>,
 }
