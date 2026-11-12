@@ -332,15 +332,16 @@ impl std::fmt::Display for ErrorBody {
 
 impl std::error::Error for ErrorBody {}
 
-/// Reads up to `limit` body bytes before `until`; `(bytes, more_remained)`.
-/// Stops on the time limit; a read error ends the read too and is returned
-/// (best-effort callers ignore it).
+/// Reads up to `limit` body bytes before `until`;
+/// `(bytes, more_remained, read_error, interrupted)`. Stops on the time
+/// limit or a cancel (`interrupted`); a read error ends the read too and is
+/// returned (best-effort callers ignore it).
 async fn read_bounded(
     body: &mut Incoming,
     limit: usize,
     cancel: &CancelToken,
     until: Instant,
-) -> (Vec<u8>, bool, Option<hyper::Error>) {
+) -> (Vec<u8>, bool, Option<hyper::Error>, bool) {
     let mut bytes = Vec::new();
     let mut more = false;
     let mut failure = None;
@@ -365,8 +366,8 @@ async fn read_bounded(
             }
         }
     };
-    let _ = guarded(reading, cancel, until).await;
-    (bytes, more, failure)
+    let interrupted = guarded(reading, cancel, until).await.is_err();
+    (bytes, more, failure, interrupted)
 }
 
 /// A pre-stream rejection (SSE-12, PB-19): the status, `Retry-After`, and
@@ -386,8 +387,10 @@ async fn status_error(
         .and_then(endpoint::parse_retry_after);
     let mut body = response.into_body();
     let until = in_from_now(inner.limits.error_body_timeout).min(clock.deadline);
-    let (bytes, truncated, _) =
+    let (bytes, more, failure, interrupted) =
         read_bounded(&mut body, inner.limits.max_error_body_bytes, cancel, until).await;
+    // Cut off by the size budget, the time budget, a cancel or a read error.
+    let truncated = more || failure.is_some() || interrupted;
     let reason = status.canonical_reason().unwrap_or("");
     let what = if status.is_redirection() {
         " (redirect not followed)"
@@ -570,7 +573,8 @@ pub(super) async fn fetch(
     };
     let response = send(inner, out, &cancel, &clock).await?;
     let mut body = response.into_body();
-    let (bytes, more, failure) = read_bounded(&mut body, max_bytes, &cancel, clock.deadline).await;
+    let (bytes, more, failure, _) =
+        read_bounded(&mut body, max_bytes, &cancel, clock.deadline).await;
     if Instant::now() >= clock.deadline {
         return Err(total_timeout_error(clock.total));
     }
