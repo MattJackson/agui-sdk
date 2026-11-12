@@ -1052,8 +1052,6 @@ fn messages_snapshot_against_held_activity_is_linear() {
     assert_linear(&clash(2_500), &clash(40_000));
 }
 
-/// A snapshot that drops nothing keeps the activity budgets: retained
-/// content still counts against the shared node ceiling.
 /// One large `MESSAGES_SNAPSHOT` restating every held message (the bench's
 /// `messages_snapshot/reconcile` shape): reconciling it is linear in the
 /// messages. 32k messages stay under the default 150,000-entry frame budget.
@@ -1073,6 +1071,8 @@ fn messages_snapshot_restating_every_message_is_linear() {
     assert_linear(&events(2_000), &events(32_000));
 }
 
+/// A snapshot that drops nothing keeps the activity budgets: retained
+/// content still counts against the shared node ceiling.
 #[test]
 fn retained_activity_still_counts_against_the_node_ceiling_after_a_snapshot() {
     let _g = lock();

@@ -54,7 +54,7 @@ every frame, the harder order for a tagged parse.
 | Event encode with producer verification (`server_emit_encode/sse`, `/proto`) | 0 each | 8 x 1.15 allocs, 8 x 2.0 time | not set |
 | `STATE_DELTA` JSON Patch apply (`patch_apply/apply`, `/failing`), per operation | 0.667 each (cloned operands; bytes ceiling asserted in the bench) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
 | Message accumulation across a run (`reducer_deltas/one_message`, `/one_message_held`) | 0 when updates are dropped; 1 (one `Arc<Event>`) when held | 8 x 1.15 allocs, 8 x 2.0 time | not set |
-| `MESSAGES_SNAPSHOT` reconcile, per message (`messages_snapshot/reconcile`) | 1 | 8 x 1.15 allocs; time 8 x 2 from 1.25k to 10k messages and 8 x 3 from 10k to 80k (see below) | not set |
+| `MESSAGES_SNAPSHOT` reconcile, per message (`messages_snapshot/reconcile`) | 1 | 8 x 1.15 allocs; time 8 x 2 from 1.25k to 10k messages and 8 x 4 from 10k to 80k (see below) | not set |
 | Tiny `MESSAGES_SNAPSHOT`s against held activity (`messages_snapshot/tiny_snapshots_vs_held_activity`) | 1 | 3.0 time | not set |
 | Reopening a message under a new parent (`reducer_deltas/reopen_new_parent`) | 1 | 3.0 time | not set |
 | Client run loop (`client_run/await`, `/iterate_observed`) | 1.509 each (equal to the pipeline: the client adds 0) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
