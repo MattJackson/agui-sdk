@@ -814,12 +814,14 @@ impl VerifierState {
                         self.step_name_bytes = self
                             .step_name_bytes
                             .saturating_sub(step_name_bytes(&e.step_name));
-                    } else if now_empty {
-                        // The owners' charge was credited above: a large
-                        // emptied set is dropped, not kept resident and
-                        // uncharged (D25, D14).
-                        if let Some(owners) = self.steps.get_mut(e.step_name.as_str()) {
-                            crate::pipeline::reset_set(owners);
+                    } else if let Some(owners) = self.steps.get_mut(e.step_name.as_str()) {
+                        // Only the remaining owners are charged: a set far
+                        // larger than they need gives back its peak table,
+                        // not kept resident and uncharged (D25, D14). It
+                        // shrinks only once capacity / 4 exceeds its length,
+                        // so the rehash amortises to O(1) per removal.
+                        if crate::pipeline::oversized(owners.capacity(), owners.len()) {
+                            owners.shrink_to_fit();
                         }
                     }
                     Ok(())
