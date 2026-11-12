@@ -664,7 +664,7 @@ pub fn render(
 
     let mut out = String::new();
     out.push_str(&header(
-        "the .proto files and spec/1.0/proto-freeze.txt",
+        &format!("the .proto files and {}", super::FREEZE_FILE),
         commit,
     ));
     out.push_str(MODULE_DOC.trim_start());

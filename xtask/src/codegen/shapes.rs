@@ -77,7 +77,7 @@ const MODULE_DOC: &str = r#"
 /// Renders the module (before rustfmt).
 pub fn render(schema: &Schema, commit: &str) -> Result<String, String> {
     let mut out = String::new();
-    out.push_str(&header("spec/1.0/schema.json", commit));
+    out.push_str(&header(super::SCHEMA_FILE, commit));
     out.push_str(MODULE_DOC.trim_start());
     out.push('\n');
     let _ = writeln!(
