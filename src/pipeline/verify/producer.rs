@@ -367,6 +367,9 @@ struct Item {
     role: Option<TextMessageRole>,
     /// Fingerprint of `name` (text messages only).
     name: Option<u64>,
+    /// The assistant message the reducer minted for a tool call's parent,
+    /// before any text: its first text opener may set the name (TEXT-06).
+    minted: bool,
 }
 
 /// One tool call.
@@ -1398,6 +1401,7 @@ impl ProducerState {
                 seq,
                 role: Some(role),
                 name,
+                minted: false,
             },
         );
         self.messages
@@ -1469,7 +1473,9 @@ impl ProducerState {
                         );
                     }
                 }
-                if role.is_some() && name != item.name {
+                // A minted carrier takes its first opener's name, as the
+                // reducer fills it.
+                if role.is_some() && !item.minted && name != item.name {
                     return refuse(
                         ProducerRule::OwnerMismatch,
                         format!(
@@ -1544,6 +1550,7 @@ impl ProducerState {
                 seq,
                 role: None,
                 name: None,
+                minted: false,
             },
         );
         self.messages
@@ -1573,6 +1580,7 @@ impl ProducerState {
                 seq,
                 role: None,
                 name: None,
+                minted: false,
             },
         );
         self.opened_explicit(tag);
@@ -1808,6 +1816,7 @@ impl ProducerState {
                         seq,
                         role: Some(TextMessageRole::Assistant),
                         name: None,
+                        minted: true,
                     },
                 );
                 self.messages.insert(parent.clone(), MessageKind::Text);
@@ -2001,6 +2010,7 @@ impl ProducerState {
                             seq,
                             role: Some(role),
                             name,
+                            minted: false,
                         },
                     );
                     self.messages.entry(id.clone()).or_insert(MessageKind::Text);
@@ -3083,8 +3093,63 @@ mod tests {
         );
     }
 
-    /// Steps are indexed by owner: many owners holding one step name cost
-    /// O(1) each.
+    /// The first text opener of a minted parent may name it, as the reducer
+    /// fills a minted carrier's missing name; owner and role still agree
+    /// (TEXT-06).
+    #[test]
+    fn a_minted_parent_takes_its_first_openers_name() {
+        use serde_json::json;
+        let minted = || {
+            let mut v = ProducerVerifier::new();
+            feed(
+                &mut v,
+                vec![
+                    json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                    json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x",
+                           "parentMessageId": "P"}),
+                    json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+                ],
+            );
+            v
+        };
+        let mut v = minted();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "P", "role": "assistant",
+                       "name": "bot"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "P"}),
+            ],
+        );
+        // The name is now established.
+        let err = v
+            .check(&ev(json!({"type": "TEXT_MESSAGE_START", "messageId": "P",
+                              "role": "assistant", "name": "other"})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        // The chunk form fills it too.
+        let mut v = minted();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TEXT_MESSAGE_CHUNK", "messageId": "P", "name": "bot",
+                       "delta": "hi"}),
+                json!({"type": "CUSTOM", "name": "n", "value": 1}),
+            ],
+        );
+        // The role still agrees.
+        let mut v = minted();
+        let err = v
+            .check(&ev(
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "P", "role": "user",
+                              "name": "bot"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+    }
+
+    /// Steps are indexed by owner. A regression guard for the O(1) per
+    /// event lookup (not red before the fix: it pins behaviour, not cost).
     #[test]
     fn many_owners_of_one_step_name_are_indexed() {
         use serde_json::json;
