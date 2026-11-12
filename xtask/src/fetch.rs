@@ -54,8 +54,9 @@ pub fn pinned_cache(root: &Path, lock: &Lock) -> Result<PathBuf, String> {
 }
 
 /// SHA-256 over every file under `paths` in `dir`: the hex digest of the
-/// sorted lines `<sha256 of file>  <relative path with '/'>\n`. Independent
-/// of archive compression, so it is what proves a cache matches the lock.
+/// lines `<sha256 of file>  <relative path with '/'>\n`, sorted by path.
+/// Independent of archive compression, so it is what proves a cache matches
+/// the lock.
 pub fn tree_digest(dir: &Path, paths: &[String]) -> Result<String, String> {
     let mut files = Vec::new();
     for p in paths {
