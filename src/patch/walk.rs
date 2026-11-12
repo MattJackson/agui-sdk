@@ -4,8 +4,10 @@
 //! below their start, so their stack use is bounded by the depth limit;
 //! [`count`] and [`count_displaced`] switch to a heap stack below
 //! `COUNT_RECURSION` levels; [`eq_bounded`] recurses as deep as the
-//! shallower operand. Each stops as soon as a node bound is hit, so its cost
-//! never exceeds what the budget allows.
+//! shallower operand. [`measure`], [`clone_bounded`], [`count_displaced`]
+//! and [`eq_bounded`] stop as soon as a node bound is hit, so their cost
+//! never exceeds what the budget allows; [`count`] is unbounded and is used
+//! only on values already held (see its docs).
 //!
 //! Cost is counted in node units: one per JSON value, plus one per
 //! [`TEXT_BYTES_PER_UNIT`] bytes of string value or object key text, so the

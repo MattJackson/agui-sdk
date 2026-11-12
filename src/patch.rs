@@ -528,6 +528,10 @@ impl PatchLimits {
 pub struct PatchBudget {
     limits: PatchLimits,
     nodes: usize,
+    /// Object members removed since the document's objects were last
+    /// rebuilt (`preserve-order` releases their memory that way, amortized
+    /// over the removals: see `engine::compaction_due`).
+    removed: usize,
 }
 
 impl PatchBudget {
@@ -538,6 +542,7 @@ impl PatchBudget {
         PatchBudget {
             limits,
             nodes: walk::count(document),
+            removed: 0,
         }
     }
 
@@ -688,8 +693,14 @@ pub(crate) fn apply_measured(
             nodes,
             copied,
             vacated,
+            members_removed,
         } => {
             budget.nodes = nodes;
+            budget.removed = budget.removed.saturating_add(members_removed);
+            if engine::compaction_due(budget.removed, nodes) {
+                engine::compact(document);
+                budget.removed = 0;
+            }
             Ok(Measured { copied, vacated })
         }
         engine::Outcome::Failed { index, reason } => {
@@ -752,24 +763,40 @@ pub fn apply(
 /// publisher. Emits `replace` for changed scalars, `add`/`remove` for
 /// object members and a whole-array `replace` when arrays differ (simple,
 /// predictable, O(size of both documents); the delta it builds is bounded by
-/// the default walk budget and by the size of `after`). With `preserve-order`, an object
-/// whose deleted members would cost more to shift out than to rebuild is sent
-/// as one `replace` of the object. Returns an empty patch when the documents
-/// are equal. When the member-wise delta would exceed what the default
+/// the default walk budget). With `preserve-order`, an object whose deleted
+/// members would cost more to shift out than to rebuild is sent as one
+/// `replace` of the object. Returns an empty patch when the documents are
+/// equal. When the member-wise delta would exceed what the default
 /// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or net growth
 /// past the node budget or ceiling; for a `before` already above the ceiling,
-/// any addition at all, which older versions' `apply` refuse), or when its paths alone would be larger
-/// on the wire than `after`, returns a single `replace` of the root with
-/// `after` instead. That replace is larger than `after` itself, so callers
-/// building their own `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT`
-/// in that case, as the server's state publisher does.
+/// any addition at all, which older versions' `apply` refuse), or when its
+/// path text outweighs `after` on the wire, returns a single `replace` of the
+/// root with `after` instead. Path text is compared with the size of `after`
+/// only once it passes 64 KiB, and then each time it doubles, so a delta may
+/// carry up to about `max(64 KiB, 2 x size of after)` of path text and still
+/// be larger than `after`: callers that want the smaller form should compare
+/// wire sizes themselves, as the server's state publisher does. The root
+/// replace is larger than `after` itself, so callers building their own
+/// `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT` in that case.
 #[must_use]
 pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
-    diff_counted(before, walk::count(before), after)
+    diff_or_none(before, None, after).unwrap_or_else(|| {
+        vec![PatchOperation::replace(
+            JsonPointer(String::new()),
+            after.clone(),
+        )]
+    })
 }
 
-/// [`diff`] with the node units of `before` already known.
-pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<PatchOperation> {
+/// [`diff`], given the node units of `before` if already known, returning `None`
+/// where `diff` would fall back to a root `replace` (so a caller that sends
+/// a snapshot then does not copy `after` for nothing).
+pub(crate) fn diff_or_none(
+    before: &Value,
+    nodes: Option<usize>,
+    after: &Value,
+) -> Option<Vec<PatchOperation>> {
+    let nodes = nodes.unwrap_or_else(|| walk::count(before));
     let limits = PatchLimits::default();
     let (node_cap, walk_cap) = caps(limits, nodes, limits.max_nodes);
     let mut cost = Cost {
@@ -794,14 +821,7 @@ pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<P
     let mut out = Vec::new();
     let mut path = String::new();
     diff_into(before, after, &mut path, &mut out, &mut cost);
-    if cost.over() {
-        out.clear();
-        out.push(PatchOperation::replace(
-            JsonPointer(String::new()),
-            after.clone(),
-        ));
-    }
-    out
+    (!cost.over()).then_some(out)
 }
 
 /// Path bytes `diff` emits before it first compares them with the size of
@@ -839,13 +859,12 @@ impl Cost<'_> {
         self.walk > self.limit || self.grew_past || self.paths_too_big
     }
 
-    fn add(&mut self, path: &str, added: usize, removed: usize, shift: usize) {
+    fn add(&mut self, path: &str, added: usize, removed: usize) {
         self.walk = self
             .walk
             .saturating_add(pointer::depth(path))
             .saturating_add(added)
-            .saturating_add(removed)
-            .saturating_add(shift);
+            .saturating_add(removed);
         // `apply` logs what an operation displaces before it adds the new
         // value's nodes, so this operation's own `removed` is credited too.
         self.added = self.added.saturating_add(added);
@@ -871,22 +890,25 @@ impl Cost<'_> {
 
 /// With `preserve-order`, each `remove` of an object member shifts the later
 /// members, which [`apply`] charges to the walk budget. When that would cost
-/// more than rebuilding the object, the delta replaces it whole (and
+/// more than rebuilding the object, the delta replaces it whole (`None`; and
 /// [`diff`] replaces the whole document when the delta as a whole would cost
 /// more than the default limits allow), so the crate never emits a delta its
 /// own default limits refuse for the state alone (a client's activity
-/// content shares the node ceiling, see the module docs). Always `false`
-/// without `preserve-order` (removal is O(log n) there).
+/// content shares the node ceiling, see the module docs). Otherwise returns
+/// what the removals' shifts will cost, which `diff_into` charges before it
+/// descends into the kept members: the probe here visits fewer nodes than
+/// that, so it is paid for too, and the walk cap stops the descent. Always
+/// `Some(0)` without `preserve-order` (removal is O(log n) there).
 #[cfg(feature = "preserve-order")]
-fn removals_too_costly(
+fn removal_shifts(
     before: &serde_json::Map<String, Value>,
     after: &serde_json::Map<String, Value>,
-) -> bool {
+) -> Option<usize> {
     let removed = before.keys().filter(|k| !after.contains_key(*k)).count();
     let shifts = removed.saturating_mul(engine::remove_shift(before.len()));
     // Cheap exit: rebuilding costs at least one unit per member.
     if shifts <= before.len() {
-        return false;
+        return Some(shifts);
     }
     // Rebuilding costs `before.len()` plus the nodes of `after`: count them
     // only as far as that could still be cheaper than `shifts`.
@@ -894,18 +916,18 @@ fn removals_too_costly(
     for v in after.values() {
         match walk::count_displaced(v, remaining) {
             Some(n) if n < remaining => remaining -= n,
-            _ => return false,
+            _ => return Some(shifts),
         }
     }
-    true
+    None
 }
 
 #[cfg(not(feature = "preserve-order"))]
-fn removals_too_costly(
+fn removal_shifts(
     _: &serde_json::Map<String, Value>,
     _: &serde_json::Map<String, Value>,
-) -> bool {
-    false
+) -> Option<usize> {
+    Some(0)
 }
 
 fn diff_into(
@@ -920,14 +942,17 @@ fn diff_into(
     }
     match (before, after) {
         (Value::Object(b), Value::Object(a)) => {
-            if removals_too_costly(b, a) {
-                cost.add(path, walk::count(after), walk::count(before), 0);
+            let Some(shifts) = removal_shifts(b, a) else {
+                cost.add(path, walk::count(after), walk::count(before));
                 out.push(PatchOperation::replace(
                     JsonPointer(path.clone()),
                     after.clone(),
                 ));
                 return;
-            }
+            };
+            // Each `remove` below shifts the later members: charged here, up
+            // front, so a delta already over the walk cap stops now.
+            cost.walk = cost.walk.saturating_add(shifts);
             let len = path.len();
             for (key, old) in b {
                 if cost.over() {
@@ -937,7 +962,7 @@ fn diff_into(
                 match a.get(key) {
                     Some(new) => diff_into(old, new, path, out, cost),
                     None => {
-                        cost.add(path, 0, walk::count(old), engine::remove_shift(b.len()));
+                        cost.add(path, 0, walk::count(old));
                         // `apply` also credits the member's key text as it
                         // removes it, without walking it.
                         cost.freed = cost.freed.saturating_add(walk::text_units(key.len()));
@@ -954,7 +979,7 @@ fn diff_into(
                     pointer::push_token(path, key);
                     // The member's own key is text the document retains.
                     let key_units = walk::text_units(key.len());
-                    cost.add(path, walk::count(new).saturating_add(key_units), 0, 0);
+                    cost.add(path, walk::count(new).saturating_add(key_units), 0);
                     out.push(PatchOperation::add(JsonPointer(path.clone()), new.clone()));
                     path.truncate(len);
                 }
@@ -962,7 +987,7 @@ fn diff_into(
         }
         _ if before == after => {}
         _ => {
-            cost.add(path, walk::count(after), walk::count(before), 0);
+            cost.add(path, walk::count(after), walk::count(before));
             out.push(PatchOperation::replace(
                 JsonPointer(path.clone()),
                 after.clone(),

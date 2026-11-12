@@ -116,16 +116,16 @@ impl StatePublisher {
         }
         // The budget, once a delta was observed, already holds the baseline's
         // node count: no need to walk it again.
-        let delta = match &self.budget {
-            Some(budget) => patch::diff_counted(&self.baseline, budget.nodes(), next),
-            None => patch::diff(&self.baseline, next),
+        let nodes = self.budget.as_ref().map(PatchBudget::nodes);
+        // A delta the default patch limits would refuse (where `diff` falls
+        // back to a root `replace`, always larger than `next`) is a snapshot.
+        let Some(delta) = patch::diff_or_none(&self.baseline, nodes, next) else {
+            return Choice::Snapshot;
         };
         if delta.is_empty() {
             return Choice::Nothing;
         }
-        // Send whichever is smaller on the wire (ties go to the delta). A delta
-        // the default patch limits would refuse comes back from `diff` as a root
-        // `replace`, which is always larger than `next`: this relies on that.
+        // Send whichever is smaller on the wire (ties go to the delta).
         // `next` is only counted as far as the delta's size.
         let delta_bytes = crate::json::wire_bytes(&delta);
         if crate::json::wire_bytes_upto(next, delta_bytes) < delta_bytes {
