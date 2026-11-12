@@ -325,7 +325,7 @@ fn duplicate_result_id_replaces_in_place() {
     assert_eq!(h.history().as_array().unwrap().len(), 2);
 }
 
-/// pipeline-verify-3: per-run call sets inflated by one run are dropped, not
+/// D25: per-run call sets inflated by one run are dropped, not
 /// cleared at O(capacity), once later runs are small.
 #[test]
 fn oversized_run_call_sets_are_dropped_after_a_small_run() {
@@ -484,7 +484,7 @@ fn a_carrier_from_an_earlier_run_gives_its_id_up() {
     assert!(h.codes().is_empty());
 }
 
-/// pipeline-verify-1 (amendment A): a restored `[Assistant x, Tool x]` history
+/// A restored `[Assistant x, Tool x]` history
 /// indexes the earlier message.
 #[test]
 fn restored_id_clash_keeps_the_index_on_the_earlier_message() {
@@ -992,7 +992,7 @@ fn snapshot_refused_at_work_bound_changes_nothing() {
     assert_eq!(h.r.messages(), &before[..], "history untouched");
 }
 
-/// Security audit S1: a patch's credit never exceeds
+/// D14 (security S1): a patch's credit never exceeds
 /// what the content it frees was charged, so add/remove cycles cannot drain
 /// the charge for content that is still held.
 #[test]
@@ -1055,7 +1055,7 @@ fn add_remove_cycles_never_drain_the_snapshot_charge() {
     assert!(h.codes().is_empty());
 }
 
-/// Security audit S1: what an `add` charges for the slot it fills, the
+/// D14 (security S1): what an `add` charges for the slot it fills, the
 /// matching `remove` (or `move` out) credits back, so a producer that
 /// toggles a member, renames one, or keeps a rolling log holds its charge
 /// steady instead of drifting it up to a false `processing.limit`.
@@ -1296,11 +1296,14 @@ fn run_ids_stay_the_history_tail_after_dropping_a_duplicate() {
 #[test]
 fn remembered_delta_targets_follow_moves_and_drops() {
     let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "x"}));
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "x"}));
     h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "a"}));
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "1"}));
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "2"}));
     assert!(h.r.hot_message.is_some());
-    // Reordered by a snapshot: `a` moves to position 1.
+    // Moved by a snapshot: `x` is dropped, so `a` moves from position 1 to
+    // 0, and `b` is appended after it.
     h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
         {"id": "b", "role": "user", "content": "u"},
         {"id": "a", "role": "assistant", "content": "12"},
@@ -1308,6 +1311,13 @@ fn remembered_delta_targets_follow_moves_and_drops() {
     assert!(h.r.hot_message.is_none());
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "3"}));
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "4"}));
+    assert_eq!(
+        h.history(),
+        json!([
+            {"id": "a", "role": "assistant", "content": "1234"},
+            {"id": "b", "role": "user", "content": "u"},
+        ])
+    );
     // Dropped by a snapshot: the next delta has no target.
     h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
         {"id": "b", "role": "user", "content": "u"},
