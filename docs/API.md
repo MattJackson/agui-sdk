@@ -213,8 +213,9 @@ pipeline, codec) except the outcomes listed at the end of this section. It is op
 - `message()`: human text with no payload values and no secrets.
 - `pointer()`: the JSON pointer of the offending value, for validation errors.
 - `http_status()` and `retry_after()` for pre-stream HTTP failures.
-- `is_retryable()`: only failures before response headers (connect, 429,
-  502, 503, 504). It implies `!run_started()`.
+- `is_retryable()`: only failures before response headers (connect,
+  including a TCP, proxy or TLS-handshake timeout; 429, 502, 503, 504).
+  Response, idle and total timeouts are not. It implies `!run_started()`.
 - `run_started()` and, with `client`, `partial()`/`into_partial()`: the
   `RunReport` of everything delivered before the failure (LIFE-19, TRN-11).
 - `source()` reaches the underlying cause. No third-party error type appears

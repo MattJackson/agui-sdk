@@ -126,7 +126,9 @@ fn request_error(error: hyper_util::client::legacy::Error) -> (Error, bool) {
     while let Some(e) = source {
         if e.is::<ConnectTimeout>() {
             return (
-                Error::new(ErrorCode::Timeout, e.to_string()).with_source(error),
+                Error::new(ErrorCode::Timeout, e.to_string())
+                    .with_source(error)
+                    .with_connect_phase(),
                 true,
             );
         }

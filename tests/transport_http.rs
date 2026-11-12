@@ -522,7 +522,8 @@ fn total_timeout_is_enforced_while_streaming() {
             .await
             .unwrap_or_else(|e| panic!("{e}"));
         let transport = build(HttpTransport::builder(server.url("/")).total_timeout(150 * MS));
-        expect_code(transport.open(request()).await, ErrorCode::Timeout);
+        let error = expect_code(transport.open(request()).await, ErrorCode::Timeout);
+        assert!(!error.is_retryable(), "{error}");
     });
 }
 
@@ -543,6 +544,8 @@ fn connect_timeout_covers_the_tls_handshake() {
         let error = expect_code(transport.open(request()).await, ErrorCode::Timeout);
         assert!(started.elapsed() < Duration::from_secs(3), "{error}");
         assert!(error.message().contains("connect"), "{error}");
+        // Nothing was sent: retryable, as the transport's policy treats it.
+        assert!(error.is_retryable(), "{error}");
     });
 }
 
