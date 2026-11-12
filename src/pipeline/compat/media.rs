@@ -287,7 +287,8 @@ fn keep_filename(
     notes: &mut Notes<'_, '_>,
 ) {
     match map.get_mut("metadata") {
-        None => {
+        // A null metadata is absent (D9): the slot is free.
+        None | Some(Value::Null) => {
             let mut metadata = Map::new();
             metadata.insert("filename".to_owned(), filename);
             map.insert("metadata".to_owned(), Value::Object(metadata));
