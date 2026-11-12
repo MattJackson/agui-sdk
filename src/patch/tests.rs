@@ -622,6 +622,52 @@ fn object_removals_are_charged() {
     assert!(e.index <= 4_000_000 * 4 / N + 4, "late: {}", e.index);
 }
 
+/// Adding and removing a transient member of a large object costs what the
+/// removal's shift costs, however often it toggles: releasing the memory of
+/// emptied objects never rebuilds a map on a removal that frees nothing.
+#[cfg(feature = "preserve-order")]
+#[test]
+fn toggling_a_member_never_rebuilds_the_object() {
+    const N: usize = 1_024;
+    const CYCLES: usize = 16;
+    let doc = wide_object(N);
+    let toggle: Vec<Value> = (0..CYCLES)
+        .flat_map(|_| {
+            [
+                json!({"op": "add", "path": "/loading", "value": true}),
+                json!({"op": "remove", "path": "/loading"}),
+            ]
+        })
+        .collect();
+    let toggle = ops(Value::Array(toggle));
+    // Walk budget 4 x 2 x 1,025 = 8,200 units. Each cycle costs its two
+    // pointer tokens plus the removal's shift (1,025 / 4 = 256 units), so
+    // 16 cycles fit with half the budget to spare; rebuilding the map on
+    // each removal (another 1,024 units) would not fit.
+    let mut d = doc.clone();
+    let mut b = PatchBudget::for_document(&d, limits(128, 2, 0));
+    apply(&mut d, &toggle, &mut b).unwrap();
+    assert_eq!(d, doc);
+    // Across patches too: a toggle per patch never triggers a compaction
+    // until as many members have been removed as the document holds.
+    let one = ops(json!([
+        {"op": "add", "path": "/loading", "value": true},
+        {"op": "remove", "path": "/loading"},
+    ]));
+    for _ in 0..N - CYCLES {
+        apply(&mut d, &one, &mut b).unwrap();
+    }
+    assert_eq!(b.removed, N, "no compaction yet");
+    apply(&mut d, &one, &mut b).unwrap();
+    assert_eq!(
+        b.removed,
+        0,
+        "compacted once {} removals passed the size",
+        N + 1
+    );
+    assert_eq!(d, doc);
+}
+
 /// `diff` charges an object's member removals before it descends into the
 /// members it keeps, so once they alone pass the walk cap it stops there
 /// instead of walking (and probing) every deeper level first.

@@ -528,6 +528,10 @@ impl PatchLimits {
 pub struct PatchBudget {
     limits: PatchLimits,
     nodes: usize,
+    /// Object members removed since the document's objects were last
+    /// rebuilt (`preserve-order` releases their memory that way, amortized
+    /// over the removals: see `engine::compaction_due`).
+    removed: usize,
 }
 
 impl PatchBudget {
@@ -538,6 +542,7 @@ impl PatchBudget {
         PatchBudget {
             limits,
             nodes: walk::count(document),
+            removed: 0,
         }
     }
 
@@ -688,8 +693,14 @@ pub(crate) fn apply_measured(
             nodes,
             copied,
             vacated,
+            members_removed,
         } => {
             budget.nodes = nodes;
+            budget.removed = budget.removed.saturating_add(members_removed);
+            if engine::compaction_due(budget.removed, nodes) {
+                engine::compact(document);
+                budget.removed = 0;
+            }
             Ok(Measured { copied, vacated })
         }
         engine::Outcome::Failed { index, reason } => {

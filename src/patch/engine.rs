@@ -317,26 +317,61 @@ fn vec_shrinks(len: usize, capacity: usize) -> bool {
     capacity > 64 && len < capacity / 4
 }
 
-/// Whether removing a member, leaving `len`, rebuilds the object to release
-/// its memory. An `IndexMap` (`preserve-order`) never shrinks on removal and
-/// `serde_json::Map` does not expose its capacity, so the map is rebuilt
-/// each time it falls to a power of two (from 64 up): an object emptied
-/// member by member then holds at most about twice what it would if built
-/// at its size, and the rebuilds sum to O(members removed). Sorted maps free
-/// each node as it goes.
+/// Whether `removed` member removals since the last compaction, in a
+/// document of `nodes` units, make [`compact`] due. An `IndexMap`
+/// (`preserve-order`) never shrinks on removal and `serde_json::Map` does not
+/// expose its capacity, so the applier counts removals per document
+/// ([`PatchBudget`](super::PatchBudget)) and rebuilds every object once they
+/// reach the document's size. The rebuild is O(document) and follows at least
+/// as many removals, so it is amortized O(1) per removal whatever the
+/// removals are (a member added and removed over and over included), and it
+/// is not charged to any patch's walk budget. Since every map was rebuilt at
+/// its size, a map holds at most about twice the members it has held since,
+/// and the members added or removed since then are bounded by the document's
+/// size and the removals still uncounted; so object memory stays within a
+/// small multiple of the node units the ceiling counts. Sorted maps free each
+/// node as it goes, so without `preserve-order` nothing is due.
 #[cfg(feature = "preserve-order")]
-fn map_compacts(len: usize) -> bool {
-    len >= 64 && len.is_power_of_two()
+pub(super) fn compaction_due(removed: usize, nodes: usize) -> bool {
+    removed >= nodes.max(64)
 }
 
 #[cfg(not(feature = "preserve-order"))]
-fn map_compacts(_len: usize) -> bool {
+pub(super) fn compaction_due(_removed: usize, _nodes: usize) -> bool {
     false
 }
 
-/// Rebuilds `m` at its current size, keeping member order.
-fn map_compact(m: &mut Map<String, Value>) {
-    *m = mem::take(m).into_iter().collect();
+/// Rebuilds every object in `doc` at its current size, keeping member order,
+/// so none keeps capacity its removals left behind. Iterative, with one
+/// iterator per level on the heap, so a document of any depth is safe.
+pub(super) fn compact(doc: &mut Value) {
+    enum Level<'a> {
+        Members(serde_json::map::ValuesMut<'a>),
+        Elements(std::slice::IterMut<'a, Value>),
+    }
+    fn open(v: &mut Value) -> Option<Level<'_>> {
+        match v {
+            Value::Object(m) => {
+                *m = mem::take(m).into_iter().collect();
+                Some(Level::Members(m.values_mut()))
+            }
+            Value::Array(a) => Some(Level::Elements(a.iter_mut())),
+            _ => None,
+        }
+    }
+    let mut stack: Vec<Level<'_>> = open(doc).into_iter().collect();
+    while let Some(level) = stack.last_mut() {
+        let next = match level {
+            Level::Members(it) => it.next(),
+            Level::Elements(it) => it.next(),
+        };
+        match next {
+            Some(child) => stack.extend(open(child)),
+            None => {
+                stack.pop();
+            }
+        }
+    }
 }
 
 /// Re-inserts a member at its original position (sorted maps place it by key).
@@ -363,6 +398,9 @@ pub(super) enum Outcome {
         /// index, bytes): what [`crate::json::slot_bytes`] charged for each
         /// at the length it was vacated at (empty unless measured).
         vacated: Vec<(usize, usize)>,
+        /// Object members `remove` and `move` took out (see
+        /// [`compaction_due`]).
+        members_removed: usize,
     },
     Failed {
         index: usize,
@@ -412,6 +450,8 @@ pub(super) struct Engine<'p, 'd> {
     vacated: Vec<(usize, usize)>,
     /// Index of the operation running.
     op: usize,
+    /// Object members removed so far (see [`compaction_due`]).
+    members_removed: usize,
 }
 
 impl<'p, 'd> Engine<'p, 'd> {
@@ -435,6 +475,7 @@ impl<'p, 'd> Engine<'p, 'd> {
             copied: 0,
             vacated: Vec::new(),
             op: 0,
+            members_removed: 0,
         }
     }
 
@@ -485,6 +526,7 @@ impl<'p, 'd> Engine<'p, 'd> {
             nodes: self.nodes,
             copied: self.copied,
             vacated: self.vacated,
+            members_removed: self.members_removed,
         }
     }
 
@@ -662,14 +704,8 @@ impl<'p, 'd> Engine<'p, 'd> {
                     return Err(Reason::PathNotFound);
                 }
                 charge_to(&mut self.walked, self.walk_cap, remove_shift(m.len()))?;
-                let compact = map_compacts(m.len() - 1);
-                if compact {
-                    charge_to(&mut self.walked, self.walk_cap, m.len() - 1)?;
-                }
                 let (pos, key, v) = map_remove(m, &name).ok_or(Reason::PathNotFound)?;
-                if compact {
-                    map_compact(m);
-                }
+                self.members_removed += 1;
                 if self.measure_copies {
                     // What placing `key` back would charge: the slot it left.
                     let freed = crate::json::member_slot_bytes(m.len(), key.len());
