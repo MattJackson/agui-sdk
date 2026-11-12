@@ -251,6 +251,15 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         self.items.get(id).map(|entry| &entry.owner)
     }
 
+    /// The owner of `id` when one is known: not for an unseen item, nor for
+    /// an adoptable one (see [`Entry::adoptable`]).
+    fn known_owner(&self, id: &K) -> Option<&Owner> {
+        self.items
+            .get(id)
+            .filter(|entry| !entry.adoptable)
+            .map(|entry| &entry.owner)
+    }
+
     /// Opens `id` under `owner`; a closed item reopens under the same owner.
     /// A new entry is charged `id_bytes` for the id's heap (zero when another
     /// table keeps the same `Arc` and charges it).
@@ -546,6 +555,29 @@ impl ConsumerVerifier {
 
     pub(crate) fn set_expected(&mut self, thread_id: ThreadId, run_id: RunId) {
         self.state.expected = Some((thread_id, run_id));
+    }
+
+    /// The owner of the item an untagged explicit continuation names
+    /// (`*_CONTENT`, `*_END`, `TOOL_CALL_ARGS`, `TOOL_CALL_RESULT`), as its
+    /// opener attributed it: an untagged continuation continues whatever the
+    /// opener owns (SUB-20). `None` for any other event, a tagged one, or an
+    /// item whose owner is not known.
+    pub(crate) fn opener_owner(&self, event: &Event) -> Option<Owner> {
+        if event.subagent_run_id().is_some() {
+            return None;
+        }
+        let s = &self.state;
+        match event {
+            Event::TextMessageContent(e) => s.text.known_owner(&e.message_id),
+            Event::TextMessageEnd(e) => s.text.known_owner(&e.message_id),
+            Event::ToolCallArgs(e) => s.tools.known_owner(&e.tool_call_id),
+            Event::ToolCallEnd(e) => s.tools.known_owner(&e.tool_call_id),
+            Event::ToolCallResult(e) => s.tools.known_owner(&e.tool_call_id),
+            Event::ReasoningMessageContent(e) => s.reasoning.known_owner(&e.message_id),
+            Event::ReasoningMessageEnd(e) => s.reasoning.known_owner(&e.message_id),
+            _ => None,
+        }
+        .cloned()
     }
 
     /// Estimated resident bytes of what the verifier keeps under the ids

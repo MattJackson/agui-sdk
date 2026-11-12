@@ -774,7 +774,12 @@ impl Processor {
         out: &mut Vec<Processed>,
     ) -> Result<()> {
         self.scratch.clear();
-        self.chunks.push(event, &mut self.scratch)?;
+        let verifier = &self.verifier;
+        self.chunks.push_attributed(
+            event,
+            |explicit| verifier.opener_owner(explicit),
+            &mut self.scratch,
+        )?;
         for event in self.scratch.drain(..) {
             self.verifier.observe(&event)?;
             // What the verifier keeps under peer-chosen ids is charged to

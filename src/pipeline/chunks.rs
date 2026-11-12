@@ -34,8 +34,14 @@
 //!
 //! An explicit event's own lane is the lane assembling the item it names when
 //! one is (an explicit event naming an assembling id ends the shorthand,
-//! STRM-10), and otherwise the lane of its `subagentRunId` (the parent's when
-//! untagged).
+//! STRM-10), and otherwise the lane of its `subagentRunId`. An untagged
+//! continuation of an item opened earlier continues whatever its opener owns
+//! (SUB-20), so its lane is the opener's owner's: a [`Processor`] takes that
+//! owner from its verifier. Any other untagged event, and every untagged
+//! event given to a standalone [`ChunkExpander::push`], which does not track
+//! explicitly opened items, is in the parent's lane.
+//!
+//! [`Processor`]: crate::pipeline::Processor
 //!
 //! What a chunk carries is moved onto the synthesized events: deltas, opener
 //! fields, metadata (on every event synthesized from the chunk), `rawEvent`
@@ -289,6 +295,19 @@ impl ChunkExpander {
     /// and [`ErrorCode::Ownership`] for a chunk
     /// whose `subagentRunId` disagrees with the lane assembling its item.
     pub fn push(&mut self, event: Event, out: &mut Vec<Event>) -> Result<()> {
+        self.push_attributed(event, |_| None, out)
+    }
+
+    /// [`push`](Self::push), told the owner of the item an untagged explicit
+    /// continuation names (`opener`, asked only when a chunk stream is
+    /// pending and no lane is assembling the item): that event belongs to
+    /// its opener's lane, not the parent's (SUB-20).
+    pub(crate) fn push_attributed(
+        &mut self,
+        event: Event,
+        opener: impl FnOnce(&Event) -> Option<Owner>,
+        out: &mut Vec<Event>,
+    ) -> Result<()> {
         let explicit = match event {
             Event::TextMessageChunk(text) => return self.text_chunk(text, out),
             Event::ToolCallChunk(call) => return self.tool_chunk(call, out),
@@ -298,7 +317,7 @@ impl ChunkExpander {
         match Reach::of(&explicit) {
             Reach::Everything => self.close_all(out),
             Reach::Subagent(id) => self.close_lane(&Some(id), out),
-            Reach::OwnLane => self.close_own_lane(&explicit, out),
+            Reach::OwnLane => self.close_own_lane(&explicit, opener, out),
             Reach::Nothing => {}
         }
         out.push(explicit);
@@ -411,7 +430,12 @@ impl ChunkExpander {
     }
 
     /// The lane an explicit (non-chunk) event belongs to, for closing.
-    fn close_own_lane(&mut self, event: &Event, out: &mut Vec<Event>) {
+    fn close_own_lane(
+        &mut self,
+        event: &Event,
+        opener: impl FnOnce(&Event) -> Option<Owner>,
+        out: &mut Vec<Event>,
+    ) {
         if self.is_idle() {
             return;
         }
@@ -431,7 +455,10 @@ impl ChunkExpander {
         let assembling = named.and_then(|(kind, id)| self.by_item[kind.index()].get(id).cloned());
         let owner = match assembling {
             Some(owner) => owner,
-            None => event.subagent_run_id().cloned(),
+            None => match event.subagent_run_id() {
+                Some(tag) => Some(tag.clone()),
+                None => opener(event).unwrap_or_default(),
+            },
         };
         self.close_lane(&owner, out);
     }
