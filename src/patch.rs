@@ -859,13 +859,12 @@ impl Cost<'_> {
         self.walk > self.limit || self.grew_past || self.paths_too_big
     }
 
-    fn add(&mut self, path: &str, added: usize, removed: usize, shift: usize) {
+    fn add(&mut self, path: &str, added: usize, removed: usize) {
         self.walk = self
             .walk
             .saturating_add(pointer::depth(path))
             .saturating_add(added)
-            .saturating_add(removed)
-            .saturating_add(shift);
+            .saturating_add(removed);
         // `apply` logs what an operation displaces before it adds the new
         // value's nodes, so this operation's own `removed` is credited too.
         self.added = self.added.saturating_add(added);
@@ -944,7 +943,7 @@ fn diff_into(
     match (before, after) {
         (Value::Object(b), Value::Object(a)) => {
             let Some(shifts) = removal_shifts(b, a) else {
-                cost.add(path, walk::count(after), walk::count(before), 0);
+                cost.add(path, walk::count(after), walk::count(before));
                 out.push(PatchOperation::replace(
                     JsonPointer(path.clone()),
                     after.clone(),
@@ -963,7 +962,7 @@ fn diff_into(
                 match a.get(key) {
                     Some(new) => diff_into(old, new, path, out, cost),
                     None => {
-                        cost.add(path, 0, walk::count(old), 0);
+                        cost.add(path, 0, walk::count(old));
                         // `apply` also credits the member's key text as it
                         // removes it, without walking it.
                         cost.freed = cost.freed.saturating_add(walk::text_units(key.len()));
@@ -980,7 +979,7 @@ fn diff_into(
                     pointer::push_token(path, key);
                     // The member's own key is text the document retains.
                     let key_units = walk::text_units(key.len());
-                    cost.add(path, walk::count(new).saturating_add(key_units), 0, 0);
+                    cost.add(path, walk::count(new).saturating_add(key_units), 0);
                     out.push(PatchOperation::add(JsonPointer(path.clone()), new.clone()));
                     path.truncate(len);
                 }
@@ -988,7 +987,7 @@ fn diff_into(
         }
         _ if before == after => {}
         _ => {
-            cost.add(path, walk::count(after), walk::count(before), 0);
+            cost.add(path, walk::count(after), walk::count(before));
             out.push(PatchOperation::replace(
                 JsonPointer(path.clone()),
                 after.clone(),
