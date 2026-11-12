@@ -572,11 +572,9 @@ fn array_shifts_are_charged() {
     assert_eq!(e.reason, PatchErrorReason::BudgetExceeded);
     // walk_cap = 4 x 1M; each op moves N elements = N / 16 units.
     let walk_cap = 4_000_000;
-    assert!(
-        e.index <= 2 * walk_cap * 16 / N + 4,
-        "refused too late: {}",
-        e.index
-    );
+    let at = walk_cap * 16 / N;
+    assert!(e.index <= at + 4, "refused too late: {}", e.index);
+    assert!(e.index + 4 >= at, "refused too early: {}", e.index);
 }
 
 #[test]
@@ -621,7 +619,7 @@ fn object_removals_are_charged() {
         .collect();
     let e = run(&doc, &ops(Value::Array(p))).unwrap_err();
     assert_eq!(e.reason, PatchErrorReason::BudgetExceeded);
-    assert!(e.index <= 2 * 4_000_000 * 16 / N + 4, "late: {}", e.index);
+    assert!(e.index <= 4_000_000 * 4 / N + 4, "late: {}", e.index);
 }
 
 /// `diff` charges an object's member removals before it descends into the
