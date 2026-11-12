@@ -611,6 +611,12 @@ pub(crate) struct Dec {
     /// Occurrence ranges of merged message fields ([`Src::Many`]), used as
     /// a stack: each merge pushes its ranges and truncates them when done.
     spans: Vec<[u32; 2]>,
+    /// The decode's entry budget, and what is left of it for wire entries:
+    /// every `Struct` entry read and every merged occurrence held, before
+    /// duplicates collapse, so the scratch above stays within the budget
+    /// whatever the frame repeats.
+    raw_max: usize,
+    raw_left: usize,
 }
 
 /// The JSON-schema object a decoded wire message becomes, from the generated
@@ -703,7 +709,19 @@ impl Dec {
             sort: Vec::new(),
             defs: DefCache::new(),
             spans: Vec::new(),
+            raw_max: usize::MAX,
+            raw_left: usize::MAX,
         }
+    }
+
+    /// Charges one wire entry to the decode's budget.
+    #[inline]
+    fn charge_raw(&mut self) -> Result<()> {
+        if self.raw_left == 0 {
+            return Err(Error::EntryLimit { max: self.raw_max });
+        }
+        self.raw_left -= 1;
+        Ok(())
     }
 
     /// Decodes an `Event` envelope into a `serde_json::Value` (`None` unless
@@ -725,7 +743,9 @@ impl Dec {
 
     /// Decodes an `Event` envelope, producing at most `max_entries`
     /// container entries (object members plus array elements; see
-    /// [`Budget`]); [`Error::EntryLimit`] beyond that.
+    /// [`Budget`]); [`Error::EntryLimit`] beyond that, or when the wire holds
+    /// more than `max_entries` `Struct` entries and merged occurrences, which
+    /// the decoder's scratch holds before duplicates collapse.
     pub(crate) fn event<O: Out>(
         &mut self,
         buf: &[u8],
@@ -736,6 +756,8 @@ impl Dec {
             return Err(Error::InputTooLarge);
         }
         self.spans.clear();
+        self.raw_max = max_entries;
+        self.raw_left = max_entries;
         let mut budget = Budget::new(out, max_entries);
         let r = self.event_in(buf, &mut budget);
         let over = budget.over;
@@ -777,6 +799,7 @@ impl Dec {
         while let Some(f) = r.next(&self.spans)? {
             // Empty occurrences contribute nothing to a merge.
             if f.number == o.last.number && f.wt == LEN && f.end > f.start && f.start >= o.from {
+                self.charge_raw()?;
                 self.spans.push([f.start as u32, f.end as u32]);
             }
         }
@@ -1283,6 +1306,7 @@ impl Dec {
                 }
             }
             utf8(&root[ks..ke])?;
+            self.charge_raw()?;
             self.ents
                 .push([ks as u32, ke as u32, f.start as u32, f.end as u32]);
             if self.ents.len() - base > SORTED_DUP_CHECK_ABOVE {
@@ -1468,6 +1492,69 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use crate::proto::wire::put_varint;
+
+    /// A `STATE_SNAPSHOT` envelope whose `snapshot` is the `Value` bytes `v`.
+    fn snapshot_of(v: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x12];
+        put_varint(&mut body, v.len() as u64);
+        body.extend_from_slice(v);
+        let mut env = vec![0x3a];
+        put_varint(&mut env, body.len() as u64);
+        env.extend_from_slice(&body);
+        env
+    }
+
+    /// A `Value` holding `struct_value` with body `s`.
+    fn struct_value(s: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x2a];
+        put_varint(&mut v, s.len() as u64);
+        v.extend_from_slice(s);
+        v
+    }
+
+    /// The entry budget counts wire entries, not just the ones that survive
+    /// duplicate collapsing: a frame of many repeats of one key is refused
+    /// before its scratch grows with the frame.
+    #[test]
+    fn duplicate_struct_entries_are_charged_to_the_entry_budget() {
+        let n = 200_000;
+        let bytes = snapshot_of(&struct_value(&[0x0a, 0x00].repeat(n)));
+        let mut d = Dec::new();
+        let (t, v) = d.event_value(&bytes, usize::MAX).unwrap();
+        assert!(matches!(t, Transcoded::Event("STATE_SNAPSHOT")));
+        assert_eq!(v.unwrap()["snapshot"], serde_json::json!({"": null}));
+        let mut d = Dec::new();
+        let e = d.event_value(&bytes, 1000).unwrap_err();
+        assert_eq!(e, Error::EntryLimit { max: 1000 });
+        assert!(
+            d.ents.capacity() < 4096,
+            "{} entries held",
+            d.ents.capacity()
+        );
+        assert!(d.sort.capacity() < 4096, "{} sort slots", d.sort.capacity());
+    }
+
+    /// Merged occurrences of a message field are charged the same way: each
+    /// is a range held while the merge is decoded.
+    #[test]
+    fn merged_occurrences_are_charged_to_the_entry_budget() {
+        let n = 200_000;
+        // `struct_value` repeated, each occurrence one unknown field.
+        let value = [0x2a, 0x02, 0x10, 0x01].repeat(n);
+        let bytes = snapshot_of(&value);
+        let mut d = Dec::new();
+        let (_, v) = d.event_value(&bytes, usize::MAX).unwrap();
+        assert_eq!(v.unwrap()["snapshot"], serde_json::json!({}));
+        let mut d = Dec::new();
+        let e = d.event_value(&bytes, 1000).unwrap_err();
+        assert_eq!(e, Error::EntryLimit { max: 1000 });
+        assert!(
+            d.spans.capacity() < 4096,
+            "{} spans held",
+            d.spans.capacity()
+        );
+    }
 
     /// A payload of exactly `u32::MAX` bytes is refused: an empty key whose
     /// field ends the message would start at `u32::MAX`, the dropped-entry
