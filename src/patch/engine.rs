@@ -6,8 +6,9 @@
 //! sees the document exactly as it was right after the matching forward
 //! step, so every parent pointer still resolves, even after `move`s shifted
 //! array indices. On success the log is dropped. Entries borrow their pointer
-//! text from the operations, so logging allocates nothing per operation, and
-//! the first entry is stored inline: a one-operation patch allocates no log.
+//! text from the operations, so logging allocates nothing per operation
+//! except a boxed entry per `move`, and the first entry is stored inline: a
+//! one-operation patch other than a `move` allocates no log.
 
 use std::mem;
 
@@ -412,12 +413,14 @@ impl<'p, 'd> Engine<'p, 'd> {
         ops: &'p [PatchOperation],
         accept: impl FnOnce(&Value) -> bool,
     ) -> Outcome {
-        // Each operation logs at most one entry and the first is inline: one
-        // allocation for the rest instead of doubling growth (capped, so a
-        // long patch that fails early never reserves more than it used).
+        // Each logging operation pushes one entry and the first is inline:
+        // one allocation for the rest instead of doubling growth. Capped, so
+        // a long patch that fails early reserves at most LOG_RESERVE entries;
+        // `test`s, which log nothing, reserve nothing.
+        let logging = ops.iter().filter(|o| logs_undo(o)).count();
         self.log
             .rest
-            .reserve_exact(ops.len().saturating_sub(1).min(LOG_RESERVE));
+            .reserve_exact(logging.saturating_sub(1).min(LOG_RESERVE));
         for (index, op) in ops.iter().enumerate() {
             self.op = index;
             if let Err(reason) = self.run_op(op) {
