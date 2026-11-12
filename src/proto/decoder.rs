@@ -241,10 +241,20 @@ impl<'s> TextOut<'s> {
         }
     }
     fn quoted(&mut self, v: &str) {
+        self.s.reserve(v.len() + 2);
         self.s.push('"');
         let b = v.as_bytes();
+        if !needs_escaping(b) {
+            // Most text: one copy.
+            self.s.push_str(v);
+            self.s.push('"');
+            return;
+        }
         let mut run = 0;
-        for (i, &c) in b.iter().enumerate() {
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            i += 1;
             let esc: Option<&str> = match c {
                 b'"' => Some("\\\""),
                 b'\\' => Some("\\\\"),
@@ -256,7 +266,7 @@ impl<'s> TextOut<'s> {
                 c if c < 0x20 => None,
                 _ => continue,
             };
-            self.s.push_str(&v[run..i]);
+            self.s.push_str(&v[run..i - 1]);
             match esc {
                 Some(e) => self.s.push_str(e),
                 None => {
@@ -266,11 +276,42 @@ impl<'s> TextOut<'s> {
                     self.s.push(HEX[(c & 15) as usize] as char);
                 }
             }
-            run = i + 1;
+            run = i;
         }
         self.s.push_str(&v[run..]);
         self.s.push('"');
     }
+}
+
+/// Whether `text` holds a byte [`TextOut::quoted`] escapes, eight bytes at
+/// a time (the tail padded with spaces, which need none).
+#[inline]
+fn needs_escaping(text: &[u8]) -> bool {
+    let mut words = text.chunks_exact(8);
+    for chunk in &mut words {
+        let mut word = [0; 8];
+        word.copy_from_slice(chunk);
+        if escapes_any(u64::from_le_bytes(word)) {
+            return true;
+        }
+    }
+    let tail = words.remainder();
+    let mut word = [b' '; 8];
+    word[..tail.len()].copy_from_slice(tail);
+    escapes_any(u64::from_le_bytes(word))
+}
+
+/// Whether any byte of `word` is one [`TextOut::quoted`] escapes: a control
+/// character, `"` or `\\` (exact, by the usual bytewise-zero tests).
+#[inline]
+fn escapes_any(word: u64) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let zero_in = |x: u64| x.wrapping_sub(ONES) & !x & HIGH != 0;
+    let below_space = word.wrapping_sub(ONES * 0x20) & !word & HIGH != 0;
+    below_space
+        || zero_in(word ^ (ONES * u64::from(b'"')))
+        || zero_in(word ^ (ONES * u64::from(b'\\')))
 }
 
 impl Out for TextOut<'_> {
@@ -1426,6 +1467,55 @@ mod tests {
         let mut s = String::new();
         write_js_number(&mut s, x);
         s
+    }
+
+    /// The word-at-a-time scan in `TextOut::quoted` escapes exactly what the
+    /// byte-at-a-time one does (and JSON's own escaper), wherever the
+    /// special byte falls in a word, for every ASCII byte and around
+    /// multi-byte characters.
+    #[test]
+    fn quoted_escapes_what_bytewise_escaping_does() {
+        fn bytewise(v: &str) -> String {
+            let mut out = String::from("\"");
+            for c in v.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\u{8}' => out.push_str("\\b"),
+                    '\u{c}' => out.push_str("\\f"),
+                    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+        let quote = |v: &str| {
+            let mut s = String::new();
+            TextOut::new(&mut s).quoted(v);
+            s
+        };
+        for byte in 0_u8..0x80 {
+            let c = char::from(byte);
+            for len in 0..20 {
+                for at in 0..=len {
+                    let mut v: String = "aé€".chars().cycle().take(len).collect();
+                    let at = v.char_indices().nth(at).map_or(v.len(), |(i, _)| i);
+                    v.insert(at, c);
+                    let expected = bytewise(&v);
+                    assert_eq!(quote(&v), expected, "{v:?}");
+                    assert_eq!(serde_json::to_string(&v).unwrap(), expected, "{v:?}");
+                }
+            }
+        }
+        assert_eq!(quote(""), "\"\"");
+        assert_eq!(
+            quote("plain ascii text, no escapes"),
+            "\"plain ascii text, no escapes\""
+        );
     }
 
     fn round_trip(json: &str) -> Value {
