@@ -133,3 +133,43 @@ fn the_client_adds_no_allocation_per_event() {
         );
     }
 }
+
+/// A `RUN_FINISHED` result is held once by the driver while the run is
+/// open, not once for the run's terminal and again for the requested run's.
+#[test]
+fn a_run_result_is_held_once() {
+    if !alloc::installed() {
+        eprintln!("counting allocator not installed; skipping");
+        return;
+    }
+    const BIG: usize = 1 << 20;
+    let events = vec![
+        json!({"type": "RUN_STARTED", "threadId": "t1", "runId": "last"}),
+        json!({"type": "RUN_FINISHED", "threadId": "t1", "runId": "last", "result": "x".repeat(BIG)}),
+    ];
+    let client = AgentClient::with_transport(InMemory(Arc::new(frames(&events))))
+        .diagnostic_sink(NullSink)
+        .build()
+        .unwrap();
+    let request = || RunRequest::new().thread_id("t1").run_id("last");
+    block_on(client.run(request()).into_future()).unwrap();
+    let (handle, stats) = alloc::measure(|| {
+        let mut handle = client.run(request());
+        loop {
+            let update = block_on(handle.next()).unwrap().unwrap();
+            if update.event.event_type() == agui_sdk::event::EventType::RunFinished {
+                break;
+            }
+        }
+        handle
+    });
+    // The update (and its event) are dropped: what is live is the driver's.
+    let held = stats.live();
+    assert!(
+        held < (BIG + BIG / 2) as i64,
+        "{held} bytes held for a {BIG}-byte result"
+    );
+    let report = block_on(handle.into_future()).unwrap();
+    assert_eq!(report.status, report.requested_status);
+    assert!(report.status.is_success());
+}

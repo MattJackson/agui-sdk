@@ -178,10 +178,8 @@ pub(in crate::client) struct RunDriver {
     ready: VecDeque<Processed>,
     started: bool,
     last_ids: Option<(ThreadId, RunId)>,
-    terminal: Option<RunStatus>,
-    /// How the requested run ended, kept when a later run on the same
-    /// stream starts (`terminal` follows the last run).
-    requested_terminal: Option<RunStatus>,
+    /// The last run's terminal, and the requested run's.
+    terminals: Terminals,
     state_override: Option<Value>,
     messages_override: Option<Vec<Message>>,
     report: Option<RunReport>,
@@ -235,8 +233,7 @@ impl RunDriver {
             ready: VecDeque::new(),
             started: false,
             last_ids: None,
-            terminal: None,
-            requested_terminal: None,
+            terminals: Terminals::default(),
             state_override: None,
             messages_override: None,
             report: None,
@@ -391,7 +388,7 @@ impl RunDriver {
     /// delivered (`None` here) and the run concludes as that terminal says,
     /// without reading the transport any further.
     fn cancelled_now(&mut self) -> Option<Option<Result<RunUpdate>>> {
-        if self.terminal.is_none() {
+        if self.terminals.last.is_none() {
             return Some(Some(Err(self.conclude_err(cancelled_error()))));
         }
         if !self.ready.is_empty() {
@@ -527,8 +524,7 @@ impl RunDriver {
                 &self.run_id,
                 &mut self.started,
                 &mut self.last_ids,
-                &mut self.terminal,
-                &mut self.requested_terminal,
+                &mut self.terminals,
             );
             self.ready.push_back(processed);
         }
@@ -592,7 +588,7 @@ impl RunDriver {
             Some(Err(err)) => return Some(self.conclude_err(err)),
             None => Termination::Truncated,
         };
-        if termination == Termination::Complete && self.terminal.is_some() {
+        if termination == Termination::Complete && self.terminals.last.is_some() {
             self.conclude(Ok(()))
         } else {
             Some(self.conclude_err(Error::new(
@@ -684,7 +680,8 @@ impl RunDriver {
                     .with_code(ErrorCode::Truncated.as_str()),
             ),
         };
-        let status = self.terminal.take().unwrap_or_else(unterminated);
+        let requested_is_last = self.terminals.last_is_requested;
+        let status = self.terminals.last.take().unwrap_or_else(unterminated);
         let (thread_id, run_id) = self
             .last_ids
             .take()
@@ -692,7 +689,10 @@ impl RunDriver {
         // The requested run's own ending: an earlier run on a multi-run
         // stream keeps its verdict, so a failed requested run is never
         // reported as a success because a later run succeeded (LIFE-23).
-        let requested_status = match self.requested_terminal.take() {
+        // Held once while the run was open; copied only here, when both
+        // report fields need it.
+        let requested_status = match self.terminals.requested.take() {
+            _ if requested_is_last => status.clone(),
             Some(requested) => requested,
             None if run_id == self.run_id => status.clone(),
             None => unterminated(),
@@ -738,14 +738,14 @@ fn note(
     requested: &RunId,
     started: &mut bool,
     last_ids: &mut Option<(ThreadId, RunId)>,
-    terminal: &mut Option<RunStatus>,
-    requested_terminal: &mut Option<RunStatus>,
+    terminals: &mut Terminals,
 ) {
     let status = match event {
         Event::RunStarted(e) => {
             *started = true;
             *last_ids = Some((e.thread_id.clone(), e.run_id.clone()));
-            *terminal = None;
+            terminals.keep_requested();
+            terminals.last = None;
             return;
         }
         Event::RunFinished(e) => {
@@ -761,10 +761,35 @@ fn note(
     };
     // A stream that opens with RUN_ERROR is the requested run failing
     // before it started (LIFE-03).
-    if last_ids.as_ref().map_or(true, |(_, run)| run == requested) {
-        *requested_terminal = Some(status.clone());
+    let is_requested = last_ids.as_ref().map_or(true, |(_, run)| run == requested);
+    terminals.keep_requested();
+    if is_requested {
+        terminals.requested = None;
     }
-    *terminal = Some(status);
+    terminals.last = Some(status);
+    terminals.last_is_requested = is_requested;
+}
+
+/// How the last run and the requested run ended. A status (whose `result`
+/// may be large) is held once: when the last run is the requested one,
+/// `last` stands for both.
+#[derive(Default)]
+struct Terminals {
+    /// The last run's terminal; `None` while it runs.
+    last: Option<RunStatus>,
+    /// The requested run's terminal, when it is not `last`.
+    requested: Option<RunStatus>,
+    /// `last` is the requested run's terminal.
+    last_is_requested: bool,
+}
+
+impl Terminals {
+    /// `last` is about to be replaced: keep it if it is the requested run's.
+    fn keep_requested(&mut self) {
+        if std::mem::take(&mut self.last_is_requested) {
+            self.requested = self.last.take();
+        }
+    }
 }
 
 /// `on_finish` to every observer; true if one panicked.
