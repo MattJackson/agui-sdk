@@ -171,7 +171,11 @@ fn block<F: std::future::Future>(future: F) -> F::Output {
     futures_executor::block_on(future)
 }
 
-/// covers: INTR-16, INTR-17
+/// covers: INTR-16
+///
+/// One run on a fresh runner, so this cannot see usage carried over from an
+/// earlier run; INTR-17 is covered by the two-run LIFE-36 test in
+/// `tests/lifecycle_usage_producer.rs`.
 #[test]
 fn a_resuming_run_keeps_the_thread_and_reports_only_its_own_usage() {
     let store = Arc::new(MemoryInterruptStore::default());
