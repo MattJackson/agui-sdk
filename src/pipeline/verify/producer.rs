@@ -473,8 +473,9 @@ struct ProducerState {
     open_explicit: usize,
     /// Explicitly open items per subagent owner (STRM-26).
     open_owned: HashMap<SubagentRunId, usize>,
-    /// Step name → (owner, seq) of each open step of that name.
-    steps: HashMap<String, Vec<(Owner, u64)>>,
+    /// Step name → owner → seq of each open step of that name, indexed by
+    /// owner so many owners of one name cost O(1) each.
+    steps: HashMap<String, HashMap<Owner, u64>>,
     /// Activity message → owner.
     activity: HashMap<MessageId, Owner>,
     subagents: HashMap<SubagentRunId, Sub>,
@@ -1004,7 +1005,7 @@ impl ProducerState {
             }
         }
         for (name, holders) in &self.steps {
-            for (owner, _) in holders {
+            for owner in holders.keys() {
                 open.push(format!(
                     "step '{name}' of {}",
                     owner_text(owner),
@@ -2189,7 +2190,7 @@ impl ProducerState {
 
     fn step_started(&mut self, name: &str, tag: &Owner) -> Verdict {
         if let Some(holders) = self.steps.get(name) {
-            if holders.iter().any(|(owner, _)| owner == tag) {
+            if holders.contains_key(tag) {
                 return refuse(
                     ProducerRule::AlreadyOpen,
                     format!(
@@ -2204,9 +2205,12 @@ impl ProducerState {
         self.close_lane(tag);
         let seq = self.next_seq();
         match self.steps.get_mut(name) {
-            Some(holders) => holders.push((tag.clone(), seq)),
+            Some(holders) => {
+                holders.insert(tag.clone(), seq);
+            }
             None => {
-                self.steps.insert(name.to_owned(), vec![(tag.clone(), seq)]);
+                self.steps
+                    .insert(name.to_owned(), HashMap::from([(tag.clone(), seq)]));
             }
         }
         self.opened_explicit(tag);
@@ -2215,9 +2219,10 @@ impl ProducerState {
 
     fn step_finished(&mut self, name: &str, tag: &Owner) -> Verdict {
         let holders = self.steps.get(name);
-        let position = holders.and_then(|h| h.iter().position(|(owner, _)| owner == tag));
-        let Some(position) = position else {
-            return match holders.and_then(|h| h.first()) {
+        if !holders.is_some_and(|h| h.contains_key(tag)) {
+            // Error path only: name the earliest holder.
+            let first = holders.and_then(|h| h.iter().min_by_key(|(_, seq)| **seq));
+            return match first {
                 Some((owner, _)) => refuse(
                     ProducerRule::OwnerMismatch,
                     format!(
@@ -2236,11 +2241,11 @@ impl ProducerState {
                     ),
                 ),
             };
-        };
+        }
         self.attribute(tag);
         self.close_lane(tag);
         if let Some(holders) = self.steps.get_mut(name) {
-            holders.swap_remove(position);
+            holders.remove(tag);
             if holders.is_empty() {
                 self.steps.remove(name);
             }
@@ -3081,6 +3086,56 @@ mod tests {
                 json!({"type": "TOOL_CALL_START", "toolCallId": "h1", "toolCallName": "search"}),
                 json!({"type": "TOOL_CALL_END", "toolCallId": "h1"}),
             ],
+        );
+    }
+
+    /// Steps are indexed by owner: many owners holding one step name cost
+    /// O(1) each.
+    #[test]
+    fn many_owners_of_one_step_name_are_indexed() {
+        use serde_json::json;
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"})],
+        );
+        for i in 0..64 {
+            feed(
+                &mut v,
+                vec![
+                    json!({"type": "SUBAGENT_STARTED", "subagentRunId": format!("s{i}"), "name": "h"}),
+                    json!({"type": "STEP_STARTED", "stepName": "plan", "subagentRunId": format!("s{i}")}),
+                ],
+            );
+        }
+        let err = v
+            .check(&ev(
+                json!({"type": "STEP_STARTED", "stepName": "plan", "subagentRunId": "s7"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::AlreadyOpen);
+        let err = v
+            .check(&ev(json!({"type": "STEP_FINISHED", "stepName": "plan"})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        assert!(err.message.contains("'s0'"), "{}", err.message);
+        let mut closers = Vec::new();
+        v.closers(&mut closers);
+        assert!(matches!(&closers[0], Event::StepFinished(f)
+            if f.subagent_run_id.as_ref().map(|s| s.as_str()) == Some("s63")));
+        for i in 0..64 {
+            feed(
+                &mut v,
+                vec![
+                    json!({"type": "STEP_FINISHED", "stepName": "plan", "subagentRunId": format!("s{i}")}),
+                    json!({"type": "SUBAGENT_FINISHED", "subagentRunId": format!("s{i}")}),
+                ],
+            );
+        }
+        assert!(v.state.steps.is_empty());
+        feed(
+            &mut v,
+            vec![json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r"})],
         );
     }
 
