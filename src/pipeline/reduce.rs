@@ -733,7 +733,7 @@ impl Reducer {
                     // The arguments are complete: drop the growth slack, as
                     // `extend_message` does at TEXT_MESSAGE_END.
                     if let Some(call) = self.call_mut(slot) {
-                        call.function.arguments.shrink_to_fit();
+                        shrink(&mut call.function.arguments);
                     }
                     changes.message = self.extend_call(slot, "", &e.metadata);
                 } else {
@@ -1139,8 +1139,9 @@ impl Reducer {
             event_type,
             EventType::TextMessageEnd | EventType::ReasoningMessageEnd
         ) {
-            // The text is complete: drop the growth slack, so the history
-            // holds what it is charged for (D14). Charges are unchanged.
+            // The text is complete: drop the growth slack of small text, so
+            // the history holds what it is charged for (D14). Charges are
+            // unchanged.
             shrink_text(message);
         }
         let n = merge_into(metadata_mut(message), metadata);
@@ -2709,17 +2710,31 @@ fn append_text(m: &mut Message, delta: &str) {
     }
 }
 
+/// The largest completed text whose growth slack is released. Below the
+/// allocator's large-allocation threshold slack pages are resident, so small
+/// text is shrunk to what it is charged for (D14); above it untouched slack
+/// is not resident, and keeping it means a reopened message or call appends
+/// without copying its whole text again.
+const SHRINK_MAX: usize = 128 * 1024;
+
+/// Releases the growth slack of completed text up to [`SHRINK_MAX`].
+fn shrink(text: &mut String) {
+    if text.capacity() > text.len() && text.capacity() <= SHRINK_MAX {
+        text.shrink_to_fit();
+    }
+}
+
 /// Releases the growth slack of the text [`append_text`] appends to.
 fn shrink_text(m: &mut Message) {
     match m {
-        Message::Developer(m) => m.content.shrink_to_fit(),
-        Message::System(m) => m.content.shrink_to_fit(),
+        Message::Developer(m) => shrink(&mut m.content),
+        Message::System(m) => shrink(&mut m.content),
         Message::Assistant(m) => {
             if let Some(text) = &mut m.content {
-                text.shrink_to_fit();
+                shrink(text);
             }
         }
-        Message::Reasoning(m) => m.content.shrink_to_fit(),
+        Message::Reasoning(m) => shrink(&mut m.content),
         Message::User(m) => shrink_content(&mut m.content),
         Message::Tool(m) => shrink_content(&mut m.content),
         Message::Activity(_) => {}
@@ -2728,10 +2743,10 @@ fn shrink_text(m: &mut Message) {
 
 fn shrink_content(content: &mut Content) {
     match content {
-        Content::Text(text) => text.shrink_to_fit(),
+        Content::Text(text) => shrink(text),
         Content::Parts(parts) => {
             if let Some(ContentPart::Text(part)) = parts.last_mut() {
-                part.text.shrink_to_fit();
+                shrink(&mut part.text);
             }
         }
     }

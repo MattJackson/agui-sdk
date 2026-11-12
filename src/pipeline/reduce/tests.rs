@@ -1479,3 +1479,40 @@ fn pointer_lookup_answers_as_serde_json_does() {
         assert_eq!(crate::json::pointer(&doc, p), doc.pointer(p), "{p:?}");
     }
 }
+
+/// Ending a large message or call keeps its growth slack: a reopen then
+/// appends without reallocating the whole text, so START/CONTENT/END cycles
+/// on a held large message cost O(delta), not O(held). Small text still
+/// drops its slack (D14).
+#[test]
+fn ending_large_text_keeps_growth_slack() {
+    let mut h = H::new();
+    let chunk = "x".repeat(1000);
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m"}));
+    h.push(
+        json!({"type": "TOOL_CALL_START", "toolCallId": "c", "toolCallName": "f",
+        "parentMessageId": "m"}),
+    );
+    for _ in 0..200 {
+        h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "m", "delta": chunk}));
+        h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": chunk}));
+    }
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "m"}));
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c"}));
+    let Message::Assistant(a) = &h.r.messages()[0] else {
+        panic!("not an assistant message");
+    };
+    let text = a.content.as_ref().unwrap();
+    assert!(text.capacity() > text.len(), "text slack dropped");
+    let args = &a.tool_calls.as_ref().unwrap()[0].function.arguments;
+    assert!(args.capacity() > args.len(), "argument slack dropped");
+
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "s"}));
+    h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "s", "delta": "abc"}));
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "s"}));
+    let Message::Assistant(s) = &h.r.messages()[1] else {
+        panic!("not an assistant message");
+    };
+    let text = s.content.as_ref().unwrap();
+    assert_eq!(text.capacity(), text.len());
+}
