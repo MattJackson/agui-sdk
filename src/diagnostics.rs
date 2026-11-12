@@ -115,6 +115,9 @@ diagnostic_codes! {
     /// An encrypted value named nothing known and was dropped (REAS-20, REAS-21).
     UnknownEncryptedEntity = "reasoning.unknown_entity";
     /// An encrypted value could not be preserved (REAS-17).
+    /// Reserved: this release does not emit it. A value naming an activity
+    /// message is the unknown-`entityId` case (REAS-16) and reports
+    /// `reasoning.unknown_entity`.
     EncryptedValueLost = "reasoning.value_lost";
     /// A resume entry names an interrupt the producer did not raise (INTR-18, INTR-19).
     UnknownResumeEntry = "resume.unknown_entry";
