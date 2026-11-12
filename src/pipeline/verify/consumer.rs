@@ -433,7 +433,7 @@ where
     text
 }
 
-fn owner_text(owner: &Owner) -> String {
+pub(super) fn owner_text(owner: &Owner) -> String {
     match owner {
         Some(id) => format!("subagent '{}'", shown(id.as_str())),
         None => "the parent agent".to_owned(),

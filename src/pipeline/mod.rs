@@ -123,7 +123,7 @@ pub(crate) const fn table_slot(entry: usize) -> usize {
 }
 
 /// Whether a table of `capacity` slots holding `len` entries is oversized.
-fn oversized(capacity: usize, len: usize) -> bool {
+pub(crate) fn oversized(capacity: usize, len: usize) -> bool {
     capacity > RETAIN_FLOOR && capacity / 4 > len
 }
 

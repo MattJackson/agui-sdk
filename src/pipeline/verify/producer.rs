@@ -101,7 +101,7 @@ use crate::tool::ToolCallEnd;
 use crate::usage::TokenUsage;
 use crate::version::ProtocolVersion;
 
-use super::consumer::{quote_list, MAX_LISTED_IDS};
+use super::consumer::{owner_text, quote_list, MAX_LISTED_IDS};
 use super::RunPhase;
 
 /// Largest integer JSON carries exactly: 2^53 − 1.
@@ -147,10 +147,12 @@ pub enum ProducerRule {
     /// 6901, an integer outside ±(2^53−1) (`timestamp`, token counts), an
     /// open-JSON member that is `null` where absence is required (BASIC-09,
     /// ARCH-04), an empty `subagentRunId` (SUB-06), token usage whose parts
-    /// exceed their totals (LIFE-26, LIFE-29), an activity delta leaving
-    /// non-object content (ACT-15), or, without an input, a `protocolVersion`
-    /// that differs from the one an earlier run on the stream declared
-    /// (VER-28).
+    /// exceed their totals or whose total is not input plus output (LIFE-26,
+    /// LIFE-29), a `protocolVersion` that is not `MAJOR.MINOR` (VER-18), a
+    /// patch operation missing its `value` or `from`, an activity delta
+    /// leaving non-object content or moving or copying onto the activity root
+    /// (ACT-15), or, without an input, a `protocolVersion` that differs from
+    /// the one an earlier run on the stream declared (VER-28).
     InvalidValue,
     /// Chunk spelling mixed with explicit events within one item, or a missing
     /// first-chunk field (STRM-09, STRM-11..STRM-14, STRM-17).
@@ -544,13 +546,6 @@ fn frontend_names(input: &RunAgentInput) -> HashSet<u64> {
         .flatten()
         .map(|tool| fingerprint(&tool.name))
         .collect()
-}
-
-fn owner_text(owner: &Owner) -> String {
-    match owner {
-        Some(id) => format!("subagent '{}'", shown(id.as_str())),
-        None => "the parent agent".to_owned(),
-    }
 }
 
 fn role_text(role: TextMessageRole) -> &'static str {
@@ -1128,7 +1123,7 @@ impl ProducerState {
     /// than the run that just used it, so this is amortized O(that run): the
     /// one end of run that drops a large table costs O(its capacity), once.
     fn end_run(&mut self, phase: RunPhase) {
-        use crate::pipeline::{reset_map, reset_set, RETAIN_FLOOR};
+        use crate::pipeline::{oversized, reset_map, reset_set};
         self.phase = phase;
         reset_map(&mut self.text);
         reset_map(&mut self.reasoning);
@@ -1144,8 +1139,7 @@ impl ProducerState {
         reset_map(&mut self.lanes);
         reset_map(&mut self.lane_messages);
         reset_map(&mut self.lane_calls);
-        let order = self.calls_order.capacity();
-        if order > RETAIN_FLOOR && order / 4 > self.calls_order.len() {
+        if oversized(self.calls_order.capacity(), self.calls_order.len()) {
             self.calls_order = Vec::new();
         } else {
             self.calls_order.clear();
@@ -3056,7 +3050,7 @@ mod tests {
             ]})))
             .unwrap_err();
         assert_eq!(err.rule, ProducerRule::Outcome);
-        assert!(v.state.messages.get("a1").is_none(), "a refusal mutated");
+        assert!(!v.state.messages.contains_key("a1"), "a refusal mutated");
     }
 
     /// tool-calls.mdx: a reopening start agrees with the call it reopens,
