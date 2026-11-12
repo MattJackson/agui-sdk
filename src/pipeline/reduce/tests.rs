@@ -1595,3 +1595,22 @@ fn untagged_call_reopen_under_owned_parent_agrees() {
     }
     assert!(h.codes().is_empty());
 }
+
+/// The first text for a message a tool call minted under its parent id
+/// warns when its owner disagrees with the minted message's.
+#[test]
+fn first_text_on_a_minted_parent_warns_on_owner_disagreement() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+        "parentMessageId": "m1", "subagentRunId": "S"}),
+    );
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1", "subagentRunId": "S"}));
+    assert!(h.codes().is_empty());
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}));
+    assert_eq!(h.codes(), ["stream.conflicting_reopen"]);
+    assert_eq!(
+        h.r.messages()[0].subagent_run_id().map(|s| s.as_str()),
+        Some("S")
+    );
+}

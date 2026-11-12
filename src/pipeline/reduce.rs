@@ -1060,22 +1060,31 @@ impl Reducer {
             return self.put_message(new_text_message(&opening));
         };
         let message = &mut self.messages[i];
-        if let Message::Assistant(a) = message {
-            if a.content.is_none() && opening.role == TextMessageRole::Assistant {
-                // First text for a message minted by a tool call.
+        let agrees = match message {
+            Message::Assistant(a)
+                if a.content.is_none() && opening.role == TextMessageRole::Assistant =>
+            {
+                // First text for a message minted by a tool call: a missing
+                // name is filled, an established name or owner is kept.
                 a.content = Some(String::new());
                 let mut added = 0;
-                if a.name.is_none() {
-                    a.name = opening.name.map(str::to_owned);
-                    added = opening.name.map_or(0, str::len);
-                }
+                let agrees = match a.name.as_deref() {
+                    None => {
+                        a.name = opening.name.map(str::to_owned);
+                        added = opening.name.map_or(0, str::len);
+                        true
+                    }
+                    Some(name) => Some(name) == opening.name,
+                } && a.subagent_run_id.as_ref() == opening.owner;
                 self.charge_at(i, signed(added));
-                return i;
+                agrees
             }
-        }
-        let agrees = role_matches(message, opening.role)
-            && message_name(message) == opening.name
-            && message_owner(message) == opening.owner;
+            _ => {
+                role_matches(message, opening.role)
+                    && message_name(message) == opening.name
+                    && message_owner(message) == opening.owner
+            }
+        };
         if !agrees {
             reporter.report(|| {
                 Diagnostic::new(
