@@ -105,12 +105,12 @@ impl Enforcer {
     /// a frame over them fails before its tree is built, never after.
     pub(crate) fn parse_frame(&self, frame: &[u8]) -> Result<Value> {
         self.check_frame_size(frame)?;
+        // Any JSON value parses here, so a fault is a syntax fault (or a
+        // budget), reported as the direct path reports it; a frame that is
+        // not an object is judged by enforcement afterwards.
         parse_value(frame, &self.options()).map_err(|fault| match fault.kind {
             FaultKind::Limit => fault_error(fault, ErrorCode::LimitExceeded),
-            _ => Error::new(
-                ErrorCode::MalformedEvent,
-                format!("frame is not a JSON object: {}", fault.message),
-            ),
+            _ => Error::new(ErrorCode::MalformedEvent, fault.message),
         })
     }
 

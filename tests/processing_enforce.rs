@@ -403,3 +403,24 @@ fn enforce_event_json_refuses_an_oversized_frame_as_frame_too_large() {
         .map_err(|e| e.code());
     assert_eq!(code, Err(ErrorCode::FrameTooLarge));
 }
+
+/// A truncated frame is a JSON syntax fault, named the same whichever path
+/// reads it: a member `null` (which routes the frame through the
+/// compatibility boundary) does not change the message.
+#[test]
+fn a_truncated_frame_reads_the_same_with_or_without_a_null() {
+    use agui_sdk::diagnostics::NullSink;
+    use agui_sdk::pipeline::{PipelineConfig, Processor};
+    let message = |frame: &[u8]| {
+        let mut processor = Processor::new(PipelineConfig::default());
+        let mut reporter = Reporter::new(Arc::new(NullSink), 16);
+        let err = processor
+            .push_json(frame, &mut reporter, &mut Vec::new())
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::MalformedEvent);
+        err.to_string()
+    };
+    let with_null = message(br#"{"type":"RUN_STARTED","extra":null,"threadId":"t"#);
+    let without = message(br#"{"type":"RUN_STARTED","extra":1234,"threadId":"t"#);
+    assert_eq!(with_null, without);
+}
