@@ -21,7 +21,7 @@ tokio = { version = "1.38", default-features = false, features = ["net", "io-uti
 # client's dependency graph.
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "ring"] }
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml = { version = "1.2", default-features = false, features = ["parse"] }
 
 [[bin]]
 name = "agui-trace"
