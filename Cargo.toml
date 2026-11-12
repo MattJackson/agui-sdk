@@ -27,10 +27,19 @@ categories = [
     "web-programming::http-client",
     "web-programming::http-server",
 ]
-# Allowlist: the library source plus the files a crates.io user needs. Tests,
-# benches, test keys, CI and repository tooling stay in the repository (cargo
-# drops the [[test]]/[[bench]] targets below from the published manifest).
-include = ["/src/**/*.rs", "/Cargo.toml", "/LICENSE", "/README.md", "/CHANGELOG.md"]
+# Allowlist: the library source plus the files a crates.io user needs. The
+# integration tests, benches, test keys, CI and repository tooling stay in the
+# repository (cargo drops the [[test]]/[[bench]] targets below from the
+# published manifest); the unit-test modules under src/ ship with the source,
+# so their fixtures (src/patch/cases.json) ship too.
+include = [
+    "/src/**/*.rs",
+    "/src/**/*.json",
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/CHANGELOG.md",
+]
 
 [workspace]
 members = ["crates/ag-ui-sdk", "crates/test-support", "xtask"]

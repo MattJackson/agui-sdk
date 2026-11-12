@@ -27,14 +27,19 @@
 //!   one that must (budget binding, or committing) pays for it once.
 //! * **Shifts are work.** Removing from or inserting into an array moves the
 //!   later elements, and with `preserve-order` removing an object member is
-//!   O(members). Both are charged to the walk budget at one unit per 16
-//!   elements moved, so a patch does at most `16 x walk budget` element moves,
+//!   O(members). Both are charged to the walk budget, at one unit per 16
+//!   array elements moved and one per 4 object members (a larger entry
+//!   whose hash index is also rewritten), so a patch does at most
+//!   `16 x walk budget` element moves and `4 x walk budget` member moves,
 //!   linear in the node budget. Rollback replays only shifts already paid for
 //!   (undoing an added member is O(1)). [`diff`] replaces an object (under
 //!   `preserve-order`) or the whole document whenever the member-wise delta
 //!   would cost more than this budget allows by default, and the server's
 //!   state publisher sends that as a snapshot, so the crate never sends a
-//!   delta its own default limits reject.
+//!   delta its own default limits reject for the state alone. A client's
+//!   reducer shares one node ceiling between the state and activity
+//!   content, so when activity content holds part of it a delta can still
+//!   be refused there.
 //! * **Nodes are node units.** Every JSON value counts one, and every 64
 //!   bytes of string or object-key text counts one more (rounded down, a
 //!   member's key and its string value separately), so the node budgets also
@@ -54,7 +59,9 @@
 //!   `max(factor × nodes before, floor)` is refused without re-walking it.
 //!   Whatever that allows, no patch takes a document past the absolute
 //!   [`PatchLimits::max_nodes`], so repeated small patches cannot compound
-//!   the growth ([`PatchErrorReason::NodeCeilingExceeded`]).
+//!   the growth ([`PatchErrorReason::NodeCeilingExceeded`]). A document
+//!   already above it (a text-heavy snapshot) takes only patches that do
+//!   not grow it.
 //! * **Pointer parsing** borrows from the operation and allocates only when a
 //!   segment contains `~0`/`~1` escapes.
 
@@ -85,7 +92,7 @@ use crate::json::JsonObject;
 
 mod engine;
 mod pointer;
-pub(crate) use pointer::push_token;
+pub(crate) use pointer::{is_valid as is_valid_pointer, push_token};
 mod walk;
 
 #[cfg(test)]
@@ -100,9 +107,11 @@ pub struct JsonPointer(String);
 
 impl JsonPointer {
     /// Wraps pointer text without validating it; [`JsonPointer::parse`]
-    /// validates. An invalid pointer built this way never reaches the wire:
-    /// the producer verifier re-validates pointers
+    /// validates. An invalid pointer built this way is refused before it
+    /// reaches the wire when events go through the server's `Runner` or
+    /// `Emitter`: the producer verifier re-validates pointers
     /// ([`ProducerRule::InvalidValue`](crate::pipeline::verify::ProducerRule::InvalidValue)).
+    /// The encoders in `server::encode` do not validate.
     pub fn new_unchecked(text: impl Into<String>) -> Self {
         JsonPointer(text.into())
     }
@@ -416,8 +425,9 @@ impl PatchOperation {
     }
 }
 
-/// Hard ceiling on [`PatchLimits::max_depth`] for `apply` and its `test`
-/// walks, whatever the caller configures. `diff` is not bounded by it: it
+/// Hard ceiling on [`PatchLimits::max_depth`] for the values `apply` places,
+/// whatever the caller configures. A `test` compare is not bounded by it (it
+/// recurses as deep as the shallower operand), nor is `diff`: it
 /// recurses only where both sides are objects, so its depth is that of its
 /// inputs.
 const DEPTH_CEILING: usize = 1024;
@@ -446,7 +456,9 @@ fn caps(limits: PatchLimits, nodes: usize, ceiling: usize) -> (usize, usize) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchLimits {
-    /// Maximum pointer depth.
+    /// Maximum depth of a value placed by `add`, `replace`, `copy` or a
+    /// deeper `move`: the pointer's depth plus the height of the value
+    /// placed. Clamped to 1024.
     pub max_depth: usize,
     /// Growth factor over the node units before the patch.
     pub growth_factor: usize,
@@ -457,7 +469,8 @@ pub struct PatchLimits {
     /// as with a larger ceiling.
     pub min_nodes: usize,
     /// Absolute ceiling on node units, whatever the growth allowance: a patch
-    /// never leaves a document larger ([`PatchErrorReason::NodeCeilingExceeded`]).
+    /// never leaves a document larger ([`PatchErrorReason::NodeCeilingExceeded`]),
+    /// and never grows one that is already above it.
     /// The [`Reducer`](crate::pipeline::reduce::Reducer) applies it to the
     /// state and every patched activity content together, and the
     /// [`Processor`](crate::pipeline::Processor) ends the stream with
@@ -536,9 +549,12 @@ impl PatchBudget {
     }
 }
 
-/// Why a patch did not apply. Not an [`Error`](crate::Error): a failed patch is
-/// reported as a `patch.not_applied` diagnostic and the prior value is kept
-/// (SNAP-12, SNAP-13).
+/// Why a patch did not apply. Not an [`Error`](crate::Error): the reducer
+/// reports a failed patch as a `patch.not_applied` diagnostic
+/// (`patch.budget_exceeded` for the budget, depth and ceiling reasons) and
+/// keeps the prior value (SNAP-12, SNAP-13); a patch refused at the node
+/// ceiling also ends the stream with `processing.limit`
+/// ([`PatchLimits::max_nodes`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchError {
@@ -560,9 +576,9 @@ pub enum PatchErrorReason {
     TestFailed,
     /// `move` into its own child.
     MoveIntoChild,
-    /// Pointer deeper than [`PatchLimits::max_depth`].
+    /// The value placed would end deeper than [`PatchLimits::max_depth`].
     TooDeep,
-    /// Result would exceed the node budget.
+    /// The patch would exceed its node budget or its walk (work) budget.
     BudgetExceeded,
     /// Result would exceed the absolute [`PatchLimits::max_nodes`] ceiling.
     NodeCeilingExceeded,
@@ -579,7 +595,7 @@ impl PatchErrorReason {
             PatchErrorReason::TestFailed => "test operation failed",
             PatchErrorReason::MoveIntoChild => "cannot move a value into its own child",
             PatchErrorReason::TooDeep => "result would exceed the depth limit",
-            PatchErrorReason::BudgetExceeded => "result would exceed the node budget",
+            PatchErrorReason::BudgetExceeded => "patch would exceed the node or work budget",
             PatchErrorReason::NodeCeilingExceeded => {
                 "result would exceed the absolute node ceiling"
             }
@@ -735,32 +751,50 @@ pub fn apply(
 /// Computes a patch that turns `before` into `after`, for the server's state
 /// publisher. Emits `replace` for changed scalars, `add`/`remove` for
 /// object members and a whole-array `replace` when arrays differ (simple,
-/// predictable, O(size of both documents plus the walk cost of the emitted
-/// delta, which is capped)). With `preserve-order`, an object
+/// predictable, O(size of both documents); the delta it builds is bounded by
+/// the default walk budget and by the size of `after`). With `preserve-order`, an object
 /// whose deleted members would cost more to shift out than to rebuild is sent
 /// as one `replace` of the object. Returns an empty patch when the documents
 /// are equal. When the member-wise delta would exceed what the default
-/// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or growth past
-/// the node budget or ceiling), returns a single `replace` of the root with
+/// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or net growth
+/// past the node budget or ceiling; for a `before` already above the ceiling,
+/// any addition at all, which older versions' `apply` refuse), or when its paths alone would be larger
+/// on the wire than `after`, returns a single `replace` of the root with
 /// `after` instead. That replace is larger than `after` itself, so callers
 /// building their own `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT`
 /// in that case, as the server's state publisher does.
 #[must_use]
 pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
+    diff_counted(before, walk::count(before), after)
+}
+
+/// [`diff`] with the node units of `before` already known.
+pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<PatchOperation> {
     let limits = PatchLimits::default();
-    let nodes = walk::count(before);
     let (node_cap, walk_cap) = caps(limits, nodes, limits.max_nodes);
     let mut cost = Cost {
         walk: 0,
-        grow: 0,
         limit: walk_cap,
+        added: 0,
+        freed: 0,
+        // Growth only counts when there is some: equal documents, and pure
+        // removals, are accepted by `apply` even over the ceiling.
+        headroom: node_cap.saturating_sub(nodes),
+        // A 0.9.0 `apply` refuses any addition to a document above the
+        // ceiling, even one the patch's own displaced values pay for, so
+        // there a delta that adds anything is not sent (the publisher sends
+        // a snapshot instead, as it always has).
+        over_ceiling: nodes > node_cap,
+        grew_past: false,
+        path_bytes: 0,
+        path_check: PATH_CHECK_FLOOR,
+        paths_too_big: false,
+        after,
     };
     let mut out = Vec::new();
     let mut path = String::new();
     diff_into(before, after, &mut path, &mut out, &mut cost);
-    // Growth only counts when there is some: equal documents, and pure
-    // removals, are accepted by `apply` even over the ceiling.
-    if cost.walk > walk_cap || (cost.grow > 0 && nodes.saturating_add(cost.grow) > node_cap) {
+    if cost.over() {
         out.clear();
         out.push(PatchOperation::replace(
             JsonPointer(String::new()),
@@ -770,19 +804,39 @@ pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
     out
 }
 
+/// Path bytes `diff` emits before it first compares them with the size of
+/// `after` (and then again each time they double).
+const PATH_CHECK_FLOOR: usize = 64 * 1024;
+
 /// Upper bound of what [`apply`] charges for the operations `diff` has
 /// emitted so far (ignoring lazy credit), so `diff` can tell when the default
-/// limits would refuse its delta.
-struct Cost {
+/// limits would refuse its delta, and stop building it as soon as they do.
+struct Cost<'a> {
     walk: usize,
-    grow: usize,
-    /// Stop estimating once `walk` exceeds this: the delta is refused anyway.
+    /// The walk cap: the delta is refused once `walk` exceeds it.
     limit: usize,
+    /// Node units added and freed so far, in emission order (the order
+    /// `apply` runs them in, crediting what earlier operations displaced
+    /// before it refuses growth).
+    added: usize,
+    freed: usize,
+    /// Growth the node cap leaves above `before`.
+    headroom: usize,
+    /// `before` is already above the node cap: any addition counts as growth.
+    over_ceiling: bool,
+    /// Net growth has passed `headroom` at some point.
+    grew_past: bool,
+    /// Bytes of path text emitted so far, the next total at which they are
+    /// compared with the wire size of `after`, and whether they exceeded it.
+    path_bytes: usize,
+    path_check: usize,
+    paths_too_big: bool,
+    after: &'a Value,
 }
 
-impl Cost {
+impl Cost<'_> {
     fn over(&self) -> bool {
-        self.walk > self.limit
+        self.walk > self.limit || self.grew_past || self.paths_too_big
     }
 
     fn add(&mut self, path: &str, added: usize, removed: usize, shift: usize) {
@@ -792,7 +846,26 @@ impl Cost {
             .saturating_add(added)
             .saturating_add(removed)
             .saturating_add(shift);
-        self.grow = self.grow.saturating_add(added);
+        // `apply` logs what an operation displaces before it adds the new
+        // value's nodes, so this operation's own `removed` is credited too.
+        self.added = self.added.saturating_add(added);
+        self.freed = self.freed.saturating_add(removed);
+        if self.added.saturating_sub(self.freed) > self.headroom
+            || (self.over_ceiling && self.added > 0)
+        {
+            self.grew_past = true;
+        }
+        // Each operation holds its own copy of its path: a delta whose paths
+        // alone outweigh `after` is never worth building. Checked at
+        // doubling totals, each check bounded by the total, so the checks
+        // cost O(path bytes emitted).
+        self.path_bytes = self.path_bytes.saturating_add(path.len());
+        if self.path_bytes > self.path_check {
+            self.path_check = self.path_bytes.saturating_mul(2);
+            if crate::json::wire_bytes_upto(self.after, self.path_bytes) < self.path_bytes {
+                self.paths_too_big = true;
+            }
+        }
     }
 }
 
@@ -801,7 +874,8 @@ impl Cost {
 /// more than rebuilding the object, the delta replaces it whole (and
 /// [`diff`] replaces the whole document when the delta as a whole would cost
 /// more than the default limits allow), so the crate never emits a delta its
-/// own default limits refuse. Always `false`
+/// own default limits refuse for the state alone (a client's activity
+/// content shares the node ceiling, see the module docs). Always `false`
 /// without `preserve-order` (removal is O(log n) there).
 #[cfg(feature = "preserve-order")]
 fn removals_too_costly(
@@ -809,7 +883,7 @@ fn removals_too_costly(
     after: &serde_json::Map<String, Value>,
 ) -> bool {
     let removed = before.keys().filter(|k| !after.contains_key(*k)).count();
-    let shifts = removed.saturating_mul(engine::shift_cost(before.len()));
+    let shifts = removed.saturating_mul(engine::remove_shift(before.len()));
     // Cheap exit: rebuilding costs at least one unit per member.
     if shifts <= before.len() {
         return false;
@@ -839,7 +913,7 @@ fn diff_into(
     after: &Value,
     path: &mut String,
     out: &mut Vec<PatchOperation>,
-    cost: &mut Cost,
+    cost: &mut Cost<'_>,
 ) {
     if cost.over() {
         return;
@@ -856,17 +930,26 @@ fn diff_into(
             }
             let len = path.len();
             for (key, old) in b {
+                if cost.over() {
+                    return;
+                }
                 pointer::push_token(path, key);
                 match a.get(key) {
                     Some(new) => diff_into(old, new, path, out, cost),
                     None => {
                         cost.add(path, 0, walk::count(old), engine::remove_shift(b.len()));
+                        // `apply` also credits the member's key text as it
+                        // removes it, without walking it.
+                        cost.freed = cost.freed.saturating_add(walk::text_units(key.len()));
                         out.push(PatchOperation::remove(JsonPointer(path.clone())));
                     }
                 }
                 path.truncate(len);
             }
             for (key, new) in a {
+                if cost.over() {
+                    return;
+                }
                 if !b.contains_key(key) {
                     pointer::push_token(path, key);
                     // The member's own key is text the document retains.

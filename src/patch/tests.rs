@@ -46,8 +46,10 @@ fn run(doc: &Value, patch: &[PatchOperation]) -> Result<Value, PatchError> {
     }
 }
 
-/// The component's RFC 6902/6901 case table. Cases whose defect is
-/// structural (enforcement's job, SNAP-09) must fail to deserialize instead.
+/// The component's RFC 6902/6901 case table. Structural (`Malformed*`)
+/// cases (enforcement's job, SNAP-09) either fail to deserialize or, when
+/// the typed form can carry them (an absent or `null` operand), fail with
+/// `MissingMember`.
 #[test]
 fn json_cases() {
     let cases: Vec<Value> = serde_json::from_str(include_str!("cases.json")).unwrap();
@@ -252,7 +254,7 @@ fn copy_bomb_is_refused_cheaply_and_rolled_back() {
     assert_eq!(b.nodes(), 100_000);
 }
 
-/// Security audit 2, H2: the growth allowance is relative to the document,
+/// The growth allowance is relative to the document (docs/DECISIONS.md D14),
 /// so without an absolute ceiling every small patch could double it again.
 #[test]
 fn growth_never_compounds_past_the_absolute_ceiling() {
@@ -587,7 +589,7 @@ fn legitimate_head_removals_still_apply() {
     assert_eq!(out["a"].as_array().unwrap().len(), 99_900);
 }
 
-/// The node ceiling bounds memory, not work (security audit S2): under the default 180,000-unit ceiling a patch still gets the
+/// The node ceiling bounds memory, not work (docs/DECISIONS.md D14): under the default 180,000-unit ceiling a patch still gets the
 /// 4,000,000-unit walk budget of its growth allowance, so 200 head removals
 /// on a 100,000-element array (about 1.25M units of shifts) apply, as they
 /// did with the old 4,000,000-unit ceiling.
@@ -629,13 +631,13 @@ fn missing_key_removal_reports_path_not_found_when_budget_is_spent() {
     const N: usize = 50_000;
     let mut d = wide_object(N);
     let mut b = PatchBudget::for_document(&d, limits(64, 1, 1));
-    // walk_cap = 4 x 50_001; each removal costs 1 + N / 16 = 3126.
-    let mut p: Vec<Value> = (0..64)
+    // walk_cap = 4 x 50_001; each removal costs about 1 + N / 4 = 12,501.
+    let mut p: Vec<Value> = (0..16)
         .map(|i| json!({"op": "remove", "path": format!("/k{i}")}))
         .collect();
     p.push(json!({"op": "remove", "path": "/missing"}));
     let e = apply(&mut d, &ops(Value::Array(p)), &mut b).unwrap_err();
-    assert_eq!((e.index, e.reason), (64, PatchErrorReason::PathNotFound));
+    assert_eq!((e.index, e.reason), (16, PatchErrorReason::PathNotFound));
 }
 
 /// Counting a displaced subtree is work: it is charged to the walk budget
@@ -958,14 +960,14 @@ fn commit_budget_failure_names_the_displacing_operation() {
 /// is replaced by a whole-document replace.
 #[test]
 fn diff_of_many_deep_replacements_is_applicable() {
-    let (before, after) = deep_pair(false);
+    let (before, after) = deep_pair();
     let patch = diff(&before, &after);
     assert_eq!(run(&before, &patch).unwrap(), after);
 }
 
 /// Builds `{"d": <100-deep chain ending in 40k scalars>}` and a copy with
 /// every scalar changed.
-pub(crate) fn deep_pair(blob: bool) -> (Value, Value) {
+fn deep_pair() -> (Value, Value) {
     fn build(offset: u64) -> Value {
         let leaf: serde_json::Map<String, Value> = (0..40_000u64)
             .map(|i| (format!("k{i}"), json!(i + offset)))
@@ -976,12 +978,7 @@ pub(crate) fn deep_pair(blob: bool) -> (Value, Value) {
         }
         json!({ "d": v })
     }
-    let (mut b, mut a) = (build(0), build(1));
-    if blob {
-        b["blob"] = json!("x".repeat(12_000_000));
-        a["blob"] = b["blob"].clone();
-    }
-    (b, a)
+    (build(0), build(1))
 }
 
 #[test]
@@ -1234,4 +1231,127 @@ fn diff_removal_over_the_ceiling_stays_a_delta() {
         patch.first().map(|o| o.path.as_str().to_owned())
     );
     assert!(run(&before, &patch).unwrap() == after);
+}
+
+/// A document already above its ceiling (a text-heavy snapshot, or state
+/// whose share the activity content shrank) still takes a delta that does
+/// not grow it; only growth past where it started is refused.
+#[test]
+fn a_document_over_the_ceiling_takes_deltas_that_do_not_grow_it() {
+    let doc = json!({"a": (0..10).collect::<Vec<u32>>(), "b": (0..20).collect::<Vec<u32>>()});
+    let at_ten = PatchLimits {
+        max_depth: 128,
+        growth_factor: 1,
+        min_nodes: 1,
+        max_nodes: 10,
+    };
+    let mut d = doc.clone();
+    let mut b = PatchBudget::for_document(&d, at_ten);
+    let start = b.nodes();
+    assert!(start > 10);
+    let p = ops(json!([{"op": "replace", "path": "/a", "value": 0}]));
+    apply(&mut d, &p, &mut b).unwrap();
+    assert_eq!(b.nodes(), count(&d));
+    assert!(b.nodes() < start);
+    let p = ops(json!([{"op": "replace", "path": "/b/0", "value": 7}]));
+    apply(&mut d, &p, &mut b).unwrap();
+    // Growth past where the patch started is still refused at the ceiling.
+    let before = d.clone();
+    let p = ops(json!([{"op": "add", "path": "/c", "value": [1, 2]}]));
+    let e = apply(&mut d, &p, &mut b).unwrap_err();
+    assert_eq!(e.reason, PatchErrorReason::NodeCeilingExceeded);
+    assert_eq!(d, before);
+    // Net-zero within one patch: replace frees room the add then uses.
+    let p = ops(json!([
+        {"op": "replace", "path": "/b", "value": 0},
+        {"op": "add", "path": "/c", "value": [1, 2]}
+    ]));
+    apply(&mut d, &p, &mut b).unwrap();
+    assert_eq!(b.nodes(), count(&d));
+}
+
+/// `diff` charges path text: clearing many members under a long key would
+/// repeat that key in every `remove`, so it falls back to a root replace
+/// (smaller than such a delta) instead of building it. (Under
+/// `preserve-order` the shifts alone already make it replace the object.)
+#[test]
+fn diff_falls_back_when_repeated_path_text_outgrows_the_document() {
+    let key = "k".repeat(16 * 1024);
+    let members: serde_json::Map<String, Value> =
+        (0..2_000).map(|i| (format!("a{i}"), json!(i))).collect();
+    let before = json!({ key.clone(): members });
+    let after = json!({ key: {} });
+    let patch = diff(&before, &after);
+    assert!(
+        patch.len() == 1 && (cfg!(feature = "preserve-order") || patch[0].path.as_str().is_empty()),
+        "expected a root replace, got {} op(s)",
+        patch.len()
+    );
+    assert!(run(&before, &patch).unwrap() == after);
+}
+
+/// `apply` credits what a `replace` displaces before refusing growth, so
+/// `diff` counts net growth: scalar changes near the ceiling stay a delta.
+#[test]
+fn diff_near_the_ceiling_counts_net_growth() {
+    let mut before = json!({ "a": Value::Array(vec![Value::Null; 179_983]) });
+    for i in 0..10 {
+        before[format!("x{i}")] = json!(0);
+    }
+    assert_eq!(count(&before), 179_995);
+    let mut after = before.clone();
+    for i in 0..10 {
+        after[format!("x{i}")] = json!(1);
+    }
+    let patch = diff(&before, &after);
+    assert_eq!(patch.len(), 10, "expected ten replaces");
+    assert!(run(&before, &patch).unwrap() == after);
+    // Real growth past the ceiling still falls back.
+    after["y"] = Value::Array(vec![Value::Null; 10]);
+    let patch = diff(&before, &after);
+    assert!(patch.len() == 1 && patch[0].path.as_str().is_empty());
+}
+
+/// A 0.9.0 `apply` refuses any growth by a document already above the
+/// ceiling, even one the patch's own displaced values pay for, so over the
+/// ceiling `diff` keeps falling back whenever its delta adds anything; a
+/// pure removal (which every version accepts) stays a delta.
+#[test]
+fn diff_over_the_ceiling_falls_back_on_any_growth() {
+    let mut before = json!({ "a": Value::Array(vec![Value::Null; 180_100]) });
+    before["x"] = json!(0);
+    assert!(count(&before) > PatchLimits::default().max_nodes);
+    let mut after = before.clone();
+    after["x"] = json!(1);
+    let patch = diff(&before, &after);
+    assert!(
+        patch.len() == 1 && patch[0].path.as_str().is_empty(),
+        "expected a root replace, got {} op(s)",
+        patch.len()
+    );
+    let mut after = before.clone();
+    after.as_object_mut().unwrap().remove("x");
+    let patch = diff(&before, &after);
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].path.as_str(), "/x");
+}
+
+/// Under `preserve-order` an object member is a 104-byte `IndexMap` entry
+/// whose hash-table index is rewritten as it shifts, so removals are charged
+/// one walk unit per 4 members shifted, not per 16 like array elements:
+/// 200 head removals on a 100,000-member object (5,000,000 units) exceed the
+/// default 4,000,000-unit walk budget.
+#[cfg(feature = "preserve-order")]
+#[test]
+fn object_member_shifts_are_charged_at_their_own_rate() {
+    const N: usize = 100_000;
+    let doc = wide_object(N);
+    let p: Vec<Value> = (0..200)
+        .map(|i| json!({"op": "remove", "path": format!("/k{i}")}))
+        .collect();
+    let Err(e) = run(&doc, &ops(Value::Array(p))) else {
+        panic!("200 head removals applied");
+    };
+    assert_eq!(e.reason, PatchErrorReason::BudgetExceeded);
+    assert!(e.index <= 4_000_000 * 4 / N + 4, "late: {}", e.index);
 }

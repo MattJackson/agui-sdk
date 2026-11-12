@@ -6,8 +6,9 @@
 //! sees the document exactly as it was right after the matching forward
 //! step, so every parent pointer still resolves, even after `move`s shifted
 //! array indices. On success the log is dropped. Entries borrow their pointer
-//! text from the operations, so logging allocates nothing per operation, and
-//! the first entry is stored inline: a one-operation patch allocates no log.
+//! text from the operations, so logging allocates nothing per operation
+//! except a boxed entry per `move`, and the first entry is stored inline: a
+//! one-operation patch other than a `move` allocates no log.
 
 use std::mem;
 
@@ -218,15 +219,25 @@ fn rollback(doc: &mut Value, log: Log<'_>) {
     }
 }
 
-/// Walk units covering 16 moved `Value`s (512 bytes of memmove), roughly the
-/// cost of one node visit. A patch's total shifting is therefore at most
-/// `16 x walk_cap` element moves (2 GB of memmove at the default
-/// 4,000,000-unit walk budget, proportionally more for a document over
-/// 250,000 units), linear in the node budget.
+/// Array elements moved per walk unit: 16 `Value`s is 512 bytes of memmove
+/// with the default 32-byte `Value` (1,152 bytes under `preserve-order`,
+/// where a `Value` is 72 bytes), roughly the cost of one node visit. A
+/// patch's total array shifting is therefore at most `16 x walk_cap`
+/// element moves (2 GB of memmove at the default 4,000,000-unit walk
+/// budget, about 4.6 GB under `preserve-order`; proportionally more for a
+/// document over 250,000 units), linear in the node budget.
 const SHIFT_PER_UNIT: usize = 16;
 
-/// Walk cost of moving `moved` elements. Containers under 16 elements are free.
-pub(super) fn shift_cost(moved: usize) -> usize {
+/// Object members shifted per walk unit under `preserve-order`: each is a
+/// 104-byte `IndexMap` entry (hash, key, `Value`) whose hash-table index is
+/// rewritten as it moves, so 4 entries (416 bytes plus 4 index updates) per
+/// unit, and a patch shifts at most `4 x walk_cap` members (about 1.7 GB of
+/// memmove at the default walk budget).
+#[cfg(feature = "preserve-order")]
+const MEMBER_SHIFT_PER_UNIT: usize = 4;
+
+/// Walk cost of moving `moved` array elements. Fewer than 16 are free.
+fn shift_cost(moved: usize) -> usize {
     moved / SHIFT_PER_UNIT
 }
 
@@ -240,24 +251,16 @@ fn logs_undo(op: &PatchOperation) -> bool {
     }
 }
 
-/// Walk cost of removing one member from an object of `len` members.
-pub(super) fn remove_shift(len: usize) -> usize {
-    if cfg!(feature = "preserve-order") {
-        shift_cost(len)
-    } else {
-        0
-    }
-}
-
-/// Cost of removing a member from `m`: O(members) with `preserve-order`
-/// (position scan plus shift), O(log n) otherwise.
+/// Walk cost of removing one member from an object of `len` members:
+/// O(members) with `preserve-order` (position scan plus shift), O(log n)
+/// otherwise.
 #[cfg(feature = "preserve-order")]
-fn remove_cost(m: &Map<String, Value>) -> usize {
-    shift_cost(m.len())
+pub(super) fn remove_shift(len: usize) -> usize {
+    len / MEMBER_SHIFT_PER_UNIT
 }
 
 #[cfg(not(feature = "preserve-order"))]
-fn remove_cost(_: &Map<String, Value>) -> usize {
+pub(super) fn remove_shift(_len: usize) -> usize {
     0
 }
 
@@ -388,8 +391,12 @@ impl<'p, 'd> Engine<'p, 'd> {
             nodes,
             settled: 0,
             partial: 0,
-            node_cap: caps.nodes,
-            ceiling: caps.ceiling,
+            // A document already above a limit (a text-heavy snapshot, or a
+            // ceiling lowered by other documents' growth) may still take a
+            // patch that does not grow it: only growth past where the patch
+            // started is refused (docs/DECISIONS.md D14).
+            node_cap: caps.nodes.max(nodes),
+            ceiling: caps.ceiling.max(nodes),
             walked: 0,
             walk_cap: caps.walk,
             max_depth: caps.depth,
@@ -406,12 +413,14 @@ impl<'p, 'd> Engine<'p, 'd> {
         ops: &'p [PatchOperation],
         accept: impl FnOnce(&Value) -> bool,
     ) -> Outcome {
-        // Each operation logs at most one entry and the first is inline: one
-        // allocation for the rest instead of doubling growth (capped, so a
-        // long patch that fails early never reserves more than it used).
+        // Each logging operation pushes one entry and the first is inline:
+        // one allocation for the rest instead of doubling growth. Capped, so
+        // a long patch that fails early reserves at most LOG_RESERVE entries;
+        // `test`s, which log nothing, reserve nothing.
+        let logging = ops.iter().filter(|o| logs_undo(o)).count();
         self.log
             .rest
-            .reserve_exact(ops.len().saturating_sub(1).min(LOG_RESERVE));
+            .reserve_exact(logging.saturating_sub(1).min(LOG_RESERVE));
         for (index, op) in ops.iter().enumerate() {
             self.op = index;
             if let Err(reason) = self.run_op(op) {
@@ -621,7 +630,7 @@ impl<'p, 'd> Engine<'p, 'd> {
                 if !m.contains_key(&*name) {
                     return Err(Reason::PathNotFound);
                 }
-                charge_to(&mut self.walked, self.walk_cap, remove_cost(m))?;
+                charge_to(&mut self.walked, self.walk_cap, remove_shift(m.len()))?;
                 let (pos, key, v) = map_remove(m, &name).ok_or(Reason::PathNotFound)?;
                 if self.measure_copies {
                     // What placing `key` back would charge: the slot it left.
@@ -819,7 +828,9 @@ impl<'p, 'd> Engine<'p, 'd> {
         // if that refuses the copy are displaced values credited, and then
         // only as far as the copy needs: each retry asks for twice as much
         // (at least the headroom it had), so a frame that fails later pays
-        // for its deficit, not for whole subtrees it displaced.
+        // for its deficit, not for whole subtrees it displaced. Only the
+        // clone that succeeds is charged; the abandoned attempts before it
+        // grow geometrically, so they cost at most a constant multiple of it.
         let mut request = 0usize;
         // Nodes of an existing target member counted so far, and whether
         // that count is exact.
