@@ -1266,14 +1266,11 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
     );
     for fixture in fixtures {
         let name = fixture["name"].as_str().unwrap_or("?");
+        // Every 0.0.N pin maps the way the client maps it (0.0.45 is the
+        // 0.0.47 era).
         let era = fixture["client"]["maxProtocolVersion"]
             .as_str()
-            .and_then(|pin| match pin {
-                "0.0.39" => Some(LegacyEra::V0_0_39),
-                "0.0.47" => Some(LegacyEra::V0_0_47),
-                "0.0.57" => Some(LegacyEra::V0_0_57),
-                _ => None,
-            });
+            .and_then(LegacyEra::parse);
         let (mut reporter, sink) = collecting();
 
         // Outgoing: the always-on input upgrade, then the era's downgrade.
