@@ -424,3 +424,21 @@ fn a_truncated_frame_reads_the_same_with_or_without_a_null() {
     let without = message(br#"{"type":"RUN_STARTED","extra":1234,"threadId":"t"#);
     assert_eq!(with_null, without);
 }
+
+/// A `null` where a fixed string belongs is named the same on both paths:
+/// the expected literal, not just "string".
+#[test]
+fn a_null_in_a_pinned_member_names_the_literal_on_both_paths() {
+    let frame = json!({"type": "REASONING_MESSAGE_START", "messageId": "m", "role": null});
+    let sink = Arc::new(CollectingSink::new());
+    let mut reporter = Reporter::new(sink, 256);
+    let enforcer = Enforcer::new(Limits::default());
+    let bytes = serde_json::to_vec(&frame).unwrap_or_default();
+    let message = |r: agui_sdk::Result<Option<agui_sdk::Event>>| match r {
+        Err(e) => e.message().to_owned(),
+        Ok(_) => panic!("{frame} was not fatal"),
+    };
+    let from_bytes = message(enforcer.enforce_event_json(&bytes, &mut reporter));
+    let from_value = message(enforcer.enforce_event_value(frame.clone(), &mut reporter));
+    assert_eq!(from_bytes, from_value);
+}
