@@ -232,3 +232,42 @@ fn a_cancel_racing_the_read_after_the_terminal_does_not_override_it() {
         );
     }
 }
+
+/// Serves the whole run, then panics on the next read.
+struct PanicsAfterTerminal;
+
+impl Transport for PanicsAfterTerminal {
+    async fn open(&self, _request: TransportRequest) -> agui_sdk::Result<FrameStream> {
+        let mut frames = [run_started("t1", "r1"), run_finished("t1", "r1")]
+            .map(|f| {
+                agui_sdk::client::Frame::from_json(agui_sdk::wire::Chunk::from(
+                    serde_json::to_vec(&f).unwrap(),
+                ))
+            })
+            .into_iter();
+        Ok(FrameStream::from_poll_fn(move |_cx| match frames.next() {
+            Some(frame) => std::task::Poll::Ready(Some(Ok(frame))),
+            None => panic!("the custom transport panicked after the terminal"),
+        }))
+    }
+}
+
+#[test]
+fn a_transport_panic_after_the_terminal_fails_the_run_with_or_without_middleware() {
+    for with_middleware in [false, true] {
+        let mut builder =
+            AgentClient::with_transport(PanicsAfterTerminal).diagnostic_sink(NullSink);
+        if with_middleware {
+            builder = builder.middleware(|r: MiddlewareRequest, n: Next| n.run(r));
+        }
+        let client = builder.build().unwrap();
+        let err = block_on(client.run(request()).into_future())
+            .expect_err(&format!("with_middleware={with_middleware}"));
+        assert_eq!(
+            err.code(),
+            ErrorCode::StreamRead,
+            "with_middleware={with_middleware}: {err}"
+        );
+        assert!(err.to_string().contains("the transport panicked"), "{err}");
+    }
+}

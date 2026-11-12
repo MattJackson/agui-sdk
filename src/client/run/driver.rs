@@ -171,6 +171,9 @@ pub(in crate::client) struct RunDriver {
     /// What the boundaries in the middleware path's `Upstream` stages keep
     /// (their `retained` figures, summed), charged like `boundary`'s (D28).
     upstream_retained: Arc<AtomicUsize>,
+    /// Set by an `Upstream` stage that caught a transport panic, so the
+    /// panic fails the run as it does without middleware.
+    upstream_panicked: Arc<AtomicBool>,
     era: Option<EraShims>,
     sink: Arc<RunSink>,
     reporter: Reporter,
@@ -229,6 +232,7 @@ impl RunDriver {
             processor: None,
             boundary: None,
             upstream_retained: Arc::new(AtomicUsize::new(0)),
+            upstream_panicked: Arc::new(AtomicBool::new(false)),
             era: None,
             sink,
             reporter,
@@ -357,6 +361,7 @@ impl RunDriver {
                             panicked = true;
                             Poll::Ready(Some(Err(fallback())))
                         });
+                    panicked |= self.upstream_panicked.load(Ordering::Relaxed);
                     match polled {
                         Poll::Ready(Some(Ok(frame))) => {
                             frames += 1;
@@ -537,6 +542,7 @@ impl RunDriver {
                 Arc::clone(&self.sink),
                 limits,
                 Arc::clone(&self.upstream_retained),
+                Arc::clone(&self.upstream_panicked),
             );
             let request =
                 MiddlewareRequest::new(value, Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>);
@@ -1046,6 +1052,7 @@ fn upstream(
     sink: Arc<RunSink>,
     limits: crate::pipeline::Limits,
     retained: Arc<AtomicUsize>,
+    panicked: Arc<AtomicBool>,
 ) -> Next {
     Next::from_fn(move |request: MiddlewareRequest| {
         let sink = sink as Arc<dyn DiagnosticSink>;
@@ -1061,6 +1068,7 @@ fn upstream(
             boundary: Boundary::new(),
             retained: Arc::clone(&retained),
             charged: 0,
+            panicked: Arc::clone(&panicked),
             era,
             reporter,
             max_frame_bytes: limits.max_frame_bytes,
@@ -1083,6 +1091,8 @@ struct Upstream {
     /// stage's share of it is `charged`.
     retained: Arc<AtomicUsize>,
     charged: usize,
+    /// The driver's flag for a transport panic caught here.
+    panicked: Arc<AtomicBool>,
     era: Option<EraShims>,
     reporter: Reporter,
     max_frame_bytes: usize,
@@ -1165,8 +1175,10 @@ impl FrameSource for Upstream {
             let polled = match &mut this.state {
                 UpstreamState::Opening(future) => {
                     match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx)))
-                        .unwrap_or_else(|_| Poll::Ready(Err(transport_panicked())))
-                    {
+                        .unwrap_or_else(|_| {
+                            this.panicked.store(true, Ordering::Relaxed);
+                            Poll::Ready(Err(transport_panicked()))
+                        }) {
                         Poll::Ready(Ok(stream)) => {
                             this.state = UpstreamState::Streaming(stream);
                             continue;
@@ -1176,9 +1188,12 @@ impl FrameSource for Upstream {
                     }
                 }
                 UpstreamState::Streaming(stream) => {
-                    match catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx)))
-                        .unwrap_or_else(|_| Poll::Ready(Some(Err(transport_panicked()))))
-                    {
+                    match catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx))).unwrap_or_else(
+                        |_| {
+                            this.panicked.store(true, Ordering::Relaxed);
+                            Poll::Ready(Some(Err(transport_panicked())))
+                        },
+                    ) {
                         Poll::Ready(polled) => polled,
                         Poll::Pending => return Poll::Pending,
                     }
