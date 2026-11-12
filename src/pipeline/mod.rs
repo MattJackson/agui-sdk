@@ -39,7 +39,9 @@
 //! middleware moves a frame through a `Value` once (middleware must see raw
 //! material, PROC-29) and the processor then enforces that `Value` in place.
 //! Chunk expansion and verification are O(1) per event with no allocation
-//! beyond the ids they track; the reducer is O(delta). Output goes into a
+//! beyond the ids they track, apart from copying an opening chunk's metadata
+//! onto each event synthesized from it, O(metadata); the reducer is
+//! O(delta). Output goes into a
 //! caller-owned `Vec` so its capacity is reused across events.
 //!
 //! Public items here are building blocks: stable, documented, but most
@@ -829,7 +831,9 @@ impl Processor {
     /// processor told the requested run ([`expecting`](Self::expecting)):
     /// a complete stream on which the requested run never appeared is a
     /// `verify.identity` error (RUNIN-06). The client ends every run with
-    /// this; a host that set no expectation gets exactly `finish`.
+    /// this; a host that set no expectation gets `finish`'s result, unless
+    /// an earlier push was rejected, in which case it gets that rejection's
+    /// code (see Errors).
     ///
     /// # Errors
     ///

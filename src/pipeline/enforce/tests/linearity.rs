@@ -1,7 +1,9 @@
 //! Linearity: work grows with the frame, not faster.
 //!
-//! The deterministic check bounds the bytes read twice by lookahead (the
-//! only re-reading the byte path does). The timing bench is `#[ignore]`d:
+//! The deterministic check bounds the bytes lookahead re-reads within the
+//! byte walk; a reroute or lenient retry adds at most one more linear pass on
+//! the `Value` path, which this check does not count. The timing bench is
+//! `#[ignore]`d:
 //! run it with `cargo test --release -- --ignored enforce_linearity_bench`.
 
 use std::time::Instant;

@@ -49,7 +49,8 @@
 //! events are not the chunk (PROC-25).
 //!
 //! Cost: O(1) per event (amortized: a lane table that closing lanes has left
-//! sparse is shrunk). The parent lane is a slot, subagent lanes are a hash
+//! sparse is shrunk), apart from copying an opening chunk's metadata onto
+//! each event synthesized from it, O(metadata). The parent lane is a slot, subagent lanes are a hash
 //! map keyed by the invocation id, and three per-kind indexes (keyed by the
 //! item id's shared `Arc<str>`) find the lane assembling a named item. Ids are
 //! reference-counted clones, so a continuation chunk allocates nothing.
