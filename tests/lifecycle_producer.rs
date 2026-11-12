@@ -1269,3 +1269,37 @@ mod failure_injection {
         );
     }
 }
+
+/// An agent error that wraps the cancellation its send reported.
+#[derive(Debug)]
+struct Wrapped(Error);
+
+impl std::fmt::Display for Wrapped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the agent wound down")
+    }
+}
+
+impl std::error::Error for Wrapped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// covers: LIFE-11, LIFE-16
+#[test]
+fn a_wrapped_cancellation_still_finishes_cancelled() {
+    let runner = Runner::new(agent(|ctx| async move {
+        ctx.cancellation().cancel();
+        match ctx.emitter().say("too late").await {
+            Err(e) => Err(Wrapped(e).into()),
+            Ok(_) => Ok(RunOutcome::success()),
+        }
+    }));
+    let events = run(&runner, input());
+    assert_one_valid_run(&events);
+    assert_eq!(
+        finished(&events).outcome,
+        Some(RunFinishedOutcome::cancelled())
+    );
+}

@@ -973,11 +973,14 @@ fn decode_state<S: serde::de::DeserializeOwned>(state: Option<&Value>) -> Result
     })
 }
 
-/// Whether an agent's error is the cancellation its sends reported.
+/// Whether an agent's error is, or wraps (through `source`), the
+/// cancellation its sends reported.
 fn is_cancellation(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
-    error
-        .downcast_ref::<Error>()
-        .is_some_and(|e| e.code() == ErrorCode::Cancelled)
+    let error: &(dyn std::error::Error + 'static) = error;
+    std::iter::successors(Some(error), |e| e.source()).any(|e| {
+        e.downcast_ref::<Error>()
+            .is_some_and(|e| e.code() == ErrorCode::Cancelled)
+    })
 }
 
 /// `RUN_ERROR` for an agent's `Err`: the code and message of a public
