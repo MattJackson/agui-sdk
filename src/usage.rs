@@ -229,21 +229,29 @@ impl TokenUsageBuilder {
     }
 
     /// Finishes: `total_tokens` is computed from the two totals when both are
-    /// known, never copied from the provider (LIFE-29..LIFE-31).
+    /// known, never copied from the provider (LIFE-29..LIFE-31). Every sum
+    /// the builder makes saturates at 2^53 − 1, the largest count JSON
+    /// carries exactly.
     #[must_use]
     pub fn build(self) -> TokenUsage {
         let mut usage = self.usage;
         usage.total_tokens = match (usage.input_tokens, usage.output_tokens) {
-            (Some(input), Some(output)) => Some(input.saturating_add(output)),
+            (Some(input), Some(output)) => Some(sum(input, output)),
             _ => None,
         };
         usage
     }
 }
 
+/// Adds two counts, saturating at 2^53 − 1, the largest count JSON carries
+/// exactly (and the producer verifier accepts).
+fn sum(a: u64, b: u64) -> u64 {
+    a.saturating_add(b).min(crate::json::MAX_SAFE_INTEGER)
+}
+
 /// Adds a reported count, turning "not reported" into the count.
 fn add(slot: &mut Option<u64>, tokens: u64) {
-    *slot = Some(slot.map_or(tokens, |known| known.saturating_add(tokens)));
+    *slot = Some(slot.map_or(tokens, |known| sum(known, tokens)));
 }
 
 /// Adds a part into a total only when the total was reported: a part alone
@@ -251,6 +259,6 @@ fn add(slot: &mut Option<u64>, tokens: u64) {
 /// gave (LIFE-32).
 fn add_into_known(slot: &mut Option<u64>, tokens: u64) {
     if let Some(known) = slot {
-        *known = known.saturating_add(tokens);
+        *known = sum(*known, tokens);
     }
 }
