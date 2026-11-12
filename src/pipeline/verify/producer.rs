@@ -2423,13 +2423,16 @@ impl ProducerState {
                 );
             }
             // A frontend call this run made is answered by the client, never
-            // by a fabricated tool message (TOOL-24). One the input history
-            // holds may be restated with the client's answer.
+            // by a fabricated tool message (TOOL-24). The client's answer the
+            // input history holds may be restated.
             if let Message::Tool(tool) = message {
-                if self
-                    .calls
-                    .get(&tool.tool_call_id)
-                    .is_some_and(|call| self.frontend.contains(&call.name))
+                let restated = self.messages.get(&tool.id) == Some(&MessageKind::History)
+                    && self.history_calls.contains_key(&tool.tool_call_id);
+                if !restated
+                    && self
+                        .calls
+                        .get(&tool.tool_call_id)
+                        .is_some_and(|call| self.frontend.contains(&call.name))
                 {
                     return refuse(
                         ProducerRule::Outcome,
@@ -2448,8 +2451,16 @@ impl ProducerState {
             // The restated message is the one a reopening agrees with from
             // now on (TEXT-06, BASIC-15), not what this run opened under the
             // id before; an item still open keeps its run state.
+            // An input history message stays one: its restatement is still
+            // the client's (TOOL-24) and reopens the same way.
             self.messages
-                .insert(message.id().clone(), MessageKind::Snapshot);
+                .entry(message.id().clone())
+                .and_modify(|kind| {
+                    if *kind != MessageKind::History {
+                        *kind = MessageKind::Snapshot;
+                    }
+                })
+                .or_insert(MessageKind::Snapshot);
             if self.text.get(message.id()).is_some_and(|item| !item.open) {
                 self.text.remove(message.id());
             }
@@ -3146,6 +3157,58 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+    }
+
+    /// A snapshot may restate the client's answer to a frontend call of the
+    /// input history that this run reopened, as often as it restates the
+    /// thread (TOOL-24).
+    #[test]
+    fn a_snapshot_may_restate_the_history_answer_to_a_frontend_call() {
+        use serde_json::json;
+        let thread = json!([
+            {"id": "a1", "role": "assistant", "content": "x",
+             "toolCalls": [{"id": "h1", "type": "function",
+                            "function": {"name": "ask", "arguments": "{}"}}]},
+            {"id": "t1", "role": "tool", "content": "yes", "toolCallId": "h1"}
+        ]);
+        let input: RunAgentInput = serde_json::from_value(json!({
+            "threadId": "t", "runId": "r", "messages": thread,
+            "tools": [{"name": "ask", "description": "d"}], "context": [],
+            "state": {}, "forwardedProps": {}
+        }))
+        .unwrap();
+        let mut v = ProducerVerifier::for_input(&input);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "h1", "toolCallName": "ask"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "h1"}),
+                json!({"type": "MESSAGES_SNAPSHOT", "messages": thread}),
+                json!({"type": "MESSAGES_SNAPSHOT", "messages": thread}),
+            ],
+        );
+        // A tool message of the run's own making is still refused.
+        let err = v
+            .check(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                {"id": "t2", "role": "tool", "content": "fake", "toolCallId": "h1"}
+            ]})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::Outcome);
+        // So is one reusing the history answer's id for a call of this run.
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "ask"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+            ],
+        );
+        let err = v
+            .check(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                {"id": "t1", "role": "tool", "content": "fake", "toolCallId": "c1"}
+            ]})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::Outcome);
     }
 
     /// Steps are indexed by owner. A regression guard for the O(1) per
