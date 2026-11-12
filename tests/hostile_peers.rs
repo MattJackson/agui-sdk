@@ -273,7 +273,8 @@ fn long_key_object(n: usize, len: usize) -> Value {
 /// comparing key strings, so one removal cost members x key length bytes
 /// while the walk budget charged members / 16. The position is now found by
 /// identity: 8x the members and 8x the key length take about 8x the time (it
-/// was 64x).
+/// was 64x). The bound is `LINEAR_8X`: 4x slack over linear, as the other
+/// wall-clock checks keep.
 #[cfg(feature = "preserve-order")]
 #[test]
 fn patch_remove_position_scan_does_not_compare_key_bytes() {
@@ -304,7 +305,7 @@ fn patch_remove_position_scan_does_not_compare_key_bytes() {
     };
     let (t1, t8) = (time(1), time(8));
     assert!(
-        t8 < t1 * 16,
+        t8 < t1 * LINEAR_8X,
         "8x members and key length took {t8:?} against {t1:?}"
     );
     // The right members were removed, in order, and a failing patch restores
@@ -329,7 +330,8 @@ fn patch_remove_position_scan_does_not_compare_key_bytes() {
 /// `diff` counted the whole `after` subtree at every object level that had
 /// to decide between member-wise removals and a rebuild, then recursed into
 /// it and counted again: O(depth x size). The count stops once the answer is
-/// known, so 8x the depth takes about 8x the time (it was 64x).
+/// known, so 8x the depth takes about 8x the time (it was 64x), bounded by
+/// `LINEAR_8X`.
 #[cfg(feature = "preserve-order")]
 #[test]
 fn diff_removal_cost_check_is_linear_in_depth() {
@@ -362,7 +364,10 @@ fn diff_removal_cost_check_is_linear_in_depth() {
         best
     };
     let (t1, t8) = (time(20), time(160));
-    assert!(t8 < t1 * 20, "8x the depth took {t8:?} against {t1:?}");
+    assert!(
+        t8 < t1 * LINEAR_8X,
+        "8x the depth took {t8:?} against {t1:?}"
+    );
     let (before, after) = ops_for(20);
     let patch = agui_sdk::patch::diff(&before, &after);
     // 20 removals at each of the 20 levels: the decision is unchanged.
@@ -943,6 +948,13 @@ fn time_frames(frames: &[Vec<u8>]) -> Duration {
 /// debug-build runners (these run in every test lane) crossed any threshold
 /// between them; 16x leaves a factor of 4 on both sides.
 const LINEAR_16X: u32 = 64;
+
+/// Time bound for 8x the input (the `preserve-order` checks above, whose
+/// inputs are too large to scale to 16x): 4x slack over linear (32x), still
+/// half of the 64x a quadratic path takes. Tighter bounds (2x slack) were
+/// crossed by runner stalls on linear code.
+#[cfg(feature = "preserve-order")]
+const LINEAR_8X: u32 = 32;
 
 fn assert_linear(small: &[Vec<u8>], large: &[Vec<u8>]) {
     let (t_small, t_large) = (time_frames(small), time_frames(large));
