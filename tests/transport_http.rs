@@ -638,13 +638,16 @@ fn a_retry_past_the_deadline_reports_the_failure() {
                 std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
             listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
         };
+        // Windows takes about two seconds to report a refused loopback
+        // connect, so the deadline leaves room for that; the backoff is past
+        // it on every platform.
         let mut policy = RetryPolicy::exponential(1);
-        policy.initial_backoff = Duration::from_secs(5);
+        policy.initial_backoff = Duration::from_secs(30);
         policy.jitter = false;
         let transport = build(
             HttpTransport::builder(format!("http://{addr}/"))
                 .retry(policy)
-                .total_timeout(Duration::from_secs(1)),
+                .total_timeout(Duration::from_secs(4)),
         );
         expect_code(transport.open(request()).await, ErrorCode::Connect);
     });
