@@ -51,7 +51,9 @@ pub enum RunStatus {
     Finished {
         /// The outcome as delivered, after enforcement.
         outcome: Option<RunFinishedOutcome>,
-        /// The run's return value.
+        /// The run's return value, kept for a successful outcome only; a
+        /// `result` sent beside an interrupt or cancelled outcome is on the
+        /// `RUN_FINISHED` event ([`RunUpdate`]) only.
         result: Option<Value>,
     },
     /// `RUN_ERROR` from the agent: a delivered failure (LIFE-22, LIFE-23).
@@ -123,7 +125,9 @@ pub struct RunReport {
     /// the same stream (a producer MAY start a new run after `RUN_ERROR`),
     /// this keeps the requested run's own ending, so a requested run that
     /// failed is never reported as a success because a later one succeeded
-    /// (LIFE-23). In a partial report it never reads as success either.
+    /// (LIFE-23). In a partial report of a requested run that reached no
+    /// terminal event it is [`RunStatus::Errored`], so it never reads as
+    /// success; a terminal the requested run did deliver is kept.
     pub requested_status: RunStatus,
     /// Complete history after the run. Reasoning and encrypted values in it
     /// are meant for the agent that produced them: send them back only

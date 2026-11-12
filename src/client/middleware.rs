@@ -4,8 +4,10 @@
 //! A middleware sees the input before it is sent and every event frame
 //! before enforcement, as raw JSON, unknown material included (PROC-21,
 //! PROC-29, ARCH-02). It can rewrite, drop, insert or delay frames. It runs
-//! after the compatibility boundary and era shims, so it always sees 1.0
-//! shapes (VER-14), and it must handle both chunk and expanded spellings
+//! after the compatibility boundary and era shims, so frames always reach it
+//! in 1.0 shapes (VER-14); the input is as it will be sent, so for a pinned
+//! pre-versioning peer it is in that era's shape (no `protocolVersion`,
+//! flattened content). It must handle both chunk and expanded spellings
 //! (PROC-24): expansion happens later.
 //!
 //! The first registered middleware is outermost. A middleware is called once

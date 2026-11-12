@@ -181,7 +181,9 @@ harness), `xtask` (unpublished: spec fetch, codegen, drift, trace, MSRV lock).
 RunRequest::into_input → Thread checks (resume coverage/expiry, pending calls; INTR-11, TOOL-33)
   → strip activity messages (RUNIN-12) → Enforcer::check_outgoing_input (typed, no Value round trip; PROC-34)
   → declare protocolVersion "1.0" unless the peer is pinned pre-versioning (RUNIN-08)
-  → no middleware: serialize once → Transport::open(TransportRequest { body: Chunk, ids, headers, Accept, cancel })
+  → no middleware, no pinned era: serialize once → Transport::open(TransportRequest { body: Chunk, ids, headers, Accept, cancel })
+  → no middleware, pinned legacy peer: to Value once → Boundary::upgrade_input → EraShims::downgrade_input
+    → Enforcer::enforce_outgoing_value → serialize → Transport::open
   → with middleware: to Value once → EraShims::downgrade_input (pinned legacy peer) → middleware sees
     MiddlewareRequest.input → Enforcer::enforce_outgoing_value (strip + warn, malformed = fatal; PROC-32..34)
     → serialize → Transport::open
@@ -313,7 +315,8 @@ enforces them. *n* = bytes in,
 | Reducer: `ACTIVITY_SNAPSHOT`, tool result, metadata | O(payload) | one copy of the payload into the history | |
 | JSON Patch apply (`STATE_DELTA`, `ACTIVITY_DELTA`) | O(Σ op size + depth) | the undo log, plus one copy of each operation value installed | in-place apply, undo on failure; incremental node budget (node units: one per value plus one per 64 bytes of string or key text, so a `copy` is charged for the text it clones); a unit is 32 B (scalar array element) to about 720 B (single-member object with a key under 64 bytes) resident, and the default ceiling of 180,000 units holds the patched state and activity content to about 124 MiB (DECISIONS.md D14; see "Client memory and large state" below) |
 | `RunUpdate` delivery | O(1) | 0 beyond the reducer's per-event `Arc` (never a deep clone) | observers borrow `RunView` |
-| Outgoing input, no middleware | O(input) | one serialization, no `Value` round trip | `check_outgoing_input(&RunAgentInput)` |
+| Outgoing input, no middleware, no pinned era | O(input) | one serialization, no `Value` round trip | `check_outgoing_input(&RunAgentInput)` |
+| Outgoing input, no middleware, pinned legacy peer | O(input) | one `Value` conversion plus one serialization | upgrade, era downgrade, `enforce_outgoing_value(&mut Value)` in place |
 | Outgoing input, with middleware | O(input) | one `Value` conversion plus one serialization | `enforce_outgoing_value(&mut Value)` in place |
 | Server emit | O(1) | 0 beyond the event | verifier check plus one queue slot |
 | SSE/NDJSON/proto encode | O(event) | 0 amortized (caller-owned buffer, reused) | `Encoder` enum, no `dyn` |
