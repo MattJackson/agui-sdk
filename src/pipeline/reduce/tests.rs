@@ -325,7 +325,7 @@ fn duplicate_result_id_replaces_in_place() {
     assert_eq!(h.history().as_array().unwrap().len(), 2);
 }
 
-/// pipeline-verify-3: per-run call sets inflated by one run are dropped, not
+/// Per-run call sets inflated by one run are dropped, not
 /// cleared at O(capacity), once later runs are small.
 #[test]
 fn oversized_run_call_sets_are_dropped_after_a_small_run() {
@@ -482,7 +482,7 @@ fn a_carrier_from_an_earlier_run_gives_its_id_up() {
     assert!(h.codes().is_empty());
 }
 
-/// pipeline-verify-1 (amendment A): a restored `[Assistant x, Tool x]` history
+/// A restored `[Assistant x, Tool x]` history
 /// indexes the earlier message.
 #[test]
 fn restored_id_clash_keeps_the_index_on_the_earlier_message() {

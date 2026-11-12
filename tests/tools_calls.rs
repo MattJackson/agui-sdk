@@ -207,7 +207,7 @@ fn a_result_is_its_own_tool_message_and_does_not_reopen_the_call() {
     run(&with_message(&call("t2", "confirm", &["{}"]))).assert_ok();
 }
 
-/// pipeline-verify-2 (BASIC-15): the parent a call names is a message id the
+/// BASIC-15: the parent a call names is a message id the
 /// producer used (the reducer mints the carrier), so a result may not reuse it.
 #[test]
 fn a_result_may_not_reuse_the_minted_parent_id() {
@@ -233,7 +233,7 @@ fn a_result_may_not_reuse_the_minted_parent_id() {
     run(&in_run(&ok)).assert_ok();
 }
 
-/// pipeline-verify-1: a result sharing a parentless call's id keeps the call.
+/// A result sharing a parentless call's id keeps the call.
 #[test]
 fn a_result_with_the_call_id_keeps_the_calls_carrier() {
     let body = [

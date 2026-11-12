@@ -1205,7 +1205,7 @@ fn new_messages_take_the_first_of_two_messages_sharing_an_id() {
     assert_eq!(texts, ["first"]);
 }
 
-/// pipeline-verify-1: a tool result sharing its parentless call's id is the
+/// A tool result sharing its parentless call's id is the
 /// second new message with that id, and `new_messages` yields both.
 #[test]
 fn new_messages_resolves_a_repeated_id_by_occurrence() {

@@ -1,4 +1,4 @@
-//! State-reuse unit tests. Rule tests live in the `tests/` rule files.
+//! State-reuse and identity unit tests; most rule tests live in `tests/`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -44,7 +44,7 @@ fn started(run: &str) -> Event {
     ev(json!({"type": "RUN_STARTED", "threadId": "t", "runId": run}))
 }
 
-/// pipeline-verify-3: a table inflated by one run is dropped, not cleared at
+/// A table inflated by one run is dropped, not cleared at
 /// O(capacity), when later runs are small.
 #[test]
 fn an_oversized_tracker_is_dropped_after_a_small_run() {
@@ -78,7 +78,7 @@ fn an_oversized_tracker_is_dropped_after_a_small_run() {
     );
 }
 
-/// pipeline-verify-3: the per-step owner sets and the activity table too.
+/// The per-step owner sets and the activity table too.
 #[test]
 fn oversized_owner_sets_and_activity_are_dropped_after_a_small_run() {
     let floor = crate::pipeline::RETAIN_FLOOR;
@@ -117,7 +117,7 @@ fn oversized_owner_sets_and_activity_are_dropped_after_a_small_run() {
     assert!(v.state.activity.capacity() <= floor);
 }
 
-/// pipeline-verify-4: step names do not accumulate within a run.
+/// Step names do not accumulate within a run.
 #[test]
 fn distinct_finished_step_names_are_not_retained_within_a_run() {
     let mut v = ConsumerVerifier::new();
@@ -148,7 +148,7 @@ fn distinct_finished_step_names_are_not_retained_within_a_run() {
     .unwrap();
 }
 
-/// pipeline-verify-6: peer ids in error text are previewed and counted, not
+/// Peer ids in error text are previewed and counted, not
 /// interpolated at full length.
 #[test]
 fn error_text_bounds_peer_ids() {
