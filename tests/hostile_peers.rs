@@ -1949,8 +1949,16 @@ fn thinking_flood(
     rounds: usize,
     round: impl Fn(usize) -> Vec<Value>,
 ) -> (Option<ErrorCode>, i64) {
+    flood_on(Processor::new(history_limit(limit)), rounds, round)
+}
+
+/// As [`thinking_flood`], on a given processor.
+fn flood_on(
+    mut p: Processor,
+    rounds: usize,
+    round: impl Fn(usize) -> Vec<Value>,
+) -> (Option<ErrorCode>, i64) {
     let mut reporter = Reporter::new(Arc::new(NullSink), 16);
-    let mut p = Processor::new(history_limit(limit));
     push(&mut p, &mut reporter, &started()).unwrap();
     let batches: Vec<Vec<Vec<u8>>> = (0..rounds).map(|i| frames(&round(i))).collect();
     let mut out = Vec::new();
@@ -2040,35 +2048,42 @@ fn subagent_tool_chunk_lanes_hold_no_copy_of_the_parent_id() {
     let _g = lock();
     const LIMIT: usize = 8 * 1024 * 1024;
     let parent = format!("p{}", "x".repeat(512 * 1024 - 1));
-    let rounds = |snapshot: bool| {
+    let rounds = || {
         let parent = parent.clone();
         move |i: usize| {
-            let mut round = Vec::new();
-            if i == 0 && snapshot {
-                round.push(json!({
-                    "type": "MESSAGES_SNAPSHOT",
-                    "messages": [{"id": parent, "role": "assistant"}]
-                }));
-            }
-            round.push(json!({
-                "type": "SUBAGENT_STARTED", "subagentRunId": format!("s{i}"), "name": "h"
-            }));
-            round.push(json!({
-                "type": "TOOL_CALL_CHUNK",
-                "toolCallId": format!("c{i}"),
-                "toolCallName": "f",
-                "parentMessageId": parent,
-                "subagentRunId": format!("s{i}")
-            }));
-            round
+            vec![
+                json!({
+                    "type": "SUBAGENT_STARTED", "subagentRunId": format!("s{i}"), "name": "h"
+                }),
+                json!({
+                    "type": "TOOL_CALL_CHUNK",
+                    "toolCallId": format!("c{i}"),
+                    "toolCallName": "f",
+                    "parentMessageId": parent,
+                    "subagentRunId": format!("s{i}")
+                }),
+            ]
         }
     };
     // 64 subagents naming one 512 KiB parent: 32 MiB on the wire, one copy
-    // of the parent held (by the history), whether a snapshot or the first
-    // chunk's minted carrier put it there.
-    for (name, snapshot) in [("held parent", true), ("minted carrier", false)] {
-        let (code, live) = thinking_flood(LIMIT, 64, rounds(snapshot));
-        assert_eq!(code, None, "{name}: the stream is conformant");
+    // of the parent held (by the history), whether the restored history or
+    // the first chunk's minted carrier put it there. The consumer accepts
+    // both streams: it knows no owner for a message held from before the
+    // run, nor for a carrier the reducer minted, so it takes each lane's tag
+    // at its word. (A parent this run streamed or a snapshot of it restated
+    // has a known owner, and a lane tagged with another is refused.)
+    let held: Vec<agui_sdk::message::Message> =
+        serde_json::from_value(json!([{"id": parent, "role": "assistant"}])).unwrap();
+    let cases = [
+        (
+            "held parent",
+            Processor::with_history(history_limit(LIMIT), held, json!({})),
+        ),
+        ("minted carrier", Processor::new(history_limit(LIMIT))),
+    ];
+    for (name, p) in cases {
+        let (code, live) = flood_on(p, 64, rounds());
+        assert_eq!(code, None, "{name}: the consumer accepts the stream");
         assert!(
             live < 4 * 1024 * 1024,
             "{name}: {} KiB resident after 64 subagent lanes naming a 512 KiB parent",
