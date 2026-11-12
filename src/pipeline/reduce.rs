@@ -539,6 +539,13 @@ impl Reducer {
         self.bookkeeping = total;
     }
 
+    /// The history growth charged so far, less the bookkeeping last
+    /// reported with [`set_bookkeeping`](Self::set_bookkeeping).
+    #[cfg(feature = "client")]
+    pub(crate) fn growth_apart_from_bookkeeping(&self) -> i64 {
+        self.history_growth.saturating_sub(signed(self.bookkeeping))
+    }
+
     /// Charges the change in the run's tool-call tables since `before`.
     fn settle_run_calls(&mut self, before: usize) {
         self.history_growth = self

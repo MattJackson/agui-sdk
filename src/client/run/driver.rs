@@ -174,6 +174,9 @@ pub(in crate::client) struct RunDriver {
     /// Set by an `Upstream` stage that caught a transport panic, so the
     /// panic fails the run as it does without middleware.
     upstream_panicked: Arc<AtomicBool>,
+    /// What the processor charges apart from the `Upstream` boundaries,
+    /// after the last frame it took: the room those boundaries have left.
+    processor_charged: Arc<AtomicUsize>,
     era: Option<EraShims>,
     sink: Arc<RunSink>,
     reporter: Reporter,
@@ -233,6 +236,7 @@ impl RunDriver {
             boundary: None,
             upstream_retained: Arc::new(AtomicUsize::new(0)),
             upstream_panicked: Arc::new(AtomicBool::new(false)),
+            processor_charged: Arc::new(AtomicUsize::new(0)),
             era: None,
             sink,
             reporter,
@@ -543,6 +547,7 @@ impl RunDriver {
                 limits,
                 Arc::clone(&self.upstream_retained),
                 Arc::clone(&self.upstream_panicked),
+                Arc::clone(&self.processor_charged),
             );
             let request =
                 MiddlewareRequest::new(value, Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>);
@@ -565,9 +570,12 @@ impl RunDriver {
             // What the boundary in `Upstream` keeps is charged with the
             // processor's own id bookkeeping (D28).
             processor.charge_boundary(self.upstream_retained.load(Ordering::Relaxed));
-            frame
+            let result = frame
                 .into_value()
-                .and_then(|value| processor.push_value(value, &mut self.reporter, &mut self.out))
+                .and_then(|value| processor.push_value(value, &mut self.reporter, &mut self.out));
+            self.processor_charged
+                .store(processor.charged_apart_from_boundary(), Ordering::Relaxed);
+            result
         } else if let Some(json) = frame.as_json() {
             processor.push_json(json, &mut self.reporter, &mut self.out)
         } else {
@@ -1053,6 +1061,7 @@ fn upstream(
     limits: crate::pipeline::Limits,
     retained: Arc<AtomicUsize>,
     panicked: Arc<AtomicBool>,
+    processor_charged: Arc<AtomicUsize>,
 ) -> Next {
     Next::from_fn(move |request: MiddlewareRequest| {
         let sink = sink as Arc<dyn DiagnosticSink>;
@@ -1069,6 +1078,7 @@ fn upstream(
             retained: Arc::clone(&retained),
             charged: 0,
             panicked: Arc::clone(&panicked),
+            processor_charged: Arc::clone(&processor_charged),
             era,
             reporter,
             max_frame_bytes: limits.max_frame_bytes,
@@ -1093,12 +1103,15 @@ struct Upstream {
     charged: usize,
     /// The driver's flag for a transport panic caught here.
     panicked: Arc<AtomicBool>,
+    /// What the processor charges apart from these boundaries.
+    processor_charged: Arc<AtomicUsize>,
     era: Option<EraShims>,
     reporter: Reporter,
     max_frame_bytes: usize,
-    /// The boundary's own ceiling (D28). Its share is also charged to the
-    /// processor on every frame that reaches it, but a middleware that drops
-    /// the translated frames would otherwise let the table grow unchecked.
+    /// The boundary's own ceiling (D28), shared with what the processor
+    /// already charges. Its share is also charged to the processor on every
+    /// frame that reaches it, but a middleware that drops the translated
+    /// frames would otherwise let the table grow unchecked.
     max_history_bytes: usize,
     /// Parses raw frames with the container-entry and depth budgets applied
     /// as the tree is built.
@@ -1127,10 +1140,16 @@ impl Upstream {
         self.reporter.end_event(None);
         let retained = self.boundary.retained();
         self.recharge(retained);
-        if retained > self.max_history_bytes {
+        // Every live boundary's share, with the processor's own charge: the
+        // processor's combined check, judged here as well.
+        let charged = self
+            .retained
+            .load(Ordering::Relaxed)
+            .saturating_add(self.processor_charged.load(Ordering::Relaxed));
+        if charged > self.max_history_bytes {
             return Err(Error::new(
                 ErrorCode::LimitExceeded,
-                "the compatibility boundary's open spans exceed the history limit",
+                "the compatibility boundary's open spans and the history exceed the history limit",
             ));
         }
         Ok(if keep {

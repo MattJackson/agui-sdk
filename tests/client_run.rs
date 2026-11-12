@@ -1268,6 +1268,44 @@ fn a_middleware_dropping_reasoning_frames_still_bounds_the_boundary() {
     assert_eq!(err.code(), ErrorCode::LimitExceeded, "{err}");
 }
 
+/// The middleware-path boundary's own check counts what the processor
+/// already holds: with the history near the limit, a middleware that drops
+/// the translated reasoning frames cannot let the span table take another
+/// whole history budget (D14, D28).
+#[test]
+fn a_middleware_dropping_reasoning_frames_leaves_the_boundary_only_the_remaining_room() {
+    let mut limits = Limits::default();
+    limits.max_history_bytes = 1024 * 1024;
+    let long = |i: usize| format!("{i:08}{}", "x".repeat(64 * 1024 - 8));
+    // About 600 KiB of history first, then about 512 KiB of open spans:
+    // each alone is under the limit, together they are past it.
+    let mut events = text("m1", &"y".repeat(600 * 1024));
+    events.extend((0..8).map(|i| json!({"type": "THINKING_START", "messageId": long(i)})));
+    let mut frames = run_of("t1", "r1", events);
+    frames.pop();
+    let client = AgentClient::with_transport(mock(frames))
+        .limits(limits)
+        .diagnostic_sink(NullSink)
+        .middleware(|request: MiddlewareRequest, next: Next| {
+            map_frames(next.run(request), |frame: Frame| {
+                Ok(match frame.event_type() {
+                    Some(
+                        EventType::ReasoningStart
+                        | EventType::ReasoningMessageStart
+                        | EventType::ReasoningMessageContent
+                        | EventType::ReasoningMessageEnd
+                        | EventType::ReasoningEnd,
+                    ) => None,
+                    _ => Some(frame),
+                })
+            })
+        })
+        .build()
+        .unwrap();
+    let err = block_on(client.run(request()).into_future()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::LimitExceeded, "{err}");
+}
+
 // ------------------------------------------------- conclusion edge cases
 
 /// Serves `frames` in order, then ends.
