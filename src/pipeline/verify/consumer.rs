@@ -814,6 +814,13 @@ impl VerifierState {
                         self.step_name_bytes = self
                             .step_name_bytes
                             .saturating_sub(step_name_bytes(&e.step_name));
+                    } else if now_empty {
+                        // The owners' charge was credited above: a large
+                        // emptied set is dropped, not kept resident and
+                        // uncharged (D25, D14).
+                        if let Some(owners) = self.steps.get_mut(e.step_name.as_str()) {
+                            crate::pipeline::reset_set(owners);
+                        }
                     }
                     Ok(())
                 } else {
@@ -994,14 +1001,7 @@ impl VerifierState {
                     e.replace == Some(false) && self.activity.contains_key(&e.message_id);
                 if !keeps_owner {
                     let id = self.interned(&e.message_id);
-                    let charge = owner_heap(e.subagent_run_id.as_ref());
-                    let (charge, credit) =
-                        match self.activity.insert(id.clone(), e.subagent_run_id.clone()) {
-                            // The key stays; only the owner was replaced.
-                            Some(old) => (charge, owner_heap(old.as_ref())),
-                            None => (ACTIVITY_SLOT + charge, 0),
-                        };
-                    self.run_bytes = self.run_bytes.saturating_add(charge).saturating_sub(credit);
+                    self.set_activity_owner(&id, e.subagent_run_id.clone());
                     self.know(&id);
                 } else {
                     self.know(&e.message_id);
@@ -1114,6 +1114,15 @@ impl VerifierState {
                                     .run_bytes
                                     .saturating_sub(RESTATED_SLOT + owner_heap(old.as_ref()));
                             }
+                            // A restated activity takes the snapshot's
+                            // owner, as the producer verifier and the
+                            // reducer do (SUB-21).
+                            if let Message::Activity(activity) = message {
+                                self.set_activity_owner(
+                                    &activity.id,
+                                    activity.subagent_run_id.clone(),
+                                );
+                            }
                             continue;
                         }
                     };
@@ -1129,6 +1138,19 @@ impl VerifierState {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Gives activity message `id` the owner `owner`, charging a new entry
+    /// its slot and the owner's heap and crediting a replaced owner's.
+    fn set_activity_owner(&mut self, id: &MessageId, owner: Owner) {
+        let id = self.interned(id);
+        let charge = owner_heap(owner.as_ref());
+        let (charge, credit) = match self.activity.insert(id, owner) {
+            // The key stays; only the owner was replaced.
+            Some(old) => (charge, owner_heap(old.as_ref())),
+            None => (ACTIVITY_SLOT + charge, 0),
+        };
+        self.run_bytes = self.run_bytes.saturating_add(charge).saturating_sub(credit);
     }
 
     fn end_subagent(&mut self, event_type: &str, id: &SubagentRunId) -> Result<()> {
