@@ -12,7 +12,7 @@ body:
     attributes:
       label: Version
       description: Crate version or commit, and which crate (agui-sdk or ag-ui-sdk).
-      placeholder: agui-sdk 0.9.0
+      placeholder: agui-sdk 0.9.1
     validations:
       required: true
   - type: input

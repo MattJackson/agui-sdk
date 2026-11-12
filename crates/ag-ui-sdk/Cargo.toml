@@ -37,7 +37,7 @@ log = ["agui-sdk/log"]
 [dependencies]
 # Exact pin: the alias is the same release as agui-sdk, never a range of them.
 # Keep it equal to [workspace.package] version in the root Cargo.toml.
-agui-sdk = { version = "=0.9.0", path = "../..", default-features = false }
+agui-sdk = { version = "=0.9.1", path = "../..", default-features = false }
 
 [package.metadata.docs.rs]
 all-features = true

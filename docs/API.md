@@ -1,6 +1,6 @@
 # agui-sdk API design
 
-Status: implemented; this is the API of the 0.9.0 release. Scope: AG-UI 1.0,
+Status: implemented; this is the API of the 0.9.x releases. Scope: AG-UI 1.0,
 client and server, SSE and protobuf. The crate's rustdoc (docs.rs) is the
 normative reference for signatures; this file explains the design behind
 them. Companion documents:
