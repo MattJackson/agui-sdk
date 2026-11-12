@@ -409,7 +409,7 @@ fn a_disabled_error_body_timeout_does_not_overflow_the_clock() {
 }
 
 #[test]
-fn a_huge_backoff_ends_in_the_total_timeout_without_overflowing() {
+fn a_huge_backoff_past_the_total_timeout_reports_the_status_without_overflowing() {
     for jitter in [true, false] {
         block(async {
             let server = MockServer::sequence(vec![Reply::status(503).body("x"), ok_reply()])
@@ -425,7 +425,9 @@ fn a_huge_backoff_ends_in_the_total_timeout_without_overflowing() {
                     .total_timeout(Duration::from_secs(5)),
             );
             let started = Instant::now();
-            expect_code(transport.open(request()).await, ErrorCode::Timeout);
+            // The wait would pass the deadline: the 503 is reported.
+            let error = expect_code(transport.open(request()).await, ErrorCode::HttpStatus);
+            assert_eq!(error.http_status(), Some(503));
             assert!(started.elapsed() < Duration::from_secs(3));
         });
     }
@@ -563,6 +565,71 @@ fn refused_connections_are_connect_errors() {
         let started = Instant::now();
         expect_code(transport.open(request()).await, ErrorCode::Connect);
         assert!(started.elapsed() >= 450 * MS, "{:?}", started.elapsed());
+    });
+}
+
+/// A connect-phase timeout (here the TLS handshake) is a connect failure:
+/// nothing was sent, so the policy retries it as it retries a refusal. The
+/// surfaced code stays `transport.timeout`.
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
+#[test]
+fn connect_timeouts_are_retried() {
+    block(async {
+        let silent = SilentServer::start()
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut policy = RetryPolicy::exponential(2);
+        policy.initial_backoff = 50 * MS;
+        policy.jitter = false;
+        let transport = build(
+            HttpTransport::builder(format!("https://{}/", silent.addr()))
+                .connect_timeout(150 * MS)
+                .response_timeout(Duration::from_secs(10))
+                .retry(policy),
+        );
+        let started = Instant::now();
+        expect_code(transport.open(request()).await, ErrorCode::Timeout);
+        // Three attempts of 150 ms plus backoffs of 50 and 100 ms.
+        assert!(started.elapsed() >= 550 * MS, "{:?}", started.elapsed());
+    });
+}
+
+/// When the wait before a retry would pass the total deadline, the failure
+/// that prompted it is reported, not a bare total timeout.
+#[test]
+fn a_retry_past_the_deadline_reports_the_failure() {
+    block(async {
+        let server = MockServer::always(
+            Reply::status(503)
+                .header("Retry-After", "30")
+                .framing(Framing::Length),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+        let transport = build(
+            HttpTransport::builder(server.url("/"))
+                .retry(RetryPolicy::exponential(1))
+                .total_timeout(Duration::from_secs(2)),
+        );
+        let error = expect_code(transport.open(request()).await, ErrorCode::HttpStatus);
+        assert_eq!(error.http_status(), Some(503));
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(30)));
+        assert_eq!(server.requests().len(), 1);
+
+        let addr = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
+            listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
+        };
+        let mut policy = RetryPolicy::exponential(1);
+        policy.initial_backoff = Duration::from_secs(5);
+        policy.jitter = false;
+        let transport = build(
+            HttpTransport::builder(format!("http://{addr}/"))
+                .retry(policy)
+                .total_timeout(Duration::from_secs(1)),
+        );
+        expect_code(transport.open(request()).await, ErrorCode::Connect);
     });
 }
 
