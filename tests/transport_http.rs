@@ -868,6 +868,12 @@ fn error_bodies_are_bounded() {
         let error = expect_code(transport.open(request()).await, ErrorCode::HttpStatus);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(error.http_status(), Some(500));
+        // What was read before the time budget is marked as cut off.
+        let body = std::error::Error::source(&error)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        assert!(body.starts_with('x'), "{body:?}");
+        assert!(body.ends_with(" [...]"), "{body:?}");
     });
 }
 

@@ -26,7 +26,8 @@ use endpoint::Endpoint;
 
 /// Default connect timeout (TCP, proxy tunnel and TLS handshake).
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Default wait for response headers after the request is sent.
+/// Default wait for response headers, from the start of each attempt
+/// (connection setup included).
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an idle pooled connection is kept.
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -337,9 +338,12 @@ impl HttpTransportBuilder {
         self
     }
 
-    /// Maximum wait for the response headers once the request is sent,
-    /// retries excluded. Default 60 s. The stream itself is bounded by the
-    /// idle and total timeouts instead.
+    /// Maximum wait for the response headers, counted from the start of
+    /// each attempt (retries excluded), so connection setup (TCP, proxy
+    /// tunnel, TLS) counts against it: a `response_timeout` shorter than the
+    /// [`connect_timeout`](Self::connect_timeout) caps the connect too, and
+    /// a connect it cuts short is not retried. Default 60 s. The stream
+    /// itself is bounded by the idle and total timeouts instead.
     pub fn response_timeout(mut self, timeout: Duration) -> Self {
         self.response_timeout = Some(timeout);
         self

@@ -168,9 +168,8 @@ pub(in crate::client) struct RunDriver {
     via_middleware: bool,
     processor: Option<Processor>,
     boundary: Option<Boundary>,
-    /// What the boundaries in the middleware path's `Upstream` stages keep
-    /// (their `retained` figures, summed), charged like `boundary`'s (D28).
-    upstream_retained: Arc<AtomicUsize>,
+    /// What the driver and the middleware path's `Upstream` stages share.
+    shared: Arc<UpstreamShared>,
     era: Option<EraShims>,
     sink: Arc<RunSink>,
     reporter: Reporter,
@@ -228,7 +227,7 @@ impl RunDriver {
             via_middleware: false,
             processor: None,
             boundary: None,
-            upstream_retained: Arc::new(AtomicUsize::new(0)),
+            shared: Arc::default(),
             era: None,
             sink,
             reporter,
@@ -357,6 +356,7 @@ impl RunDriver {
                             panicked = true;
                             Poll::Ready(Some(Err(fallback())))
                         });
+                    panicked |= self.shared.panicked.load(Ordering::Relaxed);
                     match polled {
                         Poll::Ready(Some(Ok(frame))) => {
                             frames += 1;
@@ -378,6 +378,18 @@ impl RunDriver {
                                 && ends_the_stream(err.code()) =>
                         {
                             return Poll::Ready(self.end_of_stream().map(Err));
+                        }
+                        // The transport saw the run's token first: the
+                        // cancel is judged as one seen here would be, so a
+                        // received terminal still wins.
+                        Poll::Ready(Some(Err(err)))
+                            if !panicked
+                                && err.code() == ErrorCode::Cancelled
+                                && self.cancel.is_cancelled() =>
+                        {
+                            if let Some(ended) = self.cancelled_now() {
+                                return Poll::Ready(ended);
+                            }
                         }
                         Poll::Ready(Some(Err(err))) => {
                             return Poll::Ready(Some(Err(self.conclude_err(err))))
@@ -524,7 +536,7 @@ impl RunDriver {
                 era,
                 Arc::clone(&self.sink),
                 limits,
-                Arc::clone(&self.upstream_retained),
+                Arc::clone(&self.shared),
             );
             let request =
                 MiddlewareRequest::new(value, Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>);
@@ -546,10 +558,14 @@ impl RunDriver {
         let result = if self.via_middleware {
             // What the boundary in `Upstream` keeps is charged with the
             // processor's own id bookkeeping (D28).
-            processor.charge_boundary(self.upstream_retained.load(Ordering::Relaxed));
-            frame
+            processor.charge_boundary(self.shared.retained.load(Ordering::Relaxed));
+            let result = frame
                 .into_value()
-                .and_then(|value| processor.push_value(value, &mut self.reporter, &mut self.out))
+                .and_then(|value| processor.push_value(value, &mut self.reporter, &mut self.out));
+            self.shared
+                .processor_charged
+                .store(processor.charged_apart_from_boundary(), Ordering::Relaxed);
+            result
         } else if let Some(json) = frame.as_json() {
             processor.push_json(json, &mut self.reporter, &mut self.out)
         } else {
@@ -708,13 +724,15 @@ impl RunDriver {
         let (mut messages, mut state, usage, interrupts, pending, new_ids) =
             match self.processor.take() {
                 Some(processor) => {
-                    let reducer = processor.into_reducer();
-                    let usage = reducer.usage().to_vec();
-                    let interrupts = reducer.open_interrupts().to_vec();
-                    let pending = reducer.pending_tool_calls().to_vec();
-                    let new_ids = reducer.run_message_ids().to_vec();
-                    let (messages, state) = reducer.into_parts();
-                    (messages, state, usage, interrupts, pending, new_ids)
+                    let parts = processor.into_reducer().into_report_parts();
+                    (
+                        parts.messages,
+                        parts.state,
+                        parts.usage,
+                        parts.interrupts,
+                        parts.pending,
+                        parts.run_ids,
+                    )
                 }
                 None => (
                     Vec::new(),
@@ -1033,7 +1051,7 @@ fn upstream(
     era: Option<EraShims>,
     sink: Arc<RunSink>,
     limits: crate::pipeline::Limits,
-    retained: Arc<AtomicUsize>,
+    shared: Arc<UpstreamShared>,
 ) -> Next {
     Next::from_fn(move |request: MiddlewareRequest| {
         let sink = sink as Arc<dyn DiagnosticSink>;
@@ -1047,7 +1065,7 @@ fn upstream(
         FrameStream::new(Upstream {
             state: UpstreamState::Opening(open(parts.into_request(body))),
             boundary: Boundary::new(),
-            retained: Arc::clone(&retained),
+            shared: Arc::clone(&shared),
             charged: 0,
             era,
             reporter,
@@ -1064,19 +1082,34 @@ enum UpstreamState {
     Done,
 }
 
+/// What the driver shares with the middleware path's `Upstream` stages.
+#[derive(Default)]
+struct UpstreamShared {
+    /// What the live stages' boundaries keep (their `retained` figures,
+    /// summed), charged like the direct path's boundary (D28).
+    retained: AtomicUsize,
+    /// Set by a stage that caught a transport panic, so the panic fails the
+    /// run as it does without middleware.
+    panicked: AtomicBool,
+    /// What the processor charges apart from those boundaries, after the
+    /// last frame it took: the room the boundaries have left.
+    processor_charged: AtomicUsize,
+}
+
 struct Upstream {
     state: UpstreamState,
     boundary: Boundary,
-    /// The driver's sum of what live `Upstream` boundaries keep; this
-    /// stage's share of it is `charged`.
-    retained: Arc<AtomicUsize>,
+    /// Shared with the driver; this stage's share of `shared.retained` is
+    /// `charged`.
+    shared: Arc<UpstreamShared>,
     charged: usize,
     era: Option<EraShims>,
     reporter: Reporter,
     max_frame_bytes: usize,
-    /// The boundary's own ceiling (D28). Its share is also charged to the
-    /// processor on every frame that reaches it, but a middleware that drops
-    /// the translated frames would otherwise let the table grow unchecked.
+    /// The boundary's own ceiling (D28), shared with what the processor
+    /// already charges. Its share is also charged to the processor on every
+    /// frame that reaches it, but a middleware that drops the translated
+    /// frames would otherwise let the table grow unchecked.
     max_history_bytes: usize,
     /// Parses raw frames with the container-entry and depth budgets applied
     /// as the tree is built.
@@ -1105,10 +1138,17 @@ impl Upstream {
         self.reporter.end_event(None);
         let retained = self.boundary.retained();
         self.recharge(retained);
-        if retained > self.max_history_bytes {
+        // Every live boundary's share, with the processor's own charge: the
+        // processor's combined check, judged here as well.
+        let charged = self
+            .shared
+            .retained
+            .load(Ordering::Relaxed)
+            .saturating_add(self.shared.processor_charged.load(Ordering::Relaxed));
+        if charged > self.max_history_bytes {
             return Err(Error::new(
                 ErrorCode::LimitExceeded,
-                "the compatibility boundary's open spans exceed the history limit",
+                "the compatibility boundary's open spans and the history exceed the history limit",
             ));
         }
         Ok(if keep {
@@ -1123,10 +1163,12 @@ impl Upstream {
     /// Moves this stage's share of `retained` to `now`.
     fn recharge(&mut self, now: usize) {
         if now >= self.charged {
-            self.retained
+            self.shared
+                .retained
                 .fetch_add(now - self.charged, Ordering::Relaxed);
         } else {
-            self.retained
+            self.shared
+                .retained
                 .fetch_sub(self.charged - now, Ordering::Relaxed);
         }
         self.charged = now;
@@ -1153,8 +1195,10 @@ impl FrameSource for Upstream {
             let polled = match &mut this.state {
                 UpstreamState::Opening(future) => {
                     match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx)))
-                        .unwrap_or_else(|_| Poll::Ready(Err(transport_panicked())))
-                    {
+                        .unwrap_or_else(|_| {
+                            this.shared.panicked.store(true, Ordering::Relaxed);
+                            Poll::Ready(Err(transport_panicked()))
+                        }) {
                         Poll::Ready(Ok(stream)) => {
                             this.state = UpstreamState::Streaming(stream);
                             continue;
@@ -1164,9 +1208,12 @@ impl FrameSource for Upstream {
                     }
                 }
                 UpstreamState::Streaming(stream) => {
-                    match catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx)))
-                        .unwrap_or_else(|_| Poll::Ready(Some(Err(transport_panicked()))))
-                    {
+                    match catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx))).unwrap_or_else(
+                        |_| {
+                            this.shared.panicked.store(true, Ordering::Relaxed);
+                            Poll::Ready(Some(Err(transport_panicked())))
+                        },
+                    ) {
                         Poll::Ready(polled) => polled,
                         Poll::Pending => return Poll::Pending,
                     }

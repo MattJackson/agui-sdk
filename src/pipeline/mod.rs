@@ -868,6 +868,24 @@ impl Processor {
         self.external_bookkeeping = bytes;
     }
 
+    /// What this processor charges against `max_history_bytes`, apart from
+    /// what [`charge_boundary`](Self::charge_boundary) reports: the history's
+    /// growth and its own id bookkeeping. A host boundary judges its own
+    /// share against the room this leaves (D28).
+    #[cfg(feature = "client")]
+    pub(crate) fn charged_apart_from_boundary(&self) -> usize {
+        let own = self
+            .verifier
+            .retained()
+            .saturating_add(self.boundary.retained());
+        let own = i64::try_from(own).unwrap_or(i64::MAX);
+        let charged = self
+            .reducer
+            .growth_apart_from_bookkeeping()
+            .saturating_add(own);
+        usize::try_from(charged).unwrap_or(0)
+    }
+
     /// The reducer's view: history and state so far, borrowed.
     #[must_use]
     pub fn reducer(&self) -> &reduce::Reducer {
