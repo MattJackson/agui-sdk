@@ -88,8 +88,10 @@ impl WireFormat {
         }
     }
 
-    /// The `Accept` value a client sends: SSE always, plus protobuf when
+    /// A valid client `Accept` value: SSE always, plus protobuf when
     /// enabled; explicit, never a wildcard (SSE-02, PB-01, PB-02, PB-06).
+    /// SSE is listed first here; the built-in client lists protobuf first
+    /// when it is enabled.
     #[must_use]
     pub const fn client_accept(protobuf_enabled: bool) -> &'static str {
         if protobuf_enabled {
