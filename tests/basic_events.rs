@@ -618,6 +618,27 @@ fn debug_redacts_encrypted_values_and_reasoning() {
             "{:?}",
             Event::from(ReasoningMessageChunk::new().with_delta(secret))
         ),
+        // A provider-native event on any reasoning event can carry the
+        // summary or signature, so `raw_event` is redacted on all of them.
+        format!(
+            "{:?}",
+            Event::from(ReasoningStart::new("s1").with_raw_event(json!({"text": secret})))
+        ),
+        format!(
+            "{:?}",
+            Event::from(
+                ReasoningMessageStart::new("n1", ReasoningRole::Reasoning)
+                    .with_raw_event(json!({"text": secret}))
+            )
+        ),
+        format!(
+            "{:?}",
+            Event::from(ReasoningMessageEnd::new("n1").with_raw_event(json!({"text": secret})))
+        ),
+        format!(
+            "{:?}",
+            Event::from(ReasoningEnd::new("s1").with_raw_event(json!({"text": secret})))
+        ),
         format!(
             "{:?}",
             parse(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
