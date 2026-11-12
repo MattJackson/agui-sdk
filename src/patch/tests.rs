@@ -1312,6 +1312,30 @@ fn diff_near_the_ceiling_counts_net_growth() {
     assert!(patch.len() == 1 && patch[0].path.as_str().is_empty());
 }
 
+/// A 0.9.0 `apply` refuses any growth by a document already above the
+/// ceiling, even one the patch's own displaced values pay for, so over the
+/// ceiling `diff` keeps falling back whenever its delta adds anything; a
+/// pure removal (which every version accepts) stays a delta.
+#[test]
+fn diff_over_the_ceiling_falls_back_on_any_growth() {
+    let mut before = json!({ "a": Value::Array(vec![Value::Null; 180_100]) });
+    before["x"] = json!(0);
+    assert!(count(&before) > PatchLimits::default().max_nodes);
+    let mut after = before.clone();
+    after["x"] = json!(1);
+    let patch = diff(&before, &after);
+    assert!(
+        patch.len() == 1 && patch[0].path.as_str().is_empty(),
+        "expected a root replace, got {} op(s)",
+        patch.len()
+    );
+    let mut after = before.clone();
+    after.as_object_mut().unwrap().remove("x");
+    let patch = diff(&before, &after);
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].path.as_str(), "/x");
+}
+
 /// Under `preserve-order` an object member is a 104-byte `IndexMap` entry
 /// whose hash-table index is rewritten as it shifts, so removals are charged
 /// one walk unit per 4 members shifted, not per 16 like array elements:

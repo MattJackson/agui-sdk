@@ -757,7 +757,8 @@ pub fn apply(
 /// as one `replace` of the object. Returns an empty patch when the documents
 /// are equal. When the member-wise delta would exceed what the default
 /// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or net growth
-/// past the node budget or ceiling), or when its paths alone would be larger
+/// past the node budget or ceiling; for a `before` already above the ceiling,
+/// any addition at all, which older versions' `apply` refuse), or when its paths alone would be larger
 /// on the wire than `after`, returns a single `replace` of the root with
 /// `after` instead. That replace is larger than `after` itself, so callers
 /// building their own `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT`
@@ -779,6 +780,11 @@ pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<P
         // Growth only counts when there is some: equal documents, and pure
         // removals, are accepted by `apply` even over the ceiling.
         headroom: node_cap.saturating_sub(nodes),
+        // A 0.9.0 `apply` refuses any addition to a document above the
+        // ceiling, even one the patch's own displaced values pay for, so
+        // there a delta that adds anything is not sent (the publisher sends
+        // a snapshot instead, as it always has).
+        over_ceiling: nodes > node_cap,
         grew_past: false,
         path_bytes: 0,
         path_check: PATH_CHECK_FLOOR,
@@ -816,6 +822,8 @@ struct Cost<'a> {
     freed: usize,
     /// Growth the node cap leaves above `before`.
     headroom: usize,
+    /// `before` is already above the node cap: any addition counts as growth.
+    over_ceiling: bool,
     /// Net growth has passed `headroom` at some point.
     grew_past: bool,
     /// Bytes of path text emitted so far, the next total at which they are
@@ -842,7 +850,9 @@ impl Cost<'_> {
         // value's nodes, so this operation's own `removed` is credited too.
         self.added = self.added.saturating_add(added);
         self.freed = self.freed.saturating_add(removed);
-        if self.added.saturating_sub(self.freed) > self.headroom {
+        if self.added.saturating_sub(self.freed) > self.headroom
+            || (self.over_ceiling && self.added > 0)
+        {
             self.grew_past = true;
         }
         // Each operation holds its own copy of its path: a delta whose paths
