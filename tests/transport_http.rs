@@ -547,22 +547,36 @@ fn connect_timeout_covers_the_tls_handshake() {
 #[test]
 fn refused_connections_are_connect_errors() {
     block(async {
-        let addr = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
-            listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
-        };
-        let transport = build(HttpTransport::builder(format!("http://{addr}/")));
-        let error = expect_code(transport.open(request()).await, ErrorCode::Connect);
-        assert!(error.is_retryable());
-        // Connect errors are retried (nothing was sent): two backoffs pass.
-        let mut policy = RetryPolicy::exponential(2);
-        policy.initial_backoff = 150 * MS;
-        policy.jitter = false;
-        let transport = build(HttpTransport::builder(format!("http://{addr}/")).retry(policy));
-        let started = Instant::now();
-        expect_code(transport.open(request()).await, ErrorCode::Connect);
-        assert!(started.elapsed() >= 450 * MS, "{:?}", started.elapsed());
+        // The refused address is a port bound and released at once. Servers
+        // started by other tests in this binary can be handed the same port
+        // in the meantime, so an attempt that reaches something other than a
+        // refusal is retried on a fresh port rather than failed.
+        for _ in 0..5 {
+            let addr = {
+                let listener =
+                    std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
+                listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
+            };
+            let transport = build(HttpTransport::builder(format!("http://{addr}/")));
+            let error = match transport.open(request()).await {
+                Err(e) if e.code() == ErrorCode::Connect => e,
+                _ => continue, // the port was reused
+            };
+            assert!(error.is_retryable());
+            // Connect errors are retried (nothing was sent): two backoffs pass.
+            let mut policy = RetryPolicy::exponential(2);
+            policy.initial_backoff = 150 * MS;
+            policy.jitter = false;
+            let transport = build(HttpTransport::builder(format!("http://{addr}/")).retry(policy));
+            let started = Instant::now();
+            match transport.open(request()).await {
+                Err(e) if e.code() == ErrorCode::Connect => {}
+                _ => continue, // the port was reused
+            }
+            assert!(started.elapsed() >= 450 * MS, "{:?}", started.elapsed());
+            return;
+        }
+        panic!("every released port was reused before the test could refuse on it");
     });
 }
 
