@@ -6,9 +6,10 @@
 //! well-known `google.protobuf.Value`/`Struct`) and refuses anything else.
 //! Every field and enum value must carry the number `proto-freeze.txt`
 //! assigns to its slot: the freeze file is the authority on wire numbers, the
-//! `.proto` files on types and labels. A frozen slot that no longer has a
-//! field is recorded as reserved, so a decoder can tell a retired slot from
-//! an unknown one.
+//! `.proto` files on types and labels. A frozen slot of a declared message
+//! or enum that no longer has a field or value is recorded as reserved (and
+//! must match the `.proto`'s `reserved` statements), so a decoder can tell a
+//! retired slot from an unknown one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -41,12 +42,16 @@ pub struct ProtoMessage {
     /// Dotted name relative to the package (`ToolCall.Function`).
     pub name: String,
     pub fields: Vec<ProtoField>,
+    /// Numbers listed in `reserved` statements.
+    pub reserved: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtoEnum {
     pub name: String,
     pub values: Vec<(String, i32)>,
+    /// Numbers listed in `reserved` statements.
+    pub reserved: Vec<i64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -197,13 +202,41 @@ impl Parser<'_> {
         }
     }
 
+    /// The body of a `reserved` statement (the keyword already consumed):
+    /// a comma-separated list of numbers. Ranges and names are refused.
+    fn reserved(&mut self, into: &mut Vec<i64>) -> Result<(), String> {
+        loop {
+            match self.next()? {
+                Token::Int(s) => {
+                    into.push(s.parse().map_err(|_| self.err(format!("bad number {s}")))?)
+                }
+                Token::Str(_) => return Err(self.err("reserved names are not supported")),
+                t => return Err(self.err(format!("expected a reserved number, found {t:?}"))),
+            }
+            match self.next()? {
+                Token::Punct(',') => {}
+                Token::Punct(';') => return Ok(()),
+                Token::Ident(w) if w == "to" => {
+                    return Err(self.err("reserved ranges are not supported"))
+                }
+                t => return Err(self.err(format!("expected ',' or ';', found {t:?}"))),
+            }
+        }
+    }
+
     fn file(&mut self, set: &mut ProtoSet) -> Result<(), String> {
+        let mut saw_syntax = false;
         while let Some(token) = self.peek().cloned() {
             let Token::Ident(word) = token else {
                 return Err(self.err("expected a top-level declaration"));
             };
+            if !saw_syntax && word != "syntax" {
+                return Err(self.err("the file must start with syntax = \"proto3\";"));
+            }
             match word.as_str() {
+                "syntax" if saw_syntax => return Err(self.err("second syntax statement")),
                 "syntax" => {
+                    saw_syntax = true;
                     self.pos += 1;
                     self.punct('=')?;
                     match self.next()? {
@@ -251,6 +284,9 @@ impl Parser<'_> {
                 other => return Err(self.err(format!("unsupported declaration {other:?}"))),
             }
         }
+        if !saw_syntax {
+            return Err(self.err("missing syntax = \"proto3\";"));
+        }
         Ok(())
     }
 
@@ -263,6 +299,7 @@ impl Parser<'_> {
         };
         self.punct('{')?;
         let mut fields = Vec::new();
+        let mut reserved = Vec::new();
         loop {
             match self.peek().cloned() {
                 Some(Token::Punct('}')) => {
@@ -297,7 +334,11 @@ impl Parser<'_> {
                         self.pos += 1;
                         fields.push(self.field(Label::Repeated)?);
                     }
-                    "reserved" | "extensions" | "map" | "option" | "group" | "required" => {
+                    "reserved" => {
+                        self.pos += 1;
+                        self.reserved(&mut reserved)?;
+                    }
+                    "extensions" | "map" | "option" | "group" | "required" => {
                         return Err(self.err(format!("unsupported message element {word:?}")))
                     }
                     _ => fields.push(self.field(Label::Implicit)?),
@@ -308,7 +349,11 @@ impl Parser<'_> {
         if set.messages.iter().any(|m| m.name == name) {
             return Err(self.err(format!("message {name} declared twice")));
         }
-        set.messages.push(ProtoMessage { name, fields });
+        set.messages.push(ProtoMessage {
+            name,
+            fields,
+            reserved,
+        });
         Ok(())
     }
 
@@ -343,8 +388,13 @@ impl Parser<'_> {
         };
         self.punct('{')?;
         let mut values = Vec::new();
+        let mut reserved = Vec::new();
         while self.peek() != Some(&Token::Punct('}')) {
             let value = self.ident()?;
+            if value == "reserved" && self.peek() != Some(&Token::Punct('=')) {
+                self.reserved(&mut reserved)?;
+                continue;
+            }
             self.punct('=')?;
             let number = self.int()?;
             self.punct(';')?;
@@ -355,7 +405,11 @@ impl Parser<'_> {
         if values.first().map(|v| v.1) != Some(0) {
             return Err(self.err(format!("proto3 enum {name} must start with 0")));
         }
-        set.enums.push(ProtoEnum { name, values });
+        set.enums.push(ProtoEnum {
+            name,
+            values,
+            reserved,
+        });
         Ok(())
     }
 }
@@ -461,6 +515,20 @@ fn resolve(type_name: &str, scope: &str, set: &ProtoSet) -> Result<String, Strin
     }
 }
 
+/// The declaration a freeze key's number belongs to: the key without its
+/// last segment and without trailing lowercase (oneof) segments, the same
+/// grouping upstream's generator allocates numbers by.
+fn freeze_group(key: &str) -> &str {
+    let mut group = key.rsplit_once('.').map_or("", |(g, _)| g);
+    while let Some((parent, last)) = group.rsplit_once('.') {
+        if !last.starts_with(|c: char| c.is_ascii_lowercase()) {
+            break;
+        }
+        group = parent;
+    }
+    group
+}
+
 /// Renders `src/proto/fields.rs` (before rustfmt).
 pub fn render(
     set: &ProtoSet,
@@ -496,34 +564,59 @@ pub fn render(
         }
     }
     // A frozen slot with no field left is retired: file it under the
-    // longest declared message or enum its key starts with.
-    let owners: Vec<&str> = set
+    // declaration whose number space it belongs to (the key minus its last
+    // segment and any lowercase oneof segments, as upstream's freeze groups
+    // keys). A slot whose declaration is gone has no table entry to go in.
+    let owners: BTreeMap<&str, Vec<i64>> = set
         .messages
         .iter()
-        .map(|m| m.name.as_str())
-        .chain(set.enums.iter().map(|e| e.name.as_str()))
+        .map(|m| {
+            let live = m.fields.iter().map(|f| i64::from(f.number)).collect();
+            (m.name.as_str(), live)
+        })
+        .chain(set.enums.iter().map(|e| {
+            let live = e.values.iter().map(|v| i64::from(v.1)).collect();
+            (e.name.as_str(), live)
+        }))
         .collect();
     let mut retired_by_owner: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
     for (key, &number) in freeze {
         if used.contains(key.as_str()) {
             continue;
         }
-        let owner = owners
-            .iter()
-            .filter(|o| {
-                key.len() > o.len() + 1 && key.starts_with(*o) && key.as_bytes()[o.len()] == b'.'
-            })
-            .max_by_key(|o| o.len());
-        if let Some(owner) = owner {
-            retired_by_owner.entry(owner).or_default().push(number);
+        let Some((owner, live)) = owners.get_key_value(freeze_group(key)) else {
+            continue;
+        };
+        if live.contains(&number) {
+            return Err(format!(
+                "{key} = {number} is retired, but {owner} still uses {number}"
+            ));
+        }
+        retired_by_owner.entry(owner).or_default().push(number);
+    }
+    for list in retired_by_owner.values_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
+    let retired =
+        |owner: &str| -> Vec<i64> { retired_by_owner.get(owner).cloned().unwrap_or_default() };
+    // The `.proto` lists retired numbers in `reserved`; it must agree.
+    let declared = set
+        .messages
+        .iter()
+        .map(|m| (&m.name, &m.reserved))
+        .chain(set.enums.iter().map(|e| (&e.name, &e.reserved)));
+    for (name, reserved) in declared {
+        let mut reserved = reserved.clone();
+        reserved.sort_unstable();
+        reserved.dedup();
+        let frozen = retired(name);
+        if reserved != frozen {
+            return Err(format!(
+                "{name} reserves {reserved:?} in the .proto, but proto-freeze.txt retires {frozen:?}"
+            ));
         }
     }
-    let retired = |owner: &str| -> Vec<i64> {
-        let mut numbers = retired_by_owner.get(owner).cloned().unwrap_or_default();
-        numbers.sort_unstable();
-        numbers.dedup();
-        numbers
-    };
 
     // Sorted views and the id constants.
     let mut messages: Vec<&ProtoMessage> = set.messages.iter().collect();
@@ -577,6 +670,16 @@ pub fn render(
         }
         let mut by_json: Vec<usize> = (0..fields.len()).collect();
         by_json.sort_by_key(|&i| json_name(&fields[i].name));
+        if let Some(w) = by_json
+            .windows(2)
+            .find(|w| json_name(&fields[w[0]].name) == json_name(&fields[w[1]].name))
+        {
+            return Err(format!(
+                "message {} has two fields with JSON name {}",
+                m.name,
+                json_name(&fields[w[0]].name)
+            ));
+        }
         if fields.len() > usize::from(u8::MAX) {
             return Err(format!("message {} has too many fields", m.name));
         }
@@ -687,9 +790,9 @@ const MODULE_DOC: &str = r#"
 //!
 //! The `.proto` files give each field's type and label; `proto-freeze.txt`
 //! is the authority on wire numbers, and the generator refuses a `.proto`
-//! whose numbers disagree with it. A frozen slot that no longer has a field
-//! is listed in `reserved`, so a decoder can tell a retired slot from an
-//! unknown one.
+//! whose numbers disagree with it. A frozen slot of a declared message or
+//! enum that no longer has a field or value is listed in `reserved`, so a
+//! decoder can tell a retired slot from an unknown one.
 //!
 //! * [`MESSAGES`] and [`ENUMS`] are sorted by dotted name (`ToolCall.Function`);
 //!   [`MsgId`] and [`EnumId`] index them, with one named constant each.
@@ -906,3 +1009,90 @@ pub fn enumeration(name: &str) -> Option<EnumId> {
         .map(EnumId)
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, parse_freeze, render};
+
+    fn gen(proto: &str, freeze: &str) -> Result<String, String> {
+        let set = parse(&[("t.proto".to_owned(), proto.to_owned())])?;
+        render(&set, &parse_freeze(freeze)?, "c0ffee")
+    }
+
+    /// The `reserved` list rendered for the declaration named `name`.
+    fn reserved_of<'a>(out: &'a str, name: &str) -> &'a str {
+        let start = out
+            .find(&format!("name: \"{name}\", "))
+            .unwrap_or_else(|| panic!("no {name} in output"));
+        let rest = &out[start..];
+        let r = rest.find("reserved: &[").expect("reserved list") + "reserved: &[".len();
+        let end = rest[r..].find(']').expect("end of reserved list");
+        &rest[r..r + end]
+    }
+
+    #[test]
+    fn reserved_statements_parse_and_match_the_freeze() {
+        let proto = "syntax = \"proto3\";\n\
+                     message M { reserved 2, 4; string a = 1; }\n\
+                     enum E { E_A = 0; reserved 1; }\n";
+        let freeze = "M.a = 1\nM.b = 2\nM.c = 4\nE.E_A = 0\nE.E_B = 1\n";
+        let out = gen(proto, freeze).unwrap();
+        assert_eq!(reserved_of(&out, "M"), "2, 4");
+        assert_eq!(reserved_of(&out, "E"), "1");
+    }
+
+    #[test]
+    fn reserved_statement_disagreeing_with_the_freeze_is_refused() {
+        let proto = "syntax = \"proto3\";\nmessage M { reserved 3; string a = 1; }\n";
+        let err = gen(proto, "M.a = 1\nM.b = 2\n").unwrap_err();
+        assert!(err.contains("retires [2]"), "{err}");
+    }
+
+    #[test]
+    fn reserved_names_and_ranges_are_refused() {
+        for (body, why) in [
+            ("reserved \"b\";", "reserved names"),
+            ("reserved 2 to 4;", "reserved ranges"),
+        ] {
+            let proto = format!("syntax = \"proto3\";\nmessage M {{ {body} string a = 1; }}\n");
+            let err = gen(&proto, "M.a = 1\n").unwrap_err();
+            assert!(err.contains(why), "{err}");
+        }
+    }
+
+    #[test]
+    fn slot_of_a_deleted_nested_message_is_not_filed_under_its_parent() {
+        let proto = "syntax = \"proto3\";\nmessage Outer { string a = 1; }\n";
+        let out = gen(proto, "Outer.a = 1\nOuter.Inner.x = 1\n").unwrap();
+        assert_eq!(reserved_of(&out, "Outer"), "");
+    }
+
+    #[test]
+    fn retired_oneof_member_is_filed_under_its_message() {
+        let proto = "syntax = \"proto3\";\nmessage M { reserved 2; string a = 1; }\n";
+        let out = gen(proto, "M.a = 1\nM.kind.b = 2\n").unwrap();
+        assert_eq!(reserved_of(&out, "M"), "2");
+    }
+
+    #[test]
+    fn retired_number_equal_to_a_live_number_is_refused() {
+        let proto = "syntax = \"proto3\";\nmessage M { string a = 1; }\n";
+        let err = gen(proto, "M.a = 1\nM.b = 1\n").unwrap_err();
+        assert!(err.contains("still uses 1"), "{err}");
+    }
+
+    #[test]
+    fn two_fields_with_one_json_name_are_refused() {
+        let proto = "syntax = \"proto3\";\nmessage M { string foo_bar = 1; string fooBar = 2; }\n";
+        match gen(proto, "M.foo_bar = 1\nM.fooBar = 2\n") {
+            Err(err) => assert!(err.contains("JSON name"), "{err}"),
+            Ok(_) => panic!("duplicate JSON name accepted"),
+        }
+    }
+
+    #[test]
+    fn missing_syntax_is_refused() {
+        let err = gen("message M { string a = 1; }\n", "M.a = 1\n").unwrap_err();
+        assert!(err.contains("syntax"), "{err}");
+    }
+}
