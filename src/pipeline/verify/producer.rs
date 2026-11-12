@@ -354,6 +354,17 @@ impl Held {
     }
 }
 
+/// The `name` a restated text message carries.
+fn restated_name(message: &Message) -> Option<&str> {
+    match message {
+        Message::Developer(m) => m.name.as_deref(),
+        Message::System(m) => m.name.as_deref(),
+        Message::Assistant(m) => m.name.as_deref(),
+        Message::User(m) => m.name.as_deref(),
+        _ => None,
+    }
+}
+
 /// One text message, reasoning message or reasoning span.
 #[derive(Debug)]
 struct Item {
@@ -2501,17 +2512,35 @@ impl ProducerState {
                     }
                 })
                 .or_insert(MessageKind::Snapshot);
-            if self.text.get(message.id()).is_some_and(|item| !item.open) {
-                self.text.remove(message.id());
+            // A closed item restated as the same kind stays tracked, taking
+            // the restatement's owner, role and name, so a reopen is still
+            // checked against all three; restated as another kind it goes.
+            let held = Held::of(message);
+            if let Some(item) = self.text.get_mut(message.id()).filter(|item| !item.open) {
+                match held.as_ref().and_then(|h| h.role) {
+                    Some(role) => {
+                        item.owner = message.subagent_run_id().cloned();
+                        item.role = Some(role);
+                        item.name = restated_name(message).map(fingerprint);
+                        item.minted = false;
+                    }
+                    None => {
+                        self.text.remove(message.id());
+                    }
+                }
             }
-            if self
+            if let Some(item) = self
                 .reasoning
-                .get(message.id())
-                .is_some_and(|item| !item.open)
+                .get_mut(message.id())
+                .filter(|item| !item.open)
             {
-                self.reasoning.remove(message.id());
+                if matches!(message, Message::Reasoning(_)) {
+                    item.owner = message.subagent_run_id().cloned();
+                } else {
+                    self.reasoning.remove(message.id());
+                }
             }
-            match Held::of(message) {
+            match held {
                 Some(held) => {
                     self.held.insert(message.id().clone(), held);
                 }
@@ -3041,6 +3070,39 @@ mod tests {
                               "toolCallId": "c1", "content": "ok"})))
             .unwrap_err();
         assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+    }
+
+    /// A snapshot restating a closed text message as text keeps its name
+    /// check: a reopen under another name is still refused (TEXT-06).
+    #[test]
+    fn a_snapshot_restating_a_closed_text_message_keeps_its_name() {
+        use serde_json::json;
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant",
+                       "name": "bot"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+                json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                    {"id": "m1", "role": "assistant", "name": "bot", "content": "x"}
+                ]}),
+            ],
+        );
+        let err = v
+            .check(&ev(json!({"type": "TEXT_MESSAGE_START", "messageId": "m1",
+                              "role": "assistant", "name": "other"})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant",
+                       "name": "bot"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+            ],
+        );
     }
 
     /// A snapshot restating an id as another kind of message makes the
