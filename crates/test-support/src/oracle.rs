@@ -266,9 +266,10 @@ pub fn observe(fixture: &StreamFixture, way: Way) -> Observed {
 }
 
 /// A `client.maxProtocolVersion` that is not a string, or names neither a
-/// pre-versioning era nor a protocol version: the fixture cannot be run as
-/// written, so the lanes report a harness error instead of running it against
-/// the current peer.
+/// pre-versioning `0.0.N` release nor a protocol version: the fixture cannot
+/// be run as written, so the lanes report a harness error instead of running
+/// it against the current peer. A `0.0.N` pin at or above 0.0.58 needs no
+/// shim and runs as current ([`peer_pin`]).
 fn unrecognised_pin(fixture: &StreamFixture) -> Option<String> {
     let raw = fixture.document.pointer("/client/maxProtocolVersion")?;
     let Some(v) = raw.as_str() else {
@@ -276,13 +277,25 @@ fn unrecognised_pin(fixture: &StreamFixture) -> Option<String> {
             "harness: client.maxProtocolVersion {raw} is not a string"
         ));
     };
-    if LegacyEra::parse(v).is_some() || agui_sdk::version::ProtocolVersion::parse(v).is_some() {
+    if is_pre_versioning(v) || agui_sdk::version::ProtocolVersion::parse(v).is_some() {
         None
     } else {
         Some(format!(
             "harness: client.maxProtocolVersion {v:?} is neither a legacy era nor a protocol version"
         ))
     }
+}
+
+/// Whether `v` is a well-formed pre-versioning `0.0.N` pin: `N` a decimal
+/// integer without sign or leading zeros, the syntax [`LegacyEra::parse`]
+/// reads (which returns `None` for N >= 58, where no shim is needed).
+fn is_pre_versioning(v: &str) -> bool {
+    v.strip_prefix("0.0.").is_some_and(|n| {
+        !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && (n == "0" || !n.starts_with('0'))
+            && n.parse::<u64>().is_ok()
+    })
 }
 
 /// The peer the client is pinned to: `client.maxProtocolVersion` as a
@@ -773,6 +786,45 @@ mod tests {
             "{:?}",
             observed.outcome
         );
+    }
+
+    #[test]
+    fn a_post_shim_pre_versioning_pin_runs_as_current() {
+        for pin in ["0.0.58", "0.0.100"] {
+            let fixture = StreamFixture {
+                name: "post-shim-pin".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({
+                    "client": {"maxProtocolVersion": pin},
+                    "stream": [],
+                    "expect": {"outcome": "completed"}
+                }),
+            };
+            assert_eq!(peer_pin(&fixture), agui_sdk::version::PeerPin::Current);
+            for way in [Way::Json, Way::Value] {
+                let observed = observe(&fixture, way);
+                assert!(
+                    !matches!(&observed.outcome, Outcome::Harness(_)),
+                    "{pin}: {:?}",
+                    observed.outcome
+                );
+            }
+            let observed = observe_client_blocking(&fixture, Delivery::Frames);
+            assert!(
+                !matches!(&observed.outcome, Outcome::Harness(_)),
+                "{pin}: {:?}",
+                observed.outcome
+            );
+        }
+        // Not well-formed `0.0.N`: still refused.
+        for pin in ["0.0.058", "0.0.", "0.0.5x"] {
+            let fixture = StreamFixture {
+                name: "bad-pin".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({"client": {"maxProtocolVersion": pin}, "stream": []}),
+            };
+            assert!(unrecognised_pin(&fixture).is_some(), "{pin}");
+        }
     }
 
     #[test]
