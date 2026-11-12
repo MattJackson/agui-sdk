@@ -917,13 +917,9 @@ fn interrupt_problem(list: &[Interrupt]) -> Option<&'static str> {
     if list.is_empty() {
         return Some("an interrupt outcome needs at least one interrupt");
     }
-    for (index, interrupt) in list.iter().enumerate() {
-        if list[..index]
-            .iter()
-            .any(|earlier| earlier.id == interrupt.id)
-        {
-            return Some("interrupt ids must be unique within the run");
-        }
+    let mut seen = HashSet::with_capacity(list.len());
+    if list.iter().any(|interrupt| !seen.insert(&interrupt.id)) {
+        return Some("interrupt ids must be unique within the run");
     }
     None
 }
@@ -980,7 +976,7 @@ fn replay_events(thread_id: &ThreadId, run: ReplayedRun, declare: bool) -> [Even
 /// Typed state from the input (`{}` when absent, RUNIN-24).
 fn decode_state<S: serde::de::DeserializeOwned>(state: Option<&Value>) -> Result<S> {
     let decoded = match state {
-        Some(value) => serde_json::from_value(value.clone()),
+        Some(value) => S::deserialize(value),
         None => serde_json::from_value(Value::Object(serde_json::Map::new())),
     };
     decoded.map_err(|e| {

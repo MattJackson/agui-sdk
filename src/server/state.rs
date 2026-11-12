@@ -13,6 +13,13 @@ use crate::event::Event;
 use crate::patch::{self, PatchBudget, PatchLimits};
 use crate::state::{StateDelta, StateSnapshot};
 
+/// What a publication sends.
+enum Choice {
+    Nothing,
+    Snapshot,
+    Delta(Vec<patch::PatchOperation>),
+}
+
 /// Tracks the client's state baseline.
 #[derive(Debug, Clone)]
 pub struct StatePublisher {
@@ -86,20 +93,40 @@ impl StatePublisher {
     /// The event for `next` without committing it: the runner commits what
     /// the client actually receives, after transformers, via [`observe`](Self::observe).
     pub(crate) fn prepare(&self, next: &Value) -> Option<Event> {
+        match self.choose(next) {
+            Choice::Nothing => None,
+            Choice::Snapshot => Some(self.snapshot_event(next.clone())),
+            Choice::Delta(delta) => Some(StateDelta::new(delta).into()),
+        }
+    }
+
+    /// As [`prepare`](Self::prepare), taking `next` so a snapshot moves it
+    /// instead of copying it.
+    pub(crate) fn prepare_owned(&self, next: Value) -> Option<Event> {
+        match self.choose(&next) {
+            Choice::Nothing => None,
+            Choice::Snapshot => Some(self.snapshot_event(next)),
+            Choice::Delta(delta) => Some(StateDelta::new(delta).into()),
+        }
+    }
+
+    fn choose(&self, next: &Value) -> Choice {
         if self.diverged {
-            return Some(self.snapshot_event(next.clone()));
+            return Choice::Snapshot;
         }
         let delta = patch::diff(&self.baseline, next);
         if delta.is_empty() {
-            return None;
+            return Choice::Nothing;
         }
         // Send whichever is smaller on the wire (ties go to the delta). A delta
         // the default patch limits would refuse comes back from `diff` as a root
         // `replace`, which is always larger than `next`: this relies on that.
-        if crate::json::wire_bytes(&delta) > crate::json::wire_bytes(next) {
-            return Some(self.snapshot_event(next.clone()));
+        // `next` is only counted as far as the delta's size.
+        let delta_bytes = crate::json::wire_bytes(&delta);
+        if crate::json::wire_bytes_upto(next, delta_bytes) < delta_bytes {
+            return Choice::Snapshot;
         }
-        Some(StateDelta::new(delta).into())
+        Choice::Delta(delta)
     }
 
     pub(crate) fn snapshot_event(&self, next: Value) -> Event {

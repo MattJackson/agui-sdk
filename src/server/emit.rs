@@ -658,7 +658,7 @@ impl Emitter {
                 let event = if resync {
                     Some(st.publisher.snapshot_event(next))
                 } else {
-                    st.publisher.prepare(&next)
+                    st.publisher.prepare_owned(next)
                 };
                 Ok(event.map_or(Staging::Nothing, Staging::Transform))
             })
