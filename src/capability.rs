@@ -116,10 +116,17 @@ pub fn ingest(value: Value) -> Result<Ingested> {
 ///
 /// # Errors
 ///
-/// As [`ingest`], plus [`ErrorCode::Json`] for bytes that are not JSON.
+/// As [`ingest`]; bytes that are not JSON are rejected the same way, with
+/// [`ErrorCode::CapabilitiesRejected`] at the root pointer (a peer
+/// declaration the consumer cannot validate, CAP-16).
 pub fn ingest_slice(bytes: &[u8]) -> Result<Ingested> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| {
-        Error::new(ErrorCode::Json, "capability declaration is not JSON").with_source(error)
+        Error::new(
+            ErrorCode::CapabilitiesRejected,
+            "capability declaration is not JSON",
+        )
+        .with_pointer("")
+        .with_source(error)
     })?;
     ingest(value)
 }
