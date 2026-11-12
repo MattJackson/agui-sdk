@@ -54,8 +54,9 @@ pub fn pinned_cache(root: &Path, lock: &Lock) -> Result<PathBuf, String> {
 }
 
 /// SHA-256 over every file under `paths` in `dir`: the hex digest of the
-/// sorted lines `<sha256 of file>  <relative path with '/'>\n`. Independent
-/// of archive compression, so it is what proves a cache matches the lock.
+/// lines `<sha256 of file>  <relative path with '/'>\n`, sorted by path.
+/// Independent of archive compression, so it is what proves a cache matches
+/// the lock.
 pub fn tree_digest(dir: &Path, paths: &[String]) -> Result<String, String> {
     let mut files = Vec::new();
     for p in paths {
@@ -146,7 +147,7 @@ fn fetch_into(
         .map(Path::to_path_buf)
         .ok_or("spec cache directory has no parent directory")?;
     std::fs::create_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
-    let archive = base.join(format!(".archive-{commit}.tar.gz"));
+    let archive = base.join(format!(".archive-{commit}-{}.tar.gz", std::process::id()));
     let result = download(&lock.archive_url(commit)?, &archive)
         .and_then(|()| install_archive(lock, commit, expected, published_schema, &archive, &dest));
     let _ = std::fs::remove_file(&archive);
@@ -166,7 +167,7 @@ fn install_archive(
     let base = dest
         .parent()
         .ok_or("spec cache directory has no parent directory")?;
-    let staging = base.join(format!(".staging-{commit}"));
+    let staging = base.join(format!(".staging-{commit}-{}", std::process::id()));
     let result = (|| {
         remove(&staging)?;
         let archive_hash = sha256::file_hex(archive).map_err(|e| e.to_string())?;
@@ -224,8 +225,7 @@ fn install_archive(
             }
         }
         std::fs::write(staging.join(STAMP), format!("{commit}\n")).map_err(|e| e.to_string())?;
-        remove(dest)?;
-        std::fs::rename(&staging, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        replace_dir(&staging, dest)?;
         Ok(hashes)
     })();
     let _ = remove(&staging);
@@ -318,6 +318,31 @@ fn run(cmd: &mut Command, name: &str) -> Result<(), String> {
     }
 }
 
+/// Moves `staging` to `dest`, replacing any existing `dest`. The old `dest`
+/// is moved aside first and put back if `staging` cannot be moved in, so a
+/// failure never leaves no cache at all.
+fn replace_dir(staging: &Path, dest: &Path) -> Result<(), String> {
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("spec cache directory has no name")?;
+    let old = dest.with_file_name(format!(".old-{name}-{}", std::process::id()));
+    remove(&old)?;
+    let had_old = match std::fs::rename(dest, &old) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(format!("{}: {e}", dest.display())),
+    };
+    if let Err(e) = std::fs::rename(staging, dest) {
+        if had_old {
+            let _ = std::fs::rename(&old, dest);
+        }
+        return Err(format!("{}: {e}", dest.display()));
+    }
+    let _ = remove(&old);
+    Ok(())
+}
+
 fn remove(path: &Path) -> Result<(), String> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -329,6 +354,47 @@ fn remove(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_replace_keeps_the_existing_cache() -> Result<(), String> {
+        let tmp = std::env::temp_dir().join(format!("xtask-replace-{}", std::process::id()));
+        let _ = remove(&tmp);
+        let dest = tmp.join("cache");
+        std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        std::fs::write(dest.join("sentinel"), "x").map_err(|e| e.to_string())?;
+        // The staging directory does not exist, so moving it into place fails.
+        let result = replace_dir(&tmp.join(".staging"), &dest);
+        let sentinel = dest.join("sentinel").exists();
+        let leftovers: Vec<_> = std::fs::read_dir(&tmp)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        let _ = remove(&tmp);
+        assert!(result.is_err());
+        assert!(sentinel, "the existing cache was lost");
+        assert_eq!(leftovers, ["cache"], "scratch directories left behind");
+        Ok(())
+    }
+
+    #[test]
+    fn replace_swaps_in_the_new_tree() -> Result<(), String> {
+        let tmp = std::env::temp_dir().join(format!("xtask-swap-{}", std::process::id()));
+        let _ = remove(&tmp);
+        let (dest, staging) = (tmp.join("cache"), tmp.join(".staging"));
+        std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+        std::fs::write(dest.join("old"), "x").map_err(|e| e.to_string())?;
+        std::fs::write(staging.join("new"), "y").map_err(|e| e.to_string())?;
+        let result = replace_dir(&staging, &dest);
+        let (old, new) = (dest.join("old").exists(), dest.join("new").exists());
+        let count = std::fs::read_dir(&tmp).map_err(|e| e.to_string())?.count();
+        let _ = remove(&tmp);
+        result?;
+        assert!(!old && new);
+        assert_eq!(count, 1, "scratch directories left behind");
+        Ok(())
+    }
 
     #[test]
     fn tree_digest_is_order_independent_and_content_sensitive() -> Result<(), String> {

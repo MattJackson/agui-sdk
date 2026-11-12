@@ -10,9 +10,9 @@
 //!
 //! The `.proto` files give each field's type and label; `proto-freeze.txt`
 //! is the authority on wire numbers, and the generator refuses a `.proto`
-//! whose numbers disagree with it. A frozen slot that no longer has a field
-//! is listed in `reserved`, so a decoder can tell a retired slot from an
-//! unknown one.
+//! whose numbers disagree with it. A frozen slot of a declared message or
+//! enum that no longer has a field or value is listed in `reserved`, so a
+//! decoder can tell a retired slot from an unknown one.
 //!
 //! * [`MESSAGES`] and [`ENUMS`] are sorted by dotted name (`ToolCall.Function`);
 //!   [`MsgId`] and [`EnumId`] index them, with one named constant each.

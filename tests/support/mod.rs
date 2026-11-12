@@ -39,12 +39,14 @@ fn pinned_commit() -> String {
 }
 
 /// Root of the upstream tree, or `None` (after printing why) when absent.
+/// A `.commit` stamp, wherever the tree is, must name the pinned commit.
 pub fn root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("AGUI_SPEC_DIR") {
-        return Some(PathBuf::from(dir));
-    }
     let commit = pinned_commit();
-    let cache = workspace().join(".spec-cache").join(&commit);
+    // An empty `$AGUI_SPEC_DIR` means unset, as in `tests/proto_support`.
+    let cache = std::env::var_os("AGUI_SPEC_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace().join(".spec-cache").join(&commit));
     if cache.is_dir() {
         if let Ok(stamp) = fs::read_to_string(cache.join(".commit")) {
             assert_eq!(

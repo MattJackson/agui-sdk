@@ -9,8 +9,8 @@ upstream = "https://github.com/ag-ui-protocol/ag-ui"
 commit = "deefd3833c15b353348ba90eae0fad6113021759"
 # SHA-256 of https://codeload.github.com/<owner>/<repo>/tar.gz/<commit>.
 sha256 = "856fdb1fc09a404717acffa7044afa9bc8dbee8db93d3c2ad344cbde4922702e"
-# SHA-256 over the extracted `paths`: the sorted lines
-# "<sha256 of file>  <path>\n". Independent of archive compression.
+# SHA-256 over the extracted `paths`: the lines "<sha256 of file>  <path>\n",
+# sorted by path. Independent of archive compression.
 tree_sha256 = "111fffb45a3f46576f10434d998ab3db8db2be677e44c76fc7080ddd61549766"
 # The published schema, byte-identical to spec/1.0/schema.json at `commit`.
 schema_url = "https://ag-ui.com/spec/1.0/schema.json"

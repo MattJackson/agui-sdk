@@ -25,6 +25,7 @@
 //!   §8.3): they never change what validates, and are recorded only as
 //!   documentation.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::json::Json;
@@ -185,6 +186,7 @@ pub fn compile(doc: &Json) -> Result<Schema, String> {
     let reader = Reader {
         raw: &raw,
         composed: &composed,
+        in_progress: RefCell::new(Vec::new()),
     };
     let mut defs = Vec::with_capacity(raw.len());
     for (&name, &body) in &raw {
@@ -222,6 +224,9 @@ fn ref_target(value: &Json) -> Result<String, String> {
 struct Reader<'a> {
     raw: &'a BTreeMap<&'a str, &'a Json>,
     composed: &'a BTreeSet<String>,
+    /// The object definitions being read, innermost last: reaching one of
+    /// them again is a composition cycle.
+    in_progress: RefCell<Vec<String>>,
 }
 
 impl Reader<'_> {
@@ -280,6 +285,19 @@ impl Reader<'_> {
     }
 
     fn object(&self, name: &str, body: &Json) -> Result<Object, String> {
+        if self.in_progress.borrow().iter().any(|n| n == name) {
+            return Err(format!("allOf cycle through {name}"));
+        }
+        self.in_progress.borrow_mut().push(name.to_owned());
+        let result = self.object_body(name, body);
+        self.in_progress.borrow_mut().pop();
+        result
+    }
+
+    fn object_body(&self, name: &str, body: &Json) -> Result<Object, String> {
+        if body.get("type").and_then(Json::as_str) != Some("object") {
+            return Err("not an object definition (`type: object`)".to_owned());
+        }
         for (k, _) in body.as_object().unwrap_or(&[]) {
             if !is_def_meta(k)
                 && !matches!(
@@ -309,6 +327,13 @@ impl Reader<'_> {
                 let inner = self
                     .object(&target, raw)
                     .map_err(|e| format!("allOf {target}: {e}"))?;
+                if inner.openness == Openness::Closed {
+                    // Its `unevaluatedProperties: false` would reject every
+                    // property the composing definition adds.
+                    return Err(format!(
+                        "allOf {target}: a closed definition cannot be composed"
+                    ));
+                }
                 fragments.push(target);
                 for f in inner.fragments {
                     if !fragments.contains(&f) {
@@ -572,7 +597,10 @@ fn resolve(schema: &mut Schema) -> Result<(), String> {
     for def in &mut schema.defs {
         if let DefKind::Object(obj) = &mut def.kind {
             for field in &mut obj.fields {
-                field.nullable = field.nullable && admits_null(&field.ty, &snapshot);
+                if field.nullable {
+                    field.nullable = admits_null(&field.ty, &snapshot, &mut Vec::new())
+                        .map_err(|e| format!("$defs/{}: {e}", def.name))?;
+                }
             }
         }
     }
@@ -657,15 +685,37 @@ fn upper_first(name: &str) -> String {
     }
 }
 
-fn admits_null(ty: &Ty, defs: &BTreeMap<String, DefKind>) -> bool {
+/// Whether `null` validates against `ty`, following alias references.
+/// `seen` holds the aliases on the current path; meeting one again is a
+/// cycle of aliases, which describes no type.
+fn admits_null<'a>(
+    ty: &'a Ty,
+    defs: &'a BTreeMap<String, DefKind>,
+    seen: &mut Vec<&'a str>,
+) -> Result<bool, String> {
     match ty {
-        Ty::Any => true,
-        Ty::OneOf(arms) => arms.iter().any(|t| admits_null(t, defs)),
+        Ty::Any => Ok(true),
+        Ty::OneOf(arms) => {
+            for arm in arms {
+                if admits_null(arm, defs, seen)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
         Ty::Ref(name) => match defs.get(name) {
-            Some(DefKind::Alias(inner)) => admits_null(inner, defs),
-            _ => false,
+            Some(DefKind::Alias(inner)) => {
+                if seen.contains(&name.as_str()) {
+                    return Err(format!("$ref cycle through {name}"));
+                }
+                seen.push(name);
+                let result = admits_null(inner, defs, seen);
+                seen.pop();
+                result
+            }
+            _ => Ok(false),
         },
-        _ => false,
+        _ => Ok(false),
     }
 }
 
@@ -740,5 +790,62 @@ mod tests {
             }
             Ok(_) => Err("Kind is unsupported, compile must fail".to_owned()),
         }
+    }
+
+    fn compile_defs(defs: &str) -> Result<Schema, String> {
+        let text = format!(
+            r##"{{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"t",
+            "$ref":"#/$defs/A","$defs":{{{defs}}}}}"##
+        );
+        let doc = super::super::json::parse(&text).map_err(|e| format!("{e:?}"))?;
+        compile(&doc)
+    }
+
+    #[test]
+    fn allof_target_that_is_not_an_object_is_refused() {
+        let err = compile_defs(
+            r##""A":{"type":"object","allOf":[{"$ref":"#/$defs/B"}],
+                 "properties":{"y":{"type":"string"}},"unevaluatedProperties":false},
+            "B":{"type":"string"}"##,
+        )
+        .err()
+        .unwrap_or_default();
+        assert!(err.contains("not an object"), "{err}");
+    }
+
+    #[test]
+    fn allof_target_that_is_closed_is_refused() {
+        let err = compile_defs(
+            r##""A":{"type":"object","allOf":[{"$ref":"#/$defs/B"}],
+                 "properties":{"y":{"type":"string"}},"unevaluatedProperties":false},
+            "B":{"type":"object","properties":{"x":{"type":"string"}},
+                 "unevaluatedProperties":false}"##,
+        )
+        .err()
+        .unwrap_or_default();
+        assert!(err.contains("closed definition"), "{err}");
+    }
+
+    #[test]
+    fn allof_cycle_is_refused() {
+        let err = compile_defs(
+            r##""A":{"type":"object","allOf":[{"$ref":"#/$defs/B"}]},
+            "B":{"type":"object","allOf":[{"$ref":"#/$defs/A"}]}"##,
+        )
+        .err()
+        .unwrap_or_default();
+        assert!(err.contains("cycle"), "{err}");
+    }
+
+    #[test]
+    fn alias_cycle_is_refused() {
+        let err = compile_defs(
+            r##""A":{"type":"object","properties":{"p":{"$ref":"#/$defs/X"}}},
+            "X":{"$ref":"#/$defs/Y"},
+            "Y":{"oneOf":[{"$ref":"#/$defs/X"},{"type":"string"}]}"##,
+        )
+        .err()
+        .unwrap_or_default();
+        assert!(err.contains("cycle"), "{err}");
     }
 }
