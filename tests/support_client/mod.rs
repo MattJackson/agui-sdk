@@ -7,7 +7,7 @@
 
 use std::future::Future;
 use std::pin::pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
@@ -78,12 +78,15 @@ pub fn run_of(thread: &str, run: &str, body: Vec<Value>) -> Vec<Value> {
 }
 
 /// Serves `frames` (as raw JSON), then stalls until the run's cancel token
-/// fires; counts opens.
+/// fires; counts opens. `stalled` is set once every frame has been handed
+/// over and the stream first parks, so a test can cancel after delivery
+/// without relying on wall-clock timing.
 #[derive(Clone, Default)]
 pub struct StallingTransport {
     pub frames: Vec<Value>,
     pub opens: Arc<AtomicUsize>,
     pub seen_cancel: Arc<Mutex<Option<agui_sdk::client::CancelToken>>>,
+    pub stalled: Arc<AtomicBool>,
 }
 
 impl Transport for StallingTransport {
@@ -96,10 +99,14 @@ impl Transport for StallingTransport {
             .map(|f| Frame::from_json(Chunk::from(serde_json::to_vec(f).unwrap())))
             .collect::<Vec<_>>()
             .into_iter();
+        let stalled = Arc::clone(&self.stalled);
         Ok(FrameStream::from_poll_fn(move |_cx| match frames.next() {
             Some(frame) => Poll::Ready(Some(Ok(frame))),
             // Never wakes: only cancellation can end the run.
-            None => Poll::Pending,
+            None => {
+                stalled.store(true, Ordering::SeqCst);
+                Poll::Pending
+            }
         }))
     }
 }
