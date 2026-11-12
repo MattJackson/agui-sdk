@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::Poll;
 
-use agui_sdk::diagnostics::Diagnostic;
+use agui_sdk::diagnostics::{Diagnostic, DiagnosticSink};
 use agui_sdk::event::Event;
 use agui_sdk::server::input::{admit, InputPolicy};
 use agui_sdk::server::{CancelToken, Extensions, RunOutcome, Runner, RunnerConfig, Transformer};
@@ -73,6 +73,34 @@ fn a_sink_panic_mid_run_fails_the_run_with_one_terminal() {
     let stream = start(&runner, input, CancelToken::new());
     let events = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drain(stream)))
         .expect("the sink's panic must not escape the stream");
+    assert_one_valid_run(&events);
+    let error = run_error(&events);
+    assert_eq!(
+        error.code.as_deref(),
+        Some(ErrorCode::AgentPanicked.as_str())
+    );
+}
+
+/// A sink whose `enabled` panics: asked when the run's reporter is created.
+struct PanickingEnabled;
+
+impl DiagnosticSink for PanickingEnabled {
+    fn report(&self, _: &Diagnostic) {}
+
+    fn enabled(&self) -> bool {
+        panic!("the application's diagnostic sink panicked in enabled");
+    }
+}
+
+#[test]
+fn a_sink_panic_in_enabled_fails_the_run_with_one_terminal() {
+    let runner = Runner::new(agent(|_ctx| async move { Ok(RunOutcome::success()) }))
+        .diagnostic_sink(PanickingEnabled);
+    let input = RunAgentInput::new("t1", "r1", vec![Message::user("hi")]);
+    let events = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drain(start(&runner, input, CancelToken::new()))
+    }))
+    .expect("the sink's panic must not escape the runner");
     assert_one_valid_run(&events);
     let error = run_error(&events);
     assert_eq!(

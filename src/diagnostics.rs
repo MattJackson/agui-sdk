@@ -440,15 +440,20 @@ impl<S: DiagnosticSink + ?Sized> DiagnosticSink for Arc<S> {
 #[cfg(feature = "server")]
 pub(crate) struct GuardedSink {
     inner: Arc<dyn DiagnosticSink>,
+    /// The inner sink's [`DiagnosticSink::enabled`], asked once here so that
+    /// a panic in it is caught like one in `report`.
+    enabled: bool,
     panicked: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "server")]
 impl GuardedSink {
     pub(crate) fn new(inner: Arc<dyn DiagnosticSink>) -> Self {
+        let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.enabled()));
         GuardedSink {
             inner,
-            panicked: std::sync::atomic::AtomicBool::new(false),
+            panicked: std::sync::atomic::AtomicBool::new(asked.is_err()),
+            enabled: asked.unwrap_or(false),
         }
     }
 
@@ -475,7 +480,7 @@ impl DiagnosticSink for GuardedSink {
     }
 
     fn enabled(&self) -> bool {
-        self.inner.enabled()
+        self.enabled && !self.panicked()
     }
 }
 
