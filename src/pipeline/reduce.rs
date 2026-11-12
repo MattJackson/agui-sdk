@@ -1138,6 +1138,13 @@ impl Reducer {
             return None;
         };
         let message = &mut self.messages[i];
+        if matches!(message, Message::Activity(_)) {
+            // An activity message has no text: the delta stores nothing
+            // (the reopen was already reported), only metadata merges.
+            let n = merge_into(metadata_mut(message), metadata);
+            self.charge_at(i, n);
+            return metadata.as_ref().map(|_| id.clone());
+        }
         if !delta.is_empty() {
             append_text(message, delta);
         } else if matches!(

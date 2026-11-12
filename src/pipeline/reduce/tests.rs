@@ -1563,3 +1563,18 @@ fn pending_buffer_is_released_at_the_next_run() {
     h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r2"}));
     assert_eq!(h.r.pending.capacity(), 0);
 }
+
+/// Text deltas aimed at an activity message store nothing, so they report
+/// no change and charge nothing.
+#[test]
+fn text_deltas_on_an_activity_message_change_nothing() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "ACTIVITY_SNAPSHOT", "messageId": "a1", "activityType": "t", "content": {}}),
+    );
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "a1"}));
+    let held = h.r.history_growth;
+    let c = h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a1", "delta": "xyz"}));
+    assert_eq!(c.message, None);
+    assert_eq!(h.r.history_growth, held);
+}
