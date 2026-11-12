@@ -84,6 +84,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::diagnostics::shown;
 use crate::event::Event;
 use crate::ids::{InterruptId, MessageId, RunId, SubagentRunId, ThreadId, ToolCallId};
 use crate::lifecycle::{RunFinishedOutcome, RunStarted, StepFinished};
@@ -98,6 +99,7 @@ use crate::tool::ToolCallEnd;
 use crate::usage::TokenUsage;
 use crate::version::ProtocolVersion;
 
+use super::consumer::{quote_list, MAX_LISTED_IDS};
 use super::RunPhase;
 
 /// Largest integer JSON carries exactly: 2^53 − 1.
@@ -532,7 +534,7 @@ fn frontend_names(input: &RunAgentInput) -> HashSet<u64> {
 
 fn owner_text(owner: &Owner) -> String {
     match owner {
-        Some(id) => format!("subagent '{id}'"),
+        Some(id) => format!("subagent '{}'", shown(id.as_str())),
         None => "the parent agent".to_owned(),
     }
 }
@@ -623,7 +625,10 @@ fn check_run_started_values(e: &RunStarted) -> Verdict {
         if ProtocolVersion::parse(declared).is_none() {
             return refuse(
                 ProducerRule::InvalidValue,
-                format!("RUN_STARTED: protocolVersion '{declared}' is not MAJOR.MINOR (VER-18)"),
+                format!(
+                    "RUN_STARTED: protocolVersion '{declared}' is not MAJOR.MINOR (VER-18)",
+                    declared = shown(declared.as_ref())
+                ),
             );
         }
     }
@@ -650,7 +655,7 @@ fn check_run_started_values(e: &RunStarted) -> Verdict {
                 ProducerRule::InvalidValue,
                 format!(
                     "RUN_STARTED: input tool '{}' has null parameters; omit them instead (BASIC-09)",
-                    tool.name
+                    shown(&tool.name)
                 ),
             );
         }
@@ -891,7 +896,8 @@ impl ProducerState {
                     format!(
                         "RUN_STARTED threadId '{}' is not the stream's thread '{thread}' \
                          (RUNIN-04)",
-                        e.thread_id
+                        shown(e.thread_id.as_str()),
+                        thread = shown(thread.as_ref())
                     ),
                 );
             }
@@ -901,7 +907,7 @@ impl ProducerState {
                 ProducerRule::Identity,
                 format!(
                     "RUN_STARTED reuses runId '{}' on this thread (BASIC-14)",
-                    e.run_id
+                    shown(e.run_id.as_str())
                 ),
             );
         }
@@ -911,7 +917,7 @@ impl ProducerState {
                 format!(
                     "RUN_STARTED '{}' after the requested run; the requested run is the \
                      exchange's last (RUNIN-31)",
-                    e.run_id
+                    shown(e.run_id.as_str())
                 ),
             );
         }
@@ -921,7 +927,9 @@ impl ProducerState {
                     ProducerRule::Identity,
                     format!(
                         "RUN_STARTED '{}' echoes the input of run '{}' on thread '{}' (RUNIN-06)",
-                        e.run_id, echo.run_id, echo.thread_id
+                        shown(e.run_id.as_str()),
+                        shown(echo.run_id.as_str()),
+                        shown(echo.thread_id.as_str())
                     ),
                 );
             }
@@ -960,10 +968,10 @@ impl ProducerState {
                 format!(
                     "RUN_FINISHED names run '{}' on thread '{}', but RUN_STARTED opened run '{}' \
                      on thread '{}' (RUNIN-04, RUNIN-05)",
-                    e.run_id,
-                    e.thread_id,
-                    self.run.as_ref().map_or("", |r| r.as_str()),
-                    self.thread.as_ref().map_or("", |t| t.as_str()),
+                    shown(e.run_id.as_str()),
+                    shown(e.thread_id.as_str()),
+                    shown(self.run.as_ref().map_or("", |r| r.as_str())),
+                    shown(self.thread.as_ref().map_or("", |t| t.as_str())),
                 ),
             );
         }
@@ -984,7 +992,7 @@ impl ProducerState {
         let ids = |noun: &str, map: &HashMap<MessageId, Item>, out: &mut Vec<String>| {
             for (id, item) in map {
                 if item.open && !item.chunk {
-                    out.push(format!("{noun} '{id}'"));
+                    out.push(format!("{noun} '{id}'", id = shown(id.as_ref())));
                 }
             }
         };
@@ -993,26 +1001,38 @@ impl ProducerState {
         ids("reasoning span", &self.spans, &mut open);
         for (id, call) in &self.calls {
             if call.open && !call.chunk {
-                open.push(format!("tool call '{id}'"));
+                open.push(format!("tool call '{id}'", id = shown(id.as_ref())));
             }
         }
         for (name, holders) in &self.steps {
             for (owner, _) in holders {
-                open.push(format!("step '{name}' of {}", owner_text(owner)));
+                open.push(format!(
+                    "step '{name}' of {}",
+                    owner_text(owner),
+                    name = shown(name.as_ref())
+                ));
             }
         }
         for (id, sub) in &self.subagents {
             if matches!(sub, Sub::Active { .. }) {
-                open.push(format!("subagent invocation '{id}'"));
+                open.push(format!(
+                    "subagent invocation '{id}'",
+                    id = shown(id.as_ref())
+                ));
             }
         }
         open.sort_unstable();
+        let more = open.len().saturating_sub(MAX_LISTED_IDS);
+        open.truncate(MAX_LISTED_IDS);
+        let mut listed = open.join(", ");
+        if more > 0 {
+            listed.push_str(&format!(", and {more} more"));
+        }
         refuse(
             ProducerRule::OpenAtFinish,
             format!(
-                "RUN_FINISHED with {} still open; close everything the run opened first \
-                 (STRM-03, REAS-03, LIFE-12, LIFE-51, SUB-10, SUB-33)",
-                open.join(", ")
+                "RUN_FINISHED with {listed} still open; close everything the run opened first \
+                 (STRM-03, REAS-03, LIFE-12, LIFE-51, SUB-10, SUB-33)"
             ),
         )
     }
@@ -1033,18 +1053,17 @@ impl ProducerState {
                     .iter()
                     .filter(|id| !self.answered.contains(*id));
                 if !pending.iter().eq(unanswered) {
-                    let expected: Vec<&str> = self
-                        .calls_order
-                        .iter()
-                        .filter(|id| !self.answered.contains(*id))
-                        .map(|id| id.as_str())
-                        .collect();
-                    let sent: Vec<&str> = pending.iter().map(|id| id.as_str()).collect();
+                    let expected = quote_list(
+                        self.calls_order
+                            .iter()
+                            .filter(|id| !self.answered.contains(*id)),
+                    );
+                    let sent = quote_list(pending);
                     return refuse(
                         ProducerRule::Outcome,
                         format!(
-                            "pendingToolCallIds {sent:?} must be exactly the unanswered calls of \
-                             this run in the order made, {expected:?} (TOOL-29, TOOL-31)"
+                            "pendingToolCallIds [{sent}] must be exactly the unanswered calls of \
+                             this run in the order made, [{expected}] (TOOL-29, TOOL-31)"
                         ),
                     );
                 }
@@ -1064,7 +1083,7 @@ impl ProducerState {
                             ProducerRule::DuplicateInterrupt,
                             format!(
                                 "interrupt id '{}' appears twice in the run (INTR-04)",
-                                interrupt.id
+                                shown(interrupt.id.as_str())
                             ),
                         );
                     }
@@ -1076,7 +1095,8 @@ impl ProducerState {
                                     "interrupt '{}' reports the frontend tool call '{call}' as an \
                                      interrupt; a frontend-tool stop finishes as success \
                                      (TOOL-26)",
-                                    interrupt.id
+                                    shown(interrupt.id.as_str()),
+                                    call = shown(call.as_ref())
                                 ),
                             );
                         }
@@ -1299,7 +1319,8 @@ impl ProducerState {
                 format!(
                     "{event_type} opens a new message with messageId '{id}', already used by {} \
                      in this thread (BASIC-15)",
-                    kind.noun()
+                    kind.noun(),
+                    id = shown(id.as_ref())
                 ),
             ),
             None => Ok(()),
@@ -1332,7 +1353,8 @@ impl ProducerState {
                                 "{event_type} reopens message '{id}' under {}, but it belongs to \
                                  {} (TEXT-06, SUB-18)",
                                 owner_text(tag),
-                                owner_text(&held.owner)
+                                owner_text(&held.owner),
+                                id = shown(id.as_ref())
                             ),
                         );
                     }
@@ -1344,7 +1366,8 @@ impl ProducerState {
                                     "{event_type} reopens message '{id}' as role '{}', but it is \
                                      '{}' (TEXT-06)",
                                     role_text(role),
-                                    role_text(had)
+                                    role_text(had),
+                                    id = shown(id.as_ref())
                                 ),
                             );
                         }
@@ -1398,19 +1421,24 @@ impl ProducerState {
                 ProducerRule::ChunkDiscipline,
                 format!(
                     "{event_type} for message '{id}', which is assembling from chunks; a \
-                     chunk-opened message continues in chunk form (STRM-09)"
+                     chunk-opened message continues in chunk form (STRM-09)",
+                    id = shown(id.as_ref())
                 ),
             ),
             Some(item) if item.open && event_type == "TEXT_MESSAGE_CHUNK" => refuse(
                 ProducerRule::ChunkDiscipline,
                 format!(
                     "{event_type} for message '{id}', which TEXT_MESSAGE_START opened; an \
-                     explicitly opened message continues with explicit events (STRM-09)"
+                     explicitly opened message continues with explicit events (STRM-09)",
+                    id = shown(id.as_ref())
                 ),
             ),
             Some(item) if item.open => refuse(
                 ProducerRule::AlreadyOpen,
-                format!("{event_type} for message '{id}', which is already open (STRM-01)"),
+                format!(
+                    "{event_type} for message '{id}', which is already open (STRM-01)",
+                    id = shown(id.as_ref())
+                ),
             ),
             Some(item) => {
                 if item.owner != *tag {
@@ -1420,7 +1448,8 @@ impl ProducerState {
                             "{event_type} reopens message '{id}' under {}, but it belongs to {} \
                              (TEXT-06, SUB-18)",
                             owner_text(tag),
-                            owner_text(&item.owner)
+                            owner_text(&item.owner),
+                            id = shown(id.as_ref())
                         ),
                     );
                 }
@@ -1432,7 +1461,8 @@ impl ProducerState {
                                 "{event_type} reopens message '{id}' as role '{}', but it is \
                                  '{}' (TEXT-06)",
                                 role_text(role),
-                                role_text(had)
+                                role_text(had),
+                                id = shown(id.as_ref())
                             ),
                         );
                     }
@@ -1441,7 +1471,8 @@ impl ProducerState {
                     return refuse(
                         ProducerRule::OwnerMismatch,
                         format!(
-                            "{event_type} reopens message '{id}' with a different name (TEXT-06)"
+                            "{event_type} reopens message '{id}' with a different name (TEXT-06)",
+                            id = shown(id.as_ref())
                         ),
                     );
                 }
@@ -1466,20 +1497,23 @@ impl ProducerState {
                 ProducerRule::ChunkDiscipline,
                 format!(
                     "{event_type} for reasoning message '{id}', which is assembling from chunks \
-                     (STRM-09)"
+                     (STRM-09)",
+                    id = shown(id.as_ref())
                 ),
             ),
             Some(item) if item.open && event_type == "REASONING_MESSAGE_CHUNK" => refuse(
                 ProducerRule::ChunkDiscipline,
                 format!(
                     "{event_type} for reasoning message '{id}', which REASONING_MESSAGE_START \
-                     opened; it continues with explicit events (STRM-09)"
+                     opened; it continues with explicit events (STRM-09)",
+                    id = shown(id.as_ref())
                 ),
             ),
             Some(item) if item.open => refuse(
                 ProducerRule::AlreadyOpen,
                 format!(
-                    "{event_type} for reasoning message '{id}', which is already open (STRM-01)"
+                    "{event_type} for reasoning message '{id}', which is already open (STRM-01)",
+                    id = shown(id.as_ref())
                 ),
             ),
             Some(item) if item.owner != *tag => refuse(
@@ -1488,7 +1522,8 @@ impl ProducerState {
                     "{event_type} reopens reasoning message '{id}' under {}, but it belongs to {} \
                      (SUB-21)",
                     owner_text(tag),
-                    owner_text(&item.owner)
+                    owner_text(&item.owner),
+                    id = shown(id.as_ref())
                 ),
             ),
             Some(_) => Ok(()),
@@ -1518,7 +1553,10 @@ impl ProducerState {
         if self.spans.get(id).is_some_and(|span| span.open) {
             return refuse(
                 ProducerRule::AlreadyOpen,
-                format!("REASONING_START for span '{id}', which is already open (REAS-02)"),
+                format!(
+                    "REASONING_START for span '{id}', which is already open (REAS-02)",
+                    id = shown(id.as_ref())
+                ),
             );
         }
         self.attribute(tag);
@@ -1561,7 +1599,8 @@ impl ProducerState {
                     format!(
                         "{event_type} for {} '{id}', which is assembling from chunks; its end is \
                          implied and its content is sent as chunks (STRM-09)",
-                        family.noun()
+                        family.noun(),
+                        id = shown(id.as_ref())
                     ),
                 )
             }
@@ -1572,7 +1611,8 @@ impl ProducerState {
                     format!(
                         "{event_type} for {} '{id}', which is not open ({})",
                         family.noun(),
-                        family.not_open_rule()
+                        family.not_open_rule(),
+                        id = shown(id.as_ref())
                     ),
                 )
             }
@@ -1585,7 +1625,8 @@ impl ProducerState {
                      (SUB-18, SUB-19, SUB-21)",
                     family.noun(),
                     owner_text(tag),
-                    owner_text(&owner)
+                    owner_text(&owner),
+                    id = shown(id.as_ref())
                 ),
             );
         }
@@ -1651,8 +1692,9 @@ impl ProducerState {
                          belongs to {}; a call carries its message's attribution (TOOL-02, \
                          SUB-26)",
                         owner_text(tag),
-                        parent.map_or("", |p| p.as_str()),
-                        owner_text(parent_owner)
+                        shown(parent.map_or("", |p| p.as_str())),
+                        owner_text(parent_owner),
+                        id = shown(id.as_ref())
                     ),
                 ));
             }
@@ -1665,7 +1707,8 @@ impl ProducerState {
             Some(call) if call.open && call.chunk => Err(ProducerViolation::new(
                 ProducerRule::ChunkDiscipline,
                 format!(
-                    "{event_type} for tool call '{id}', which is assembling from chunks (STRM-09)"
+                    "{event_type} for tool call '{id}', which is assembling from chunks (STRM-09)",
+                    id = shown(id.as_ref())
                 ),
             )),
             Some(call) if call.open && event_type == "TOOL_CALL_CHUNK" => {
@@ -1673,13 +1716,17 @@ impl ProducerState {
                     ProducerRule::ChunkDiscipline,
                     format!(
                         "{event_type} for tool call '{id}', which TOOL_CALL_START opened; it \
-                         continues with explicit events (STRM-09)"
+                         continues with explicit events (STRM-09)",
+                        id = shown(id.as_ref())
                     ),
                 ))
             }
             Some(call) if call.open => Err(ProducerViolation::new(
                 ProducerRule::AlreadyOpen,
-                format!("{event_type} for tool call '{id}', which is already open (STRM-01)"),
+                format!(
+                    "{event_type} for tool call '{id}', which is already open (STRM-01)",
+                    id = shown(id.as_ref())
+                ),
             )),
             Some(call) => {
                 let disagrees = if call.owner != owner {
@@ -1696,7 +1743,8 @@ impl ProducerState {
                         ProducerRule::OwnerMismatch,
                         format!(
                             "{event_type} reopens tool call '{id}' with a different {field} \
-                             (TOOL-07)"
+                             (TOOL-07)",
+                            id = shown(id.as_ref())
                         ),
                     )),
                     None => Ok(owner),
@@ -1743,7 +1791,8 @@ impl ProducerState {
                     ProducerRule::ChunkDiscipline,
                     format!(
                         "{event_type} for tool call '{id}', which is assembling from chunks \
-                         (STRM-09)"
+                         (STRM-09)",
+                        id = shown(id.as_ref())
                     ),
                 )
             }
@@ -1751,7 +1800,10 @@ impl ProducerState {
             _ => {
                 return refuse(
                     ProducerRule::NotOpen,
-                    format!("{event_type} for tool call '{id}', which is not open (STRM-02)"),
+                    format!(
+                        "{event_type} for tool call '{id}', which is not open (STRM-02)",
+                        id = shown(id.as_ref())
+                    ),
                 )
             }
         };
@@ -1762,7 +1814,8 @@ impl ProducerState {
                     "{event_type} for tool call '{id}' is attributed to {}, but TOOL_CALL_START \
                      belongs to {} (SUB-21)",
                     owner_text(tag),
-                    owner_text(&owner)
+                    owner_text(&owner),
+                    id = shown(id.as_ref())
                 ),
             );
         }
@@ -1794,7 +1847,8 @@ impl ProducerState {
                 ProducerRule::Outcome,
                 format!(
                     "TOOL_CALL_RESULT answers the frontend tool call '{call_id}'; the client \
-                     answers it in the next run's messages (TOOL-24)"
+                     answers it in the next run's messages (TOOL-24)",
+                    call_id = shown(call_id.as_ref())
                 ),
             );
         }
@@ -1831,7 +1885,8 @@ impl ProducerState {
         );
         let message = match tag {
             Some(id) if matches!(self.subagents.get(id), Some(Sub::Ended)) => format!(
-                "{first}; subagent '{id}' has ended, and its chunk stream ended with it (STRM-26)"
+                "{first}; subagent '{id}' has ended, and its chunk stream ended with it (STRM-26)",
+                id = shown(id.as_ref())
             ),
             None if self.lanes.values().any(|lane| lane.kind() == kind) => format!(
                 "{first}; a continuation of a subagent's chunk stream carries its subagentRunId \
@@ -1862,7 +1917,8 @@ impl ProducerState {
                     kind.chunk_type(),
                     kind.id_field(),
                     owner_text(tag),
-                    owner_text(&owner)
+                    owner_text(&owner),
+                    id = shown(id.as_ref())
                 ),
             )),
             other => Ok(other),
@@ -1878,7 +1934,8 @@ impl ProducerState {
                     format!(
                         "{} opens a chunk stream for subagent '{id}', which has ended; nothing \
                          would end it (STRM-26)",
-                        kind.chunk_type()
+                        kind.chunk_type(),
+                        id = shown(id.as_ref())
                     ),
                 );
             }
@@ -1931,7 +1988,8 @@ impl ProducerState {
                             "TEXT_MESSAGE_CHUNK for message '{id}' repeats role '{}', but the \
                              message is '{}' (STRM-19, CHG-01)",
                             role_text(role),
-                            role_text(item.role.unwrap_or(TextMessageRole::Assistant))
+                            role_text(item.role.unwrap_or(TextMessageRole::Assistant)),
+                            id = shown(id.as_ref())
                         ),
                     );
                 }
@@ -1941,7 +1999,8 @@ impl ProducerState {
                     ProducerRule::ChunkDiscipline,
                     format!(
                         "TEXT_MESSAGE_CHUNK for message '{id}' repeats a different name \
-                         (STRM-19, CHG-01)"
+                         (STRM-19, CHG-01)",
+                        id = shown(id.as_ref())
                     ),
                 );
             }
@@ -1962,7 +2021,8 @@ impl ProducerState {
                             format!(
                                 "TOOL_CALL_CHUNK opens tool call '{id}' without toolCallName; the \
                                  first chunk of a call carries both toolCallId and toolCallName \
-                                 (STRM-14, STRM-17)"
+                                 (STRM-14, STRM-17)",
+                                id = shown(id.as_ref())
                             ),
                         );
                     };
@@ -2009,7 +2069,8 @@ impl ProducerState {
                         ProducerRule::ChunkDiscipline,
                         format!(
                             "TOOL_CALL_CHUNK for tool call '{id}' repeats a different \
-                             toolCallName (STRM-19, CHG-01)"
+                             toolCallName (STRM-19, CHG-01)",
+                            id = shown(id.as_ref())
                         ),
                     );
                 }
@@ -2020,7 +2081,8 @@ impl ProducerState {
                         ProducerRule::ChunkDiscipline,
                         format!(
                             "TOOL_CALL_CHUNK for tool call '{id}' repeats a different \
-                             parentMessageId (STRM-19, CHG-01)"
+                             parentMessageId (STRM-19, CHG-01)",
+                            id = shown(id.as_ref())
                         ),
                     );
                 }
@@ -2091,7 +2153,8 @@ impl ProducerState {
                     ProducerRule::AlreadyOpen,
                     format!(
                         "STEP_STARTED '{name}' while {} holds that step open (LIFE-49)",
-                        owner_text(tag)
+                        owner_text(tag),
+                        name = shown(name.as_ref())
                     ),
                 );
             }
@@ -2120,12 +2183,16 @@ impl ProducerState {
                         "STEP_FINISHED '{name}' is attributed to {}, but the open step belongs \
                          to {} (SUB-22)",
                         owner_text(tag),
-                        owner_text(owner)
+                        owner_text(owner),
+                        name = shown(name.as_ref())
                     ),
                 ),
                 None => refuse(
                     ProducerRule::NotOpen,
-                    format!("STEP_FINISHED '{name}' for a step that is not open (LIFE-50)"),
+                    format!(
+                        "STEP_FINISHED '{name}' for a step that is not open (LIFE-50)",
+                        name = shown(name.as_ref())
+                    ),
                 ),
             };
         };
@@ -2147,7 +2214,10 @@ impl ProducerState {
             Some(Sub::Active { .. }) => {
                 return refuse(
                     ProducerRule::SubagentIdentity,
-                    format!("SUBAGENT_STARTED '{id}' while that invocation is active (SUB-08)"),
+                    format!(
+                        "SUBAGENT_STARTED '{id}' while that invocation is active (SUB-08)",
+                        id = shown(id.as_ref())
+                    ),
                 )
             }
             Some(Sub::Ended) => {
@@ -2155,7 +2225,8 @@ impl ProducerState {
                     ProducerRule::SubagentIdentity,
                     format!(
                         "SUBAGENT_STARTED '{id}' reuses the id of an invocation already ended in \
-                         this run (SUB-03, SUB-09)"
+                         this run (SUB-03, SUB-09)",
+                        id = shown(id.as_ref())
                     ),
                 )
             }
@@ -2164,7 +2235,8 @@ impl ProducerState {
                     ProducerRule::AttributedBeforeAnnounced,
                     format!(
                         "SUBAGENT_STARTED '{id}' after events attributed to it; announce an \
-                         invocation before attributing anything to it (SUB-07)"
+                         invocation before attributing anything to it (SUB-07)",
+                        id = shown(id.as_ref())
                     ),
                 )
             }
@@ -2179,7 +2251,9 @@ impl ProducerState {
                     ProducerRule::SubagentIdentity,
                     format!(
                         "SUBAGENT_STARTED '{id}' names parent invocation '{parent}', which was not \
-                         announced in this run (SUB-28)"
+                         announced in this run (SUB-28)",
+                        id = shown(id.as_ref()),
+                        parent = shown(parent.as_ref())
                     ),
                 );
             }
@@ -2194,7 +2268,10 @@ impl ProducerState {
         if !matches!(self.subagents.get(id), Some(Sub::Active { .. })) {
             return refuse(
                 ProducerRule::NotOpen,
-                format!("{event_type} '{id}' for an invocation that is not active (SUB-10)"),
+                format!(
+                    "{event_type} '{id}' for an invocation that is not active (SUB-10)",
+                    id = shown(id.as_ref())
+                ),
             );
         }
         let failed = event_type == "SUBAGENT_ERROR";
@@ -2204,7 +2281,8 @@ impl ProducerState {
                 ProducerRule::OpenAtFinish,
                 format!(
                     "SUBAGENT_FINISHED '{id}' with {still_open} of its items still open; an item \
-                     a subagent opened closes no later than its terminal (STRM-26)"
+                     a subagent opened closes no later than its terminal (STRM-26)",
+                    id = shown(id.as_ref())
                 ),
             );
         }
@@ -2256,7 +2334,7 @@ impl ProducerState {
                         format!(
                             "ACTIVITY_SNAPSHOT replace:false for '{}' is attributed to {}, but the \
                              activity belongs to {} (ACT-08)",
-                            e.message_id,
+                            shown(e.message_id.as_str()),
                             owner_text(tag),
                             owner_text(owner)
                         ),
@@ -2291,7 +2369,7 @@ impl ProducerState {
                 ProducerRule::NoBaseline,
                 format!(
                     "ACTIVITY_DELTA for '{}', which no ACTIVITY_SNAPSHOT created (ACT-11, SNAP-07)",
-                    e.message_id
+                    shown(e.message_id.as_str())
                 ),
             );
         };
@@ -2301,7 +2379,7 @@ impl ProducerState {
                 format!(
                     "ACTIVITY_DELTA for '{}' is attributed to {}, but the activity belongs to {} \
                      (SUB-21)",
-                    e.message_id,
+                    shown(e.message_id.as_str()),
                     owner_text(tag),
                     owner_text(owner)
                 ),
@@ -2320,7 +2398,7 @@ impl ProducerState {
                     ProducerRule::DuplicateMessageId,
                     format!(
                         "MESSAGES_SNAPSHOT lists messageId '{}' twice (BASIC-15)",
-                        message.id()
+                        shown(message.id().as_str())
                     ),
                 );
             }
@@ -2669,6 +2747,53 @@ mod tests {
                        "parentMessageId": "s1"}),
                 json!({"type": "TOOL_CALL_END", "toolCallId": "c2", "subagentRunId": "B"}),
             ],
+        );
+    }
+
+    /// Ids in violation text are escaped and previewed, and long lists are
+    /// counted, as in the consumer's error text.
+    #[test]
+    fn violation_text_bounds_ids() {
+        use serde_json::json;
+        let forged = "m\n\u{1b}[31mX";
+        let long = "y".repeat(1 << 16);
+        let mut v = ProducerVerifier::for_input(&input(json!([
+            {"id": forged, "role": "user", "content": "hi"}
+        ])));
+        feed(
+            &mut v,
+            vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"})],
+        );
+        let err = v
+            .check(&ev(json!({"type": "TOOL_CALL_RESULT", "messageId": forged,
+                              "toolCallId": long, "content": "c"})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+        assert!(
+            !err.message.contains('\n') && !err.message.contains('\u{1b}'),
+            "{:?}",
+            err.message
+        );
+        let err = v
+            .check(&ev(json!({"type": "TEXT_MESSAGE_END", "messageId": long})))
+            .unwrap_err();
+        assert!(err.message.len() < 1024, "{} bytes", err.message.len());
+        for i in 0..100 {
+            let start =
+                json!({"type": "TEXT_MESSAGE_START", "messageId": format!("o{i:03}{long}")});
+            v.check(&ev(start)).unwrap();
+        }
+        let err = v
+            .check(&ev(
+                json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OpenAtFinish);
+        assert!(err.message.len() < 4096, "{} bytes", err.message.len());
+        assert!(
+            err.message.contains(", and 84 more"),
+            "{}",
+            &err.message[..256]
         );
     }
 

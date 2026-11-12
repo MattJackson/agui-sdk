@@ -335,11 +335,11 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
 }
 
 /// Most ids quoted by [`quote_list`]; the rest are counted.
-const MAX_LISTED_IDS: usize = 16;
+pub(super) const MAX_LISTED_IDS: usize = 16;
 
 /// Single-quotes each id (previewed) and joins up to [`MAX_LISTED_IDS`] with
 /// commas, then counts the rest, for error text.
-fn quote_list<I>(ids: I) -> String
+pub(super) fn quote_list<I>(ids: I) -> String
 where
     I: IntoIterator,
     I::Item: AsRef<str>,
