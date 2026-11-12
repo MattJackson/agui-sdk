@@ -156,6 +156,28 @@ fn empty_text_messages() {
     assert_band("empty text messages", &frames, 0.9);
 }
 
+/// Text streamed in deltas: the buffer grows by doubling, and
+/// `TEXT_MESSAGE_END` releases the slack, so what the history holds is the
+/// text it is charged for. Without the release the estimate is about 0.83 of
+/// what is retained.
+#[test]
+fn streamed_text_messages() {
+    let mut frames = Vec::new();
+    for i in 0..20_000 {
+        let id = format!("m{i}");
+        frames.push(frame(
+            json!({"type": "TEXT_MESSAGE_START", "messageId": id, "role": "assistant"}),
+        ));
+        for _ in 0..10 {
+            frames.push(frame(
+                json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": id, "delta": "abcdefghijklmnopqrst"}),
+            ));
+        }
+        frames.push(frame(json!({"type": "TEXT_MESSAGE_END", "messageId": id})));
+    }
+    assert_band("streamed text messages", &frames, 0.9);
+}
+
 #[test]
 fn tool_calls_under_one_parent() {
     let mut frames = vec![frame(

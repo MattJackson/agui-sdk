@@ -1344,3 +1344,36 @@ fn remembered_delta_targets_follow_moves_and_drops() {
     assert_eq!(calls[0][0]["function"]["arguments"], "{\"x\":1}");
     assert!(h.codes().is_empty());
 }
+
+/// `*_END` releases the growth slack of the text and arguments it closes,
+/// so the history holds what it is charged for (D14), and the charge is
+/// the same with or without the slack.
+#[test]
+fn ends_release_text_and_argument_slack() {
+    let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m"}));
+    h.push(json!({"type": "REASONING_MESSAGE_START", "messageId": "r", "role": "reasoning"}));
+    h.push(json!({"type": "TOOL_CALL_START", "toolCallId": "c", "toolCallName": "f", "parentMessageId": "m"}));
+    for i in 0..10 {
+        h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "m", "delta": format!("text {i} ")}));
+        h.push(json!({"type": "REASONING_MESSAGE_CONTENT", "messageId": "r", "delta": format!("why {i} ")}));
+        h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": format!("{i},")}));
+    }
+    let charged = h.r.charged.clone();
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "m"}));
+    h.push(json!({"type": "REASONING_MESSAGE_END", "messageId": "r"}));
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c"}));
+    assert_eq!(h.r.charged, charged, "shrinking charges nothing");
+    let Message::Assistant(m) = &h.r.messages()[0] else {
+        panic!("assistant")
+    };
+    let text = m.content.as_ref().unwrap();
+    assert_eq!(text.capacity(), text.len());
+    let args = &m.tool_calls.as_ref().unwrap()[0].function.arguments;
+    assert_eq!(args.capacity(), args.len());
+    let Message::Reasoning(r) = &h.r.messages()[1] else {
+        panic!("reasoning")
+    };
+    assert_eq!(r.content.capacity(), r.content.len());
+    assert!(h.codes().is_empty());
+}

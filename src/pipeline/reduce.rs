@@ -730,6 +730,11 @@ impl Reducer {
                     let before = self.run_calls.bytes;
                     self.run_calls.mark(&e.tool_call_id, false);
                     self.settle_run_calls(before);
+                    // The arguments are complete: drop the growth slack, as
+                    // `extend_message` does at TEXT_MESSAGE_END.
+                    if let Some(call) = self.call_mut(slot) {
+                        call.function.arguments.shrink_to_fit();
+                    }
                     changes.message = self.extend_call(slot, "", &e.metadata);
                 } else {
                     report_missing_target(reporter, EventType::ToolCallEnd, "/toolCallId");
@@ -1130,6 +1135,13 @@ impl Reducer {
         let message = &mut self.messages[i];
         if !delta.is_empty() {
             append_text(message, delta);
+        } else if matches!(
+            event_type,
+            EventType::TextMessageEnd | EventType::ReasoningMessageEnd
+        ) {
+            // The text is complete: drop the growth slack, so the history
+            // holds what it is charged for (D14). Charges are unchanged.
+            shrink_text(message);
         }
         let n = merge_into(metadata_mut(message), metadata);
         self.charge_at(i, n.saturating_add(signed(delta.len())));
@@ -2657,6 +2669,34 @@ fn append_text(m: &mut Message, delta: &str) {
         Message::User(m) => append_content(&mut m.content, delta),
         Message::Tool(m) => append_content(&mut m.content, delta),
         Message::Activity(_) => {}
+    }
+}
+
+/// Releases the growth slack of the text [`append_text`] appends to.
+fn shrink_text(m: &mut Message) {
+    match m {
+        Message::Developer(m) => m.content.shrink_to_fit(),
+        Message::System(m) => m.content.shrink_to_fit(),
+        Message::Assistant(m) => {
+            if let Some(text) = &mut m.content {
+                text.shrink_to_fit();
+            }
+        }
+        Message::Reasoning(m) => m.content.shrink_to_fit(),
+        Message::User(m) => shrink_content(&mut m.content),
+        Message::Tool(m) => shrink_content(&mut m.content),
+        Message::Activity(_) => {}
+    }
+}
+
+fn shrink_content(content: &mut Content) {
+    match content {
+        Content::Text(text) => text.shrink_to_fit(),
+        Content::Parts(parts) => {
+            if let Some(ContentPart::Text(part)) = parts.last_mut() {
+                part.text.shrink_to_fit();
+            }
+        }
     }
 }
 

@@ -58,16 +58,22 @@ min_mb_per_s = 0
 # message and tool-call entries, state values and one `Arc` per non-delta
 # event. Frames are written with sorted keys (`type` last): the enforcer
 # presents the discriminator first, so nothing is buffered for it.
+# 0.9.1: +0.034 (1.509 to 1.542), one shrinking reallocation at each of the
+# run's 2 `*_END`s per 59 events: TEXT_MESSAGE_END and TOOL_CALL_END release
+# the doubling slack of the text and arguments they close, so a held message
+# keeps what it is charged for (15-16 % less resident per streamed message,
+# tests/history_resident.rs `streamed_text_messages`).
 [case."pipeline_push_json/text_heavy"]
-allocs_per_event = 1.509
+allocs_per_event = 1.542
 map_dependent = true
 min_mb_per_s = 0
 
 # the strings arrive owned in the `Value`s (built outside the measured
 # region) and are moved into the event, so this is pipeline_push_json minus
-# the strings the parse itself allocates.
+# the strings the parse itself allocates. 0.9.1: +0.034 (0.542 to 0.576), the
+# `*_END` shrink, as for pipeline_push_json.
 [case."pipeline_push_value/text_heavy"]
-allocs_per_event = 0.542
+allocs_per_event = 0.576
 map_dependent = true
 min_mb_per_s = 0
 
@@ -194,13 +200,14 @@ time_scales = [0.125, 1]
 # the client run loop over an in-memory transport, on the same stream as
 # pipeline_push_json/text_heavy: equal marginal count (the client adds 0 per
 # event; updates are Arc clones, views borrow), with or without an observer.
+# 0.9.1: 1.509 to 1.542 with the pipeline (the `*_END` shrink).
 [case."client_run/await"]
-allocs_per_event = 1.509
+allocs_per_event = 1.542
 map_dependent = true
 min_mb_per_s = 0
 
 [case."client_run/iterate_observed"]
-allocs_per_event = 1.509
+allocs_per_event = 1.542
 map_dependent = true
 min_mb_per_s = 0
 
