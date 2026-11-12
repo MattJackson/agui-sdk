@@ -95,6 +95,33 @@ fn patch_seeds(stream: &[Value]) -> Vec<(usize, Vec<u8>)> {
     out
 }
 
+/// A seed input: target, file name, bytes.
+type SeedInput = (&'static str, String, Vec<u8>);
+
+/// The seeds one corpus stream yields, in each target's input format.
+fn stream_seeds(name: &str, stream: &[Value]) -> Vec<SeedInput> {
+    let sse = sse_body(stream);
+    let mut out = vec![
+        ("sse_decoder", name.to_owned(), chunked(&sse)),
+        ("pipeline_json", name.to_owned(), chunked(&sse)),
+    ];
+    for (i, event) in stream.iter().enumerate() {
+        out.push(("enforce_event", format!("{name}-{i}"), to_vec(event)));
+    }
+    for (i, bytes) in patch_seeds(stream) {
+        out.push(("patch_apply", format!("{name}-{i}"), bytes));
+    }
+    out
+}
+
+/// The seeds one protobuf case yields, in each target's input format.
+fn proto_seeds(name: &str, bytes: &[u8]) -> Vec<SeedInput> {
+    vec![
+        ("proto_decode", name.to_owned(), bytes.to_vec()),
+        ("proto_frames", name.to_owned(), chunked(&frame(bytes))),
+    ]
+}
+
 fn seed(out: &Path) -> std::io::Result<usize> {
     let mut s = Seeder {
         out: out.to_path_buf(),
@@ -111,14 +138,8 @@ fn seed(out: &Path) -> std::io::Result<usize> {
     }
 
     for f in &streams {
-        let sse = sse_body(f.stream());
-        s.put("sse_decoder", &f.name, &chunked(&sse))?;
-        s.put("pipeline_json", &f.name, &chunked(&sse))?;
-        for (i, event) in f.stream().iter().enumerate() {
-            s.put("enforce_event", &format!("{}-{i}", f.name), &to_vec(event))?;
-        }
-        for (i, bytes) in patch_seeds(f.stream()) {
-            s.put("patch_apply", &format!("{}-{i}", f.name), &bytes)?;
+        for (target, name, bytes) in stream_seeds(&f.name, f.stream()) {
+            s.put(target, &name, &bytes)?;
         }
     }
     for d in &values {
@@ -153,8 +174,9 @@ fn seed(out: &Path) -> std::io::Result<usize> {
         }
     }
     for p in &protos {
-        s.put("proto_decode", &p.name, &p.bytes)?;
-        s.put("proto_frames", &p.name, &chunked(&frame(&p.bytes)))?;
+        for (target, name, bytes) in proto_seeds(&p.name, &p.bytes) {
+            s.put(target, &name, &bytes)?;
+        }
     }
     for (i, at) in [
         "2026-11-10T12:00:00Z",
@@ -215,13 +237,29 @@ mod tests {
                 None => (1, data),
             }
         }
-        let framed = frame(b"payload");
-        let input = chunked(&framed);
-        let (size, body) = chunking(&input);
-        assert_eq!(body, framed.as_slice());
-        assert_eq!(size, 256);
-        let sse = b"data: {}\n\n";
-        assert_eq!(chunking(&chunked(sse)).1, sse.as_slice());
+        // The encodings `seed` writes, not `chunked` on its own: a target
+        // handed its raw body would lose the body's first byte to `chunking`.
+        let stream = vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"})];
+        let sse = sse_body(&stream);
+        let mut seen = 0;
+        for (target, _, input) in stream_seeds("s", &stream) {
+            if target == "sse_decoder" || target == "pipeline_json" {
+                let (size, body) = chunking(&input);
+                assert_eq!(body, sse.as_slice(), "{target}");
+                assert_eq!(size, 256, "{target}");
+                seen += 1;
+            }
+        }
+        let message = b"\x0a\x03abc";
+        for (target, _, input) in proto_seeds("p", message) {
+            if target == "proto_frames" {
+                let (size, body) = chunking(&input);
+                assert_eq!(body, frame(message).as_slice(), "{target}");
+                assert_eq!(size, 256, "{target}");
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 3, "every chunking target is seeded");
     }
 
     #[test]
