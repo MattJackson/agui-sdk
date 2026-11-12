@@ -2177,9 +2177,10 @@ impl ProducerState {
             None => self.check_new_message(&e.message_id, "ACTIVITY_SNAPSHOT")?,
         }
         self.attribute(tag);
-        // A replacing, attributed snapshot restates the owner; otherwise the
-        // established owner stands.
-        let restates_owner = e.replace != Some(false) && tag.is_some();
+        // A replacing snapshot re-mints the activity: its owner becomes the
+        // snapshot's own, the parent agent when untagged. A `replace: false`
+        // snapshot keeps the established owner.
+        let restates_owner = e.replace != Some(false);
         match self.activity.get_mut(&e.message_id) {
             Some(owner) => {
                 if restates_owner {
@@ -2409,6 +2410,51 @@ mod tests {
         let (small, large) = (result_probes(16), result_probes(256));
         assert!(small <= 2, "16 lanes cost {small} probes");
         assert_eq!(small, large, "probes grew with the lane count");
+    }
+
+    fn feed(v: &mut ProducerVerifier, events: Vec<serde_json::Value>) {
+        for e in events {
+            let event = ev(e);
+            if let Err(violation) = v.check(&event) {
+                panic!("{event:?} refused: {violation}");
+            }
+        }
+    }
+
+    /// activity.mdx: a replacing snapshot re-mints the activity, so its
+    /// owner becomes the snapshot's own, absence included.
+    #[test]
+    fn an_untagged_replacing_snapshot_makes_the_parent_the_owner() {
+        use serde_json::json;
+        let snapshot = |sub: Option<&str>| {
+            let mut e = json!({"type": "ACTIVITY_SNAPSHOT", "messageId": "a1",
+                               "activityType": "x", "content": {}});
+            if let Some(s) = sub {
+                e["subagentRunId"] = json!(s);
+            }
+            e
+        };
+        let delta = |sub: Option<&str>| {
+            let mut e = json!({"type": "ACTIVITY_DELTA", "messageId": "a1", "activityType": "x",
+                               "patch": [{"op": "add", "path": "/k", "value": 1}]});
+            if let Some(s) = sub {
+                e["subagentRunId"] = json!(s);
+            }
+            ev(e)
+        };
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "SUBAGENT_STARTED", "subagentRunId": "A", "name": "h"}),
+                snapshot(Some("A")),
+                snapshot(None),
+            ],
+        );
+        let err = v.check(&delta(Some("A"))).unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        v.check(&delta(None)).unwrap();
     }
 
     #[test]
