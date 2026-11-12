@@ -508,3 +508,28 @@ fn a_large_run_leaves_no_uncharged_table_behind() {
     let owners = v.state.steps.get("s").map_or(0, HashSet::capacity);
     assert!(owners <= floor, "step owners {owners}");
 }
+
+/// A snapshot restating a message as one that carries no owner (here a tool
+/// message) forgets the owner an earlier snapshot gave it, as the producer
+/// verifier does, and credits its charge: before, the stale owner stayed and
+/// a tool call on the message tagged with another owner was refused although
+/// the producer verifier accepts it.
+#[test]
+fn a_snapshot_restating_a_message_without_an_owner_forgets_its_owner() {
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    let base = v.state.run_bytes;
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m1", "role": "assistant", "content": "x", "subagentRunId": "A"}
+    ]})))
+    .unwrap();
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m1", "role": "tool", "content": "x", "toolCallId": "c0"}
+    ]})))
+    .unwrap();
+    assert!(v.state.restated.is_empty());
+    assert_eq!(v.state.run_bytes, base);
+    v.observe(&ev(json!({"type": "TOOL_CALL_START", "toolCallId": "c1",
+        "toolCallName": "x", "parentMessageId": "m1", "subagentRunId": "B"})))
+        .unwrap();
+}

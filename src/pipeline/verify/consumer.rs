@@ -1105,7 +1105,17 @@ impl VerifierState {
                         | Message::System(_)
                         | Message::Developer(_)
                         | Message::Reasoning(_) => message.subagent_run_id().cloned(),
-                        _ => continue,
+                        // Restated as a message that holds no tool call: an
+                        // owner an earlier snapshot gave it is forgotten, as
+                        // the producer verifier does.
+                        _ => {
+                            if let Some(old) = self.restated.remove(message.id()) {
+                                self.run_bytes = self
+                                    .run_bytes
+                                    .saturating_sub(RESTATED_SLOT + owner_heap(old.as_ref()));
+                            }
+                            continue;
+                        }
                     };
                     let charge = owner_heap(owner.as_ref());
                     let id = self.interned(message.id());
