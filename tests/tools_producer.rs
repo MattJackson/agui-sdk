@@ -6,7 +6,7 @@
 
 mod support_server;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use agui_sdk::content::{Content, ContentPart, DataSource, MediaPart, PartSource, TextPart};
 use agui_sdk::diagnostics::{CollectingSink, DiagnosticCode, Reporter};
@@ -206,23 +206,36 @@ fn frontend_tools() -> [Tool; 2] {
 /// covers: TOOL-24
 #[test]
 fn a_frontend_call_is_never_answered_by_the_agent() {
-    let runner = Runner::new(agent(|ctx| async move {
-        let id = ctx
-            .emitter()
-            .start_tool_call("confirm", None)
-            .await?
-            .end()
-            .await?;
-        let answered = ctx.emitter().tool_result(id, "yes").await;
-        assert_eq!(
-            answered.err().map(|e| e.code()),
-            Some(ErrorCode::ProducerViolation)
-        );
-        Ok(RunOutcome::success())
+    // The refusal is carried out of the agent and checked here: an assertion
+    // inside the agent would only panic, and the runner turns a panic into a
+    // RUN_ERROR that the outer checks would accept.
+    let answered: Arc<Mutex<Option<Option<ErrorCode>>>> = Arc::default();
+    let seen = Arc::clone(&answered);
+    let runner = Runner::new(agent(move |ctx| {
+        let seen = Arc::clone(&seen);
+        async move {
+            let id = ctx
+                .emitter()
+                .start_tool_call("confirm", None)
+                .await?
+                .end()
+                .await?;
+            let answered = ctx.emitter().tool_result(id, "yes").await;
+            *seen.lock().unwrap() = Some(answered.err().map(|e| e.code()));
+            Ok(RunOutcome::success())
+        }
     }));
     let events = run(&runner, input().with_tools(frontend_tools()));
+    assert_eq!(
+        *answered.lock().unwrap(),
+        Some(Some(ErrorCode::ProducerViolation))
+    );
     assert!(!types(&events).contains(&EventType::ToolCallResult));
     assert_eq!(terminal(&events).event_type(), EventType::RunError);
+    assert_eq!(
+        run_error(&events).code.as_deref(),
+        Some("server.producer_violation")
+    );
 }
 
 /// covers: TOOL-25, TOOL-26, TOOL-28, TOOL-29, TOOL-30, TOOL-31
