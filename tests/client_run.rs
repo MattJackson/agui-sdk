@@ -1441,3 +1441,19 @@ fn a_panic_on_the_last_diagnostic_reaches_on_finish_as_an_error() {
         vec![("t1".to_owned(), Err(ErrorCode::ObserverPanicked))]
     );
 }
+
+/// A request's `Debug` prints ids and counts, not state or forwarded props
+/// (which may carry secrets), as `MiddlewareRequest`'s does.
+#[test]
+fn a_run_request_debug_omits_state_and_forwarded_props() {
+    let request = request()
+        .state(&json!({"apiKey": "SECRET-STATE"}))
+        .forwarded_props(&json!({"token": "SECRET-PROPS"}));
+    let printed = format!("{request:?}");
+    assert!(!printed.contains("SECRET-STATE"), "{printed}");
+    assert!(!printed.contains("SECRET-PROPS"), "{printed}");
+    assert!(
+        printed.contains("r1") && printed.contains("t1"),
+        "{printed}"
+    );
+}
