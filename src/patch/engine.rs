@@ -828,7 +828,9 @@ impl<'p, 'd> Engine<'p, 'd> {
         // if that refuses the copy are displaced values credited, and then
         // only as far as the copy needs: each retry asks for twice as much
         // (at least the headroom it had), so a frame that fails later pays
-        // for its deficit, not for whole subtrees it displaced.
+        // for its deficit, not for whole subtrees it displaced. Only the
+        // clone that succeeds is charged; the abandoned attempts before it
+        // grow geometrically, so they cost at most a constant multiple of it.
         let mut request = 0usize;
         // Nodes of an existing target member counted so far, and whether
         // that count is exact.

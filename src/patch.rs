@@ -36,7 +36,10 @@
 //!   `preserve-order`) or the whole document whenever the member-wise delta
 //!   would cost more than this budget allows by default, and the server's
 //!   state publisher sends that as a snapshot, so the crate never sends a
-//!   delta its own default limits reject.
+//!   delta its own default limits reject for the state alone. A client's
+//!   reducer shares one node ceiling between the state and activity
+//!   content, so when activity content holds part of it a delta can still
+//!   be refused there.
 //! * **Nodes are node units.** Every JSON value counts one, and every 64
 //!   bytes of string or object-key text counts one more (rounded down, a
 //!   member's key and its string value separately), so the node budgets also
@@ -104,9 +107,11 @@ pub struct JsonPointer(String);
 
 impl JsonPointer {
     /// Wraps pointer text without validating it; [`JsonPointer::parse`]
-    /// validates. An invalid pointer built this way never reaches the wire:
-    /// the producer verifier re-validates pointers
+    /// validates. An invalid pointer built this way is refused before it
+    /// reaches the wire when events go through the server's `Runner` or
+    /// `Emitter`: the producer verifier re-validates pointers
     /// ([`ProducerRule::InvalidValue`](crate::pipeline::verify::ProducerRule::InvalidValue)).
+    /// The encoders in `server::encode` do not validate.
     pub fn new_unchecked(text: impl Into<String>) -> Self {
         JsonPointer(text.into())
     }
@@ -420,8 +425,9 @@ impl PatchOperation {
     }
 }
 
-/// Hard ceiling on [`PatchLimits::max_depth`] for `apply` and its `test`
-/// walks, whatever the caller configures. `diff` is not bounded by it: it
+/// Hard ceiling on [`PatchLimits::max_depth`] for the values `apply` places,
+/// whatever the caller configures. A `test` compare is not bounded by it (it
+/// recurses as deep as the shallower operand), nor is `diff`: it
 /// recurses only where both sides are objects, so its depth is that of its
 /// inputs.
 const DEPTH_CEILING: usize = 1024;
@@ -450,7 +456,9 @@ fn caps(limits: PatchLimits, nodes: usize, ceiling: usize) -> (usize, usize) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchLimits {
-    /// Maximum pointer depth.
+    /// Maximum depth of a value placed by `add`, `replace`, `copy` or a
+    /// deeper `move`: the pointer's depth plus the height of the value
+    /// placed. Clamped to 1024.
     pub max_depth: usize,
     /// Growth factor over the node units before the patch.
     pub growth_factor: usize,
@@ -541,9 +549,12 @@ impl PatchBudget {
     }
 }
 
-/// Why a patch did not apply. Not an [`Error`](crate::Error): a failed patch is
-/// reported as a `patch.not_applied` diagnostic and the prior value is kept
-/// (SNAP-12, SNAP-13).
+/// Why a patch did not apply. Not an [`Error`](crate::Error): the reducer
+/// reports a failed patch as a `patch.not_applied` diagnostic
+/// (`patch.budget_exceeded` for the budget, depth and ceiling reasons) and
+/// keeps the prior value (SNAP-12, SNAP-13); a patch refused at the node
+/// ceiling also ends the stream with `processing.limit`
+/// ([`PatchLimits::max_nodes`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchError {
@@ -565,9 +576,9 @@ pub enum PatchErrorReason {
     TestFailed,
     /// `move` into its own child.
     MoveIntoChild,
-    /// Pointer deeper than [`PatchLimits::max_depth`].
+    /// The value placed would end deeper than [`PatchLimits::max_depth`].
     TooDeep,
-    /// Result would exceed the node budget.
+    /// The patch would exceed its node budget or its walk (work) budget.
     BudgetExceeded,
     /// Result would exceed the absolute [`PatchLimits::max_nodes`] ceiling.
     NodeCeilingExceeded,
@@ -584,7 +595,7 @@ impl PatchErrorReason {
             PatchErrorReason::TestFailed => "test operation failed",
             PatchErrorReason::MoveIntoChild => "cannot move a value into its own child",
             PatchErrorReason::TooDeep => "result would exceed the depth limit",
-            PatchErrorReason::BudgetExceeded => "result would exceed the node budget",
+            PatchErrorReason::BudgetExceeded => "patch would exceed the node or work budget",
             PatchErrorReason::NodeCeilingExceeded => {
                 "result would exceed the absolute node ceiling"
             }
@@ -853,7 +864,8 @@ impl Cost<'_> {
 /// more than rebuilding the object, the delta replaces it whole (and
 /// [`diff`] replaces the whole document when the delta as a whole would cost
 /// more than the default limits allow), so the crate never emits a delta its
-/// own default limits refuse. Always `false`
+/// own default limits refuse for the state alone (a client's activity
+/// content shares the node ceiling, see the module docs). Always `false`
 /// without `preserve-order` (removal is O(log n) there).
 #[cfg(feature = "preserve-order")]
 fn removals_too_costly(
