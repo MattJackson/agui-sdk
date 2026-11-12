@@ -482,17 +482,30 @@ fn json_name(snake: &str) -> String {
     out
 }
 
-/// Resolves a type name used inside `scope` (protobuf scoping: innermost
-/// enclosing scope first).
+/// Resolves a type name used inside `scope` (protobuf scoping: a relative
+/// name is looked up innermost enclosing scope first; a fully-qualified
+/// name, with a leading `.`, from the outermost scope only).
 fn resolve(type_name: &str, scope: &str, set: &ProtoSet) -> Result<String, String> {
     if let Some((_, kind)) = SCALARS.iter().find(|(n, _)| *n == type_name) {
         return Ok((*kind).to_owned());
     }
-    let package_prefix = set.package.as_deref().map(|p| format!(".{p}."));
-    let bare = match &package_prefix {
-        Some(prefix) if type_name.starts_with(prefix.as_str()) => &type_name[prefix.len()..],
-        _ => type_name,
-    };
+    if type_name.starts_with('.') {
+        let package_prefix = match set.package.as_deref() {
+            Some(p) => format!(".{p}."),
+            None => ".".to_owned(),
+        };
+        let bare = type_name
+            .strip_prefix(package_prefix.as_str())
+            .ok_or_else(|| format!("unknown type {type_name:?}"))?;
+        if set.messages.iter().any(|m| m.name == bare) {
+            return Ok(format!("Message({})", screaming_snake(bare)));
+        }
+        if set.enums.iter().any(|e| e.name == bare) {
+            return Ok(format!("Enum({})", screaming_snake(bare)));
+        }
+        return Err(format!("unknown type {type_name:?}"));
+    }
+    let bare = type_name;
     let mut scope = scope.to_owned();
     loop {
         let candidate = if scope.is_empty() {
@@ -1014,7 +1027,7 @@ pub fn enumeration(name: &str) -> Option<EnumId> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_freeze, render};
+    use super::{parse, parse_freeze, render, resolve};
 
     fn gen(proto: &str, freeze: &str) -> Result<String, String> {
         let set = parse(&[("t.proto".to_owned(), proto.to_owned())])?;
@@ -1106,5 +1119,18 @@ mod tests {
     fn missing_syntax_is_refused() {
         let err = refused("message M { string a = 1; }\n", "M.a = 1\n");
         assert!(err.contains("syntax"), "{err}");
+    }
+
+    #[test]
+    fn leading_dot_name_resolves_from_the_root_not_the_enclosing_scope() -> Result<(), String> {
+        let proto = "syntax = \"proto3\";\npackage ag_ui;\n\
+                     message Foo { string x = 1; }\n\
+                     message A { message Foo { string y = 1; } }\n";
+        let set = parse(&[("t.proto".to_owned(), proto.to_owned())])?;
+        assert_eq!(resolve(".ag_ui.Foo", "A", &set)?, "Message(FOO)");
+        assert_eq!(resolve("Foo", "A", &set)?, "Message(A_FOO)");
+        assert_eq!(resolve(".ag_ui.A.Foo", "A", &set)?, "Message(A_FOO)");
+        assert!(resolve(".other.Foo", "A", &set).is_err());
+        Ok(())
     }
 }
