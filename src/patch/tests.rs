@@ -1272,3 +1272,44 @@ fn a_document_over_the_ceiling_takes_deltas_that_do_not_grow_it() {
     apply(&mut d, &p, &mut b).unwrap();
     assert_eq!(b.nodes(), count(&d));
 }
+
+/// `diff` charges path text: clearing many members under a long key would
+/// repeat that key in every `remove`, so it falls back to a root replace
+/// (smaller than such a delta) instead of building it.
+#[test]
+fn diff_falls_back_when_repeated_path_text_outgrows_the_document() {
+    let key = "k".repeat(16 * 1024);
+    let members: serde_json::Map<String, Value> =
+        (0..2_000).map(|i| (format!("a{i}"), json!(i))).collect();
+    let before = json!({ key.clone(): members });
+    let after = json!({ key: {} });
+    let patch = diff(&before, &after);
+    assert!(
+        patch.len() == 1 && patch[0].path.as_str().is_empty(),
+        "expected a root replace, got {} op(s)",
+        patch.len()
+    );
+    assert!(run(&before, &patch).unwrap() == after);
+}
+
+/// `apply` credits what a `replace` displaces before refusing growth, so
+/// `diff` counts net growth: scalar changes near the ceiling stay a delta.
+#[test]
+fn diff_near_the_ceiling_counts_net_growth() {
+    let mut before = json!({ "a": Value::Array(vec![Value::Null; 179_983]) });
+    for i in 0..10 {
+        before[format!("x{i}")] = json!(0);
+    }
+    assert_eq!(count(&before), 179_995);
+    let mut after = before.clone();
+    for i in 0..10 {
+        after[format!("x{i}")] = json!(1);
+    }
+    let patch = diff(&before, &after);
+    assert_eq!(patch.len(), 10, "expected ten replaces");
+    assert!(run(&before, &patch).unwrap() == after);
+    // Real growth past the ceiling still falls back.
+    after["y"] = Value::Array(vec![Value::Null; 10]);
+    let patch = diff(&before, &after);
+    assert!(patch.len() == 1 && patch[0].path.as_str().is_empty());
+}

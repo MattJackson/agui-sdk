@@ -738,32 +738,44 @@ pub fn apply(
 /// Computes a patch that turns `before` into `after`, for the server's state
 /// publisher. Emits `replace` for changed scalars, `add`/`remove` for
 /// object members and a whole-array `replace` when arrays differ (simple,
-/// predictable, O(size of both documents plus the walk cost of the emitted
-/// delta, which is capped)). With `preserve-order`, an object
+/// predictable, O(size of both documents); the delta it builds is bounded by
+/// the default walk budget and by the size of `after`). With `preserve-order`, an object
 /// whose deleted members would cost more to shift out than to rebuild is sent
 /// as one `replace` of the object. Returns an empty patch when the documents
 /// are equal. When the member-wise delta would exceed what the default
-/// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or growth past
-/// the node budget or ceiling), returns a single `replace` of the root with
+/// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or net growth
+/// past the node budget or ceiling), or when its paths alone would be larger
+/// on the wire than `after`, returns a single `replace` of the root with
 /// `after` instead. That replace is larger than `after` itself, so callers
 /// building their own `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT`
 /// in that case, as the server's state publisher does.
 #[must_use]
 pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
+    diff_counted(before, walk::count(before), after)
+}
+
+/// [`diff`] with the node units of `before` already known.
+pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<PatchOperation> {
     let limits = PatchLimits::default();
-    let nodes = walk::count(before);
     let (node_cap, walk_cap) = caps(limits, nodes, limits.max_nodes);
     let mut cost = Cost {
         walk: 0,
-        grow: 0,
         limit: walk_cap,
+        added: 0,
+        freed: 0,
+        // Growth only counts when there is some: equal documents, and pure
+        // removals, are accepted by `apply` even over the ceiling.
+        headroom: node_cap.saturating_sub(nodes),
+        grew_past: false,
+        path_bytes: 0,
+        path_check: PATH_CHECK_FLOOR,
+        paths_too_big: false,
+        after,
     };
     let mut out = Vec::new();
     let mut path = String::new();
     diff_into(before, after, &mut path, &mut out, &mut cost);
-    // Growth only counts when there is some: equal documents, and pure
-    // removals, are accepted by `apply` even over the ceiling.
-    if cost.walk > walk_cap || (cost.grow > 0 && nodes.saturating_add(cost.grow) > node_cap) {
+    if cost.over() {
         out.clear();
         out.push(PatchOperation::replace(
             JsonPointer(String::new()),
@@ -773,19 +785,37 @@ pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
     out
 }
 
+/// Path bytes `diff` emits before it first compares them with the size of
+/// `after` (and then again each time they double).
+const PATH_CHECK_FLOOR: usize = 64 * 1024;
+
 /// Upper bound of what [`apply`] charges for the operations `diff` has
 /// emitted so far (ignoring lazy credit), so `diff` can tell when the default
-/// limits would refuse its delta.
-struct Cost {
+/// limits would refuse its delta, and stop building it as soon as they do.
+struct Cost<'a> {
     walk: usize,
-    grow: usize,
-    /// Stop estimating once `walk` exceeds this: the delta is refused anyway.
+    /// The walk cap: the delta is refused once `walk` exceeds it.
     limit: usize,
+    /// Node units added and freed so far, in emission order (the order
+    /// `apply` runs them in, crediting what earlier operations displaced
+    /// before it refuses growth).
+    added: usize,
+    freed: usize,
+    /// Growth the node cap leaves above `before`.
+    headroom: usize,
+    /// Net growth has passed `headroom` at some point.
+    grew_past: bool,
+    /// Bytes of path text emitted so far, the next total at which they are
+    /// compared with the wire size of `after`, and whether they exceeded it.
+    path_bytes: usize,
+    path_check: usize,
+    paths_too_big: bool,
+    after: &'a Value,
 }
 
-impl Cost {
+impl Cost<'_> {
     fn over(&self) -> bool {
-        self.walk > self.limit
+        self.walk > self.limit || self.grew_past || self.paths_too_big
     }
 
     fn add(&mut self, path: &str, added: usize, removed: usize, shift: usize) {
@@ -795,7 +825,24 @@ impl Cost {
             .saturating_add(added)
             .saturating_add(removed)
             .saturating_add(shift);
-        self.grow = self.grow.saturating_add(added);
+        // `apply` logs what an operation displaces before it adds the new
+        // value's nodes, so this operation's own `removed` is credited too.
+        self.added = self.added.saturating_add(added);
+        self.freed = self.freed.saturating_add(removed);
+        if self.added.saturating_sub(self.freed) > self.headroom {
+            self.grew_past = true;
+        }
+        // Each operation holds its own copy of its path: a delta whose paths
+        // alone outweigh `after` is never worth building. Checked at
+        // doubling totals, each check bounded by the total, so the checks
+        // cost O(path bytes emitted).
+        self.path_bytes = self.path_bytes.saturating_add(path.len());
+        if self.path_bytes > self.path_check {
+            self.path_check = self.path_bytes.saturating_mul(2);
+            if crate::json::wire_bytes_upto(self.after, self.path_bytes) < self.path_bytes {
+                self.paths_too_big = true;
+            }
+        }
     }
 }
 
@@ -842,7 +889,7 @@ fn diff_into(
     after: &Value,
     path: &mut String,
     out: &mut Vec<PatchOperation>,
-    cost: &mut Cost,
+    cost: &mut Cost<'_>,
 ) {
     if cost.over() {
         return;
@@ -859,17 +906,26 @@ fn diff_into(
             }
             let len = path.len();
             for (key, old) in b {
+                if cost.over() {
+                    return;
+                }
                 pointer::push_token(path, key);
                 match a.get(key) {
                     Some(new) => diff_into(old, new, path, out, cost),
                     None => {
                         cost.add(path, 0, walk::count(old), engine::remove_shift(b.len()));
+                        // `apply` also credits the member's key text as it
+                        // removes it, without walking it.
+                        cost.freed = cost.freed.saturating_add(walk::text_units(key.len()));
                         out.push(PatchOperation::remove(JsonPointer(path.clone())));
                     }
                 }
                 path.truncate(len);
             }
             for (key, new) in a {
+                if cost.over() {
+                    return;
+                }
                 if !b.contains_key(key) {
                     pointer::push_token(path, key);
                     // The member's own key is text the document retains.
