@@ -297,10 +297,25 @@ impl ChunkExpander {
     }
 
     /// Closes every open chunk stream (stream end), appending synthesized ends.
+    ///
+    /// Every lane table is empty afterwards, so one far larger than its
+    /// contents is released here, as the other per-run tables are at a run
+    /// boundary: a run with many lanes does not leave its peak-sized tables
+    /// (and their O(capacity) scans) to every later run.
     pub fn close_all(&mut self, out: &mut Vec<Event>) {
-        if self.parent.is_none() && self.subagents.is_empty() {
-            return;
+        if self.parent.is_some() || !self.subagents.is_empty() {
+            self.close_open_lanes(out);
         }
+        crate::pipeline::reset_map(&mut self.subagents);
+        for table in &mut self.by_item {
+            crate::pipeline::reset_map(table);
+        }
+        if self.closing.capacity() > crate::pipeline::RETAIN_FLOOR {
+            self.closing = Vec::new();
+        }
+    }
+
+    fn close_open_lanes(&mut self, out: &mut Vec<Event>) {
         let mut closing = std::mem::take(&mut self.closing);
         closing.clear();
         if let Some(lane) = &self.parent {
