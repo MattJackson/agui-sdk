@@ -7,6 +7,16 @@
 # both crates from the tag, refuses unless the bytes equal what crates.io
 # serves, then attaches SLSA provenance and keyless cosign bundles to the
 # existing GitHub release. Publishes nothing to crates.io.
+#
+# Provenance scope: a dispatch runs this file from the branch it is
+# dispatched on (main), so the attestation and the cosign certificates name
+# sign-release.yml@refs/heads/main and that commit as the builder context,
+# not the tag. What they vouch for is the bytes: the subjects are exactly the
+# .crate files crates.io serves, repackaged from the tag and compared first.
+# Verify with:
+#   gh attestation verify <crate> --repo MattJackson/agui-sdk \
+#     --signer-workflow MattJackson/agui-sdk/.github/workflows/sign-release.yml
+# A normal release (release.yml on the tag) attests from the tag itself.
 
 name: sign release
 
