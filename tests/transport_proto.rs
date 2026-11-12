@@ -138,7 +138,8 @@ fn a_frame_is_a_big_endian_length_then_exactly_one_event() {
     assert!(!partial);
     assert_eq!(decode(&got[0])["type"], "RUN_STARTED");
     assert_eq!(decode(&got[1])["type"], "TEXT_MESSAGE_START");
-    // An empty payload is a legal frame (an empty envelope).
+    // An empty payload is a legal frame; whether it decodes is the
+    // decoder's question (it does not: PB-18).
     let mut d = FrameDecoder::new(DEFAULT_MAX_FRAME_BYTES);
     d.push(Chunk::from_static(&[0, 0, 0, 0]));
     assert_eq!(d.next_frame().unwrap().as_deref(), Some(&[][..]));
@@ -386,11 +387,23 @@ fn an_unknown_envelope_variant_is_not_fatal() {
     assert!(matches!(verdicts[0], Decoded::Event(_)));
     assert_eq!(verdicts[1], Decoded::UnknownArm { field_number: 77 });
     assert!(matches!(verdicts[2], Decoded::Event(_)));
-    // An envelope with no arm at all is dropped the same way.
+}
+
+/// covers: PB-18
+#[test]
+fn an_envelope_with_no_arm_at_all_is_fatal() {
+    // A newer arm still carries its tag; an envelope with none maps to no
+    // event at all, a decode failure like `{}` on the JSON wire.
     assert_eq!(
-        decode_event(&[]).unwrap(),
-        Decoded::UnknownArm { field_number: 0 }
+        decode_event(&[]).unwrap_err().code(),
+        ErrorCode::ProtoFraming
     );
+    let mut text = String::from("kept");
+    assert_eq!(
+        decode_event_json(&[], &mut text).unwrap_err().code(),
+        ErrorCode::ProtoFraming
+    );
+    assert_eq!(text, "kept", "nothing written");
 }
 
 /// covers: PB-18
