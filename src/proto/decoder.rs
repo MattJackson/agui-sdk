@@ -687,7 +687,135 @@ fn has_arm(root: &[u8], f: &WireField, arms: &'static [Arm]) -> Result<bool> {
     Ok(false)
 }
 
+// Parsing bytes that are not emitted. A protobuf parser parses every
+// occurrence of a field, so bytes it would reject (bad framing, a string that
+// is not UTF-8) are malformed even where a later occurrence, oneof arm or
+// duplicate key supersedes them, or where the JSON form has no member for
+// them (PB-18). The decoder emits only what survives; these walk the rest.
+// Each superseded byte is walked once, by the scan that drops it. Depth here
+// counts containers and messages from where the walk starts, never more than
+// the decode would count for the same bytes, so nothing the decoder accepts
+// as the surviving occurrence is refused when superseded.
+
+/// Checks one occurrence `w` of a field of type `ty` (wire type matching).
+fn check_field(ty: Ty, root: &[u8], w: &WireField, depth: usize) -> Result<()> {
+    match ty {
+        Ty::String => utf8(&root[w.start..w.end]).map(|_| ()),
+        Ty::Bool | Ty::Int64 | Ty::Enum(_) => Ok(()),
+        Ty::Message(m) => check_message(m, root, w.start, w.end, depth + 1),
+        Ty::Struct => check_struct(root, w.start, w.end, depth + 1),
+        Ty::Value => check_value(root, w.start, w.end, depth),
+    }
+}
+
+/// Checks a message body of type `m`.
+fn check_message(m: &MsgDesc, root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    if depth > DECODE_MAX_DEPTH {
+        return Err(Error::DepthLimit);
+    }
+    let mut r = Reader::span(root, start, end);
+    while let Some(g) = r.next_field()? {
+        match m.body {
+            Body::Fields(fs) => {
+                if let Some(f) = fs
+                    .iter()
+                    .find(|f| f.number == g.number && f.ty.wire_type() == g.wt)
+                {
+                    check_field(f.ty, root, &g, depth)?;
+                }
+            }
+            Body::Union { arms, .. } => {
+                if let Some(a) = arms.iter().find(|a| a.number == g.number) {
+                    if g.wt == LEN {
+                        check_message(a.msg, root, g.start, g.end, depth + 1)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks a `google.protobuf.Value` body.
+fn check_value(root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    let mut r = Reader::span(root, start, end);
+    while let Some(g) = r.next_field()? {
+        check_kind(root, &g, depth)?;
+    }
+    Ok(())
+}
+
+/// Checks one `Value` kind occurrence.
+fn check_kind(root: &[u8], g: &WireField, depth: usize) -> Result<()> {
+    if g.wt != LEN {
+        return Ok(());
+    }
+    match g.number {
+        3 => utf8(&root[g.start..g.end]).map(|_| ()),
+        5 => check_struct(root, g.start, g.end, depth + 1),
+        6 => {
+            if depth + 1 > DECODE_MAX_DEPTH {
+                return Err(Error::DepthLimit);
+            }
+            let mut r = Reader::span(root, g.start, g.end);
+            while let Some(e) = r.next_field()? {
+                if e.number == 1 && e.wt == LEN {
+                    check_value(root, e.start, e.end, depth + 1)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Checks a `google.protobuf.Struct` body.
+fn check_struct(root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    if depth > DECODE_MAX_DEPTH {
+        return Err(Error::DepthLimit);
+    }
+    let mut r = Reader::span(root, start, end);
+    while let Some(e) = r.next_field()? {
+        if e.number == 1 && e.wt == LEN {
+            check_entry(root, e.start, e.end, depth)?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks a `Struct` entry body: its keys and values.
+fn check_entry(root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    let mut r = Reader::span(root, start, end);
+    while let Some(g) = r.next_field()? {
+        if g.wt == LEN {
+            match g.number {
+                1 => {
+                    utf8(&root[g.start..g.end])?;
+                }
+                2 => check_value(root, g.start, g.end, depth)?,
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Dec {
+    /// Checks every occurrence of field `f` in `body` (none of them emitted).
+    fn check_unshown(&self, f: &Field, root: &[u8], body: Src, o: &Occ) -> Result<()> {
+        if o.count == 0 {
+            return Ok(());
+        }
+        let wt = f.ty.wire_type();
+        let mut r = Fields::new(root, body);
+        while let Some(w) = r.next(&self.spans)? {
+            if w.number == f.number && w.wt == wt {
+                check_field(f.ty, root, &w, 0)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Releases the capacity a large event grew the scratch vectors to.
     fn trim(&mut self) {
         self.sort.clear();
@@ -818,6 +946,7 @@ impl Dec {
         let mut r = Fields::new(root, body);
         let mut cur: Option<(&'static Arm, Occ)> = None;
         let mut unknown = None;
+        let mut switched = false;
         while let Some(f) = r.next(&self.spans)? {
             match arms.iter().find(|a| a.number == f.number) {
                 Some(a) if f.wt == LEN => match &mut cur {
@@ -826,6 +955,7 @@ impl Dec {
                         o.last = f;
                     }
                     _ => {
+                        switched |= cur.is_some();
                         cur = Some((
                             a,
                             Occ {
@@ -837,6 +967,18 @@ impl Dec {
                     }
                 },
                 _ => unknown = Some(f.number),
+            }
+        }
+        if let (true, Some((kept, o))) = (switched, &cur) {
+            // Arms a later one replaced: parsed, never emitted.
+            let mut r = Fields::new(root, body);
+            while let Some(f) = r.next(&self.spans)? {
+                if f.wt != LEN || (f.number == kept.number && f.start >= o.from) {
+                    continue;
+                }
+                if let Some(a) = arms.iter().find(|a| a.number == f.number) {
+                    check_message(a.msg, root, f.start, f.end, 0)?;
+                }
             }
         }
         match cur {
@@ -886,6 +1028,14 @@ impl Dec {
         while let Some(f) = r.next(&self.spans)? {
             if let Some(i) = fs.iter().position(|d| d.number == f.number) {
                 if fs[i].ty.wire_type() == f.wt {
+                    if occ[i].count > 0
+                        && matches!(fs[i].ty, Ty::String)
+                        && fs[i].label != Label::Repeated
+                    {
+                        // Superseded by this one, so never emitted.
+                        let p = occ[i].last;
+                        utf8(&root[p.start..p.end])?;
+                    }
                     occ[i].count += 1;
                     occ[i].last = f;
                 }
@@ -922,6 +1072,11 @@ impl Dec {
                             break;
                         }
                     }
+                    for (j, g) in fs.iter().enumerate() {
+                        if Some(j) != pick && matches!(g.json, Json::Content(_)) {
+                            self.check_unshown(g, root, body, &occ[j])?;
+                        }
+                    }
                     if let Some(j) = pick {
                         self.member(&fs[j], "content", root, body, &occ[j], out, depth, false)?;
                     } else if requires_list(schema, "content") {
@@ -936,11 +1091,18 @@ impl Dec {
                     }
                 }
                 Json::OutcomeType => {
-                    if o.count == 0 {
-                        continue;
-                    }
-                    let t = utf8(&root[o.last.start..o.last.end])?;
+                    let t = if o.count == 0 {
+                        ""
+                    } else {
+                        utf8(&root[o.last.start..o.last.end])?
+                    };
                     if t.is_empty() {
+                        // No outcome object, so its members are not shown.
+                        for (j, g) in fs.iter().enumerate() {
+                            if let Json::OutcomeKey(_) = g.json {
+                                self.check_unshown(g, root, body, &occ[j])?;
+                            }
+                        }
                         continue;
                     }
                     if depth + 1 > DECODE_MAX_DEPTH {
@@ -1203,6 +1365,7 @@ impl Dec {
     fn value<O: Out>(&mut self, root: &[u8], body: Src, out: &mut O, depth: usize) -> Result<()> {
         let mut r = Fields::new(root, body);
         let mut kind: Option<Occ> = None;
+        let mut switched = false;
         while let Some(f) = r.next(&self.spans)? {
             let ok = match f.number {
                 1 | 4 => f.wt == VARINT,
@@ -1219,6 +1382,7 @@ impl Dec {
                     k.last = f;
                 }
                 _ => {
+                    switched |= kind.is_some();
                     kind = Some(Occ {
                         count: 1,
                         last: f,
@@ -1232,6 +1396,23 @@ impl Dec {
             return Ok(());
         };
         let w = k.last;
+        if switched || (w.number == 3 && k.count > 1) {
+            // Kinds and strings a later occurrence replaced: parsed, never
+            // emitted. A struct or list kind's own occurrences are merged.
+            let merged = w.number == 5 || w.number == 6;
+            let mut r = Fields::new(root, body);
+            while let Some(f) = r.next(&self.spans)? {
+                let kept = f.number == w.number
+                    && if merged {
+                        f.start >= k.from
+                    } else {
+                        f.start == w.start
+                    };
+                if !kept {
+                    check_kind(root, &f, 0)?;
+                }
+            }
+        }
         match w.number {
             1 => out.null(),
             2 => out.f64(f64::from_bits(w.v)),
@@ -1301,6 +1482,10 @@ impl Dec {
             let (mut ks, mut ke) = (0, 0);
             while let Some(g) = er.next_field()? {
                 if g.number == 1 && g.wt == LEN {
+                    // A repeated key: the earlier one is superseded.
+                    if ke > ks {
+                        utf8(&root[ks..ke])?;
+                    }
                     ks = g.start;
                     ke = g.end;
                 }
@@ -1338,6 +1523,11 @@ impl Dec {
                     }
                     if h - g > 1 {
                         let (first, last) = (order[g] as usize, order[h - 1] as usize);
+                        // Values the last one replaces: parsed, never emitted.
+                        for &dropped in &order[g..h - 1] {
+                            let [_, _, ds, de] = self.ents[dropped as usize];
+                            check_entry(root, ds as usize, de as usize, 0)?;
+                        }
                         let [_, _, es, ee] = self.ents[last];
                         self.ents[first][2] = es;
                         self.ents[first][3] = ee;
@@ -1355,6 +1545,8 @@ impl Dec {
                     for j in base..i {
                         let [js, je, _, _] = self.ents[j];
                         if js != u32::MAX && &root[js as usize..je as usize] == k {
+                            let [_, _, ds, de] = self.ents[j];
+                            check_entry(root, ds as usize, de as usize, 0)?;
                             self.ents[j][2] = es;
                             self.ents[j][3] = ee;
                             self.ents[i][0] = u32::MAX;

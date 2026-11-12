@@ -179,6 +179,119 @@ mod tests {
         }
     }
 
+    /// A length-delimited field `n` holding `body`.
+    fn len_field(n: u64, body: &[u8]) -> Vec<u8> {
+        use super::super::wire::put_varint;
+        let mut out = Vec::new();
+        put_varint(&mut out, n << 3 | 2);
+        put_varint(&mut out, body.len() as u64);
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// Records in `fails` unless `bytes` decode as malformed.
+    fn expect_malformed(fails: &mut Vec<String>, bytes: &[u8], what: &str) {
+        match decode_event(bytes) {
+            Err(e) if e.code() == ErrorCode::ProtoFraming => {}
+            Err(e) => fails.push(format!("{what}: {e}")),
+            Ok(_) => fails.push(format!("{what}: decoded")),
+        }
+    }
+
+    /// Bytes a protobuf parser would reject are malformed even when a later
+    /// occurrence, arm or duplicate key supersedes them (PB-18): every
+    /// occurrence is parsed, as protobuf parses it, not just the one kept.
+    #[test]
+    fn superseded_occurrences_are_still_parsed() {
+        let fails = &mut Vec::new();
+        // A singular string: `run_id` as invalid UTF-8, then "r".
+        let mut extra = len_field(3, &[0xff]);
+        extra.extend(len_field(3, b"r"));
+        expect_malformed(
+            fails,
+            &envelope_with(RUN_STARTED, &extra),
+            "superseded string",
+        );
+        assert!(decode_event(&envelope_with(RUN_STARTED, &len_field(3, b"r"))).is_ok());
+
+        // An envelope arm superseded by another: TEXT_MESSAGE_START whose
+        // `message_id` is invalid UTF-8, then a valid STATE_SNAPSHOT; and one
+        // whose bytes do not frame.
+        let snapshot = envelope_with(r#"{"type":"STATE_SNAPSHOT","snapshot":{}}"#, &[]);
+        for (bad, what) in [
+            (
+                len_field(1, &len_field(2, &[0xff])),
+                "superseded arm string",
+            ),
+            (len_field(1, &[0x0a, 0xff]), "superseded arm framing"),
+        ] {
+            let mut bytes = bad;
+            bytes.extend_from_slice(&snapshot);
+            expect_malformed(fails, &bytes, what);
+        }
+
+        // `snapshot` Values. string_value 0xff, then null_value.
+        let snap = |value: Vec<u8>| {
+            let mut env = Vec::new();
+            let body = len_field(2, &value);
+            env.extend(len_field(7, &body));
+            env
+        };
+        let mut v = len_field(3, &[0xff]);
+        v.extend([0x08, 0x00]);
+        expect_malformed(fails, &snap(v), "superseded Value kind");
+        // string_value 0xff, then string_value "s".
+        let mut v = len_field(3, &[0xff]);
+        v.extend(len_field(3, b"s"));
+        expect_malformed(fails, &snap(v), "superseded string_value");
+
+        // Struct entries: key "a" with string_value 0xff, then key "a"
+        // again with null; with few entries and with many (sorted path).
+        let entry = |key: &[u8], value: &[u8]| {
+            let mut e = len_field(1, key);
+            e.extend(len_field(2, value));
+            len_field(1, &e)
+        };
+        for pad in [0usize, 40] {
+            let mut st = entry(b"a", &len_field(3, &[0xff]));
+            for i in 0..pad {
+                st.extend(entry(format!("k{i}").as_bytes(), &[0x08, 0x00]));
+            }
+            st.extend(entry(b"a", &[0x08, 0x00]));
+            expect_malformed(fails, &snap(len_field(5, &st)), "superseded duplicate key");
+            let mut ok = entry(b"a", &len_field(3, b"s"));
+            ok.extend(entry(b"a", &[0x08, 0x00]));
+            assert!(decode_event(&snap(len_field(5, &ok))).is_ok());
+        }
+        // An entry whose key is repeated: 0xff, then "a".
+        let mut e = len_field(1, &[0xff]);
+        e.extend(len_field(1, b"a"));
+        expect_malformed(
+            fails,
+            &snap(len_field(5, &len_field(1, &e))),
+            "superseded key",
+        );
+
+        // A known field the JSON form does not show: `RUN_FINISHED`'s
+        // `interrupts` with no outcome, holding an invalid string.
+        let finished = r#"{"type":"RUN_FINISHED","threadId":"t","runId":"r"}"#;
+        let interrupt = len_field(1, &[0xff]);
+        expect_malformed(
+            fails,
+            &envelope_with(finished, &len_field(6, &interrupt)),
+            "unshown outcome member",
+        );
+        // A `content` field left out because another content field wins.
+        let result = r#"{"type":"TOOL_CALL_RESULT","messageId":"m","toolCallId":"c","content":[{"type":"text","text":"x"}]}"#;
+        assert!(decode_event(&envelope_with(result, &[])).is_ok());
+        expect_malformed(
+            fails,
+            &envelope_with(result, &len_field(5, &[0xff])),
+            "unshown content field",
+        );
+        assert!(fails.is_empty(), "accepted: {fails:#?}");
+    }
+
     /// proto-1: the decoder's entry budget is the count the tree enforcer
     /// applies, so it refuses exactly what enforcement would, at the same N.
     #[test]
