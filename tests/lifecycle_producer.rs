@@ -919,7 +919,7 @@ fn only_a_late_run_error_may_follow_a_finished_run() {
         .unwrap();
 }
 
-/// pipeline-verify-5: an empty `pendingToolCallIds` means "named none" and
+/// An empty `pendingToolCallIds` means "named none" and
 /// the consumer derives the list (schema.mdx), so it is not compared.
 /// covers: TOOL-29, TOOL-31
 #[test]

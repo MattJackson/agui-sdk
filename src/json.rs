@@ -529,6 +529,9 @@ const ENTRY: usize = std::mem::size_of::<String>() + VALUE_SLOT;
 /// A B-tree leaf of `serde_json`'s default map: 11 entries and a header.
 const BTREE_NODE: usize = 11 * ENTRY + 16;
 
+/// Largest integer JSON carries exactly in an IEEE double: 2^53 − 1.
+pub(crate) const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
 /// The heap block of a string of `len` bytes.
 pub(crate) fn text_bytes(len: usize) -> usize {
     if len == 0 {

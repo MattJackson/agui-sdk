@@ -1,4 +1,4 @@
-//! State-reuse unit tests. Rule tests live in the `tests/` rule files.
+//! State-reuse and identity unit tests; most rule tests live in `tests/`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -44,7 +44,7 @@ fn started(run: &str) -> Event {
     ev(json!({"type": "RUN_STARTED", "threadId": "t", "runId": run}))
 }
 
-/// pipeline-verify-3: a table inflated by one run is dropped, not cleared at
+/// A table inflated by one run is dropped, not cleared at
 /// O(capacity), when later runs are small.
 #[test]
 fn an_oversized_tracker_is_dropped_after_a_small_run() {
@@ -78,7 +78,7 @@ fn an_oversized_tracker_is_dropped_after_a_small_run() {
     );
 }
 
-/// pipeline-verify-3: the per-step owner sets and the activity table too.
+/// The per-step owner sets and the activity table too.
 #[test]
 fn oversized_owner_sets_and_activity_are_dropped_after_a_small_run() {
     let floor = crate::pipeline::RETAIN_FLOOR;
@@ -117,7 +117,7 @@ fn oversized_owner_sets_and_activity_are_dropped_after_a_small_run() {
     assert!(v.state.activity.capacity() <= floor);
 }
 
-/// pipeline-verify-4: step names do not accumulate within a run.
+/// Step names do not accumulate within a run.
 #[test]
 fn distinct_finished_step_names_are_not_retained_within_a_run() {
     let mut v = ConsumerVerifier::new();
@@ -148,7 +148,7 @@ fn distinct_finished_step_names_are_not_retained_within_a_run() {
     .unwrap();
 }
 
-/// pipeline-verify-6: peer ids in error text are previewed and counted, not
+/// Peer ids in error text are previewed and counted, not
 /// interpolated at full length.
 #[test]
 fn error_text_bounds_peer_ids() {
@@ -412,4 +412,161 @@ fn a_remembered_delta_target_is_forgotten_when_its_item_changes() {
     assert!(v.state.text.hot.is_none(), "a reset forgets it");
     v.observe(&started("r2")).unwrap();
     assert!(v.observe(&content(None)).is_err(), "new run: refused");
+}
+
+/// subagents.mdx: a tool call inherits the attribution of the message
+/// holding it, so a continuation tagged with that owner agrees, whether the
+/// message was restated by a snapshot, held by the history or streamed by an
+/// earlier run.
+#[test]
+fn an_untagged_call_inherits_a_held_parent_owner() {
+    let call = |id: &str, parent: &str| {
+        ev(
+            json!({"type": "TOOL_CALL_START", "toolCallId": id, "toolCallName": "x",
+                  "parentMessageId": parent}),
+        )
+    };
+    let args = |id: &str, sub: &str| {
+        ev(
+            json!({"type": "TOOL_CALL_ARGS", "toolCallId": id, "delta": "{}",
+                  "subagentRunId": sub}),
+        )
+    };
+
+    // Restated by a snapshot of this run: the owner is known.
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m1", "role": "assistant", "content": "x", "subagentRunId": "A"}
+    ]})))
+    .unwrap();
+    v.observe(&call("c1", "m1")).unwrap();
+    let err = v.observe(&args("c1", "B")).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Ownership);
+    v.observe(&args("c1", "A")).unwrap();
+
+    // Held by the history: the first tagged continuation names the owner.
+    let mut v = ConsumerVerifier::new().with_known_messages([MessageId::from("h1")]);
+    v.observe(&started("r1")).unwrap();
+    v.observe(&call("c1", "h1")).unwrap();
+    v.observe(&args("c1", "A")).unwrap();
+    let err = v.observe(&args("c1", "B")).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Ownership);
+
+    // Streamed by an earlier run.
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    v.observe(&ev(
+        json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "subagentRunId": "A"}),
+    ))
+    .unwrap();
+    v.observe(&ev(
+        json!({"type": "TEXT_MESSAGE_END", "messageId": "m1", "subagentRunId": "A"}),
+    ))
+    .unwrap();
+    v.observe(&ev(
+        json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}),
+    ))
+    .unwrap();
+    v.observe(&started("r2")).unwrap();
+    v.observe(&call("c1", "m1")).unwrap();
+    v.observe(&args("c1", "A")).unwrap();
+}
+
+/// D25: a run-scoped table's charge is credited when the run ends, so the
+/// table itself does not outlive the run at a capacity beyond the floor.
+#[test]
+fn a_large_run_leaves_no_uncharged_table_behind() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    for i in 0..100_000 {
+        let id = format!("s{i}");
+        v.observe(&ev(json!({"type": "REASONING_START", "messageId": id})))
+            .unwrap();
+        v.observe(&ev(json!({"type": "REASONING_END", "messageId": id})))
+            .unwrap();
+    }
+    for i in 0..5_000 {
+        let owner = format!("o{i}");
+        v.observe(&ev(
+            json!({"type": "STEP_STARTED", "stepName": "s", "subagentRunId": owner}),
+        ))
+        .unwrap();
+        v.observe(&ev(
+            json!({"type": "STEP_FINISHED", "stepName": "s", "subagentRunId": owner}),
+        ))
+        .unwrap();
+    }
+    v.observe(&ev(
+        json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}),
+    ))
+    .unwrap();
+    assert_eq!(v.retained(), v.state.step_name_bytes);
+    let spans = v.state.spans.items.capacity();
+    assert!(spans <= floor, "spans {spans}");
+    let owners = v.state.steps.get("s").map_or(0, HashSet::capacity);
+    assert!(owners <= floor, "step owners {owners}");
+}
+
+/// A run that fails while thousands of step owners, activity messages and
+/// subagents are still open drops those tables at RUN_ERROR rather than
+/// keeping them resident uncharged: the old reset kept any table at least a
+/// quarter full, whatever its size.
+#[test]
+fn a_failed_run_drops_its_large_open_tables() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    for i in 0..5_000 {
+        let owner = format!("o{i}");
+        v.observe(&ev(
+            json!({"type": "STEP_STARTED", "stepName": "s", "subagentRunId": owner}),
+        ))
+        .unwrap();
+        v.observe(&ev(
+            json!({"type": "ACTIVITY_SNAPSHOT", "messageId": format!("a{i}"),
+            "activityType": "x", "content": {}}),
+        ))
+        .unwrap();
+        v.observe(&ev(
+            json!({"type": "SUBAGENT_STARTED", "subagentRunId": format!("g{i}"), "name": "n"}),
+        ))
+        .unwrap();
+    }
+    v.observe(&ev(json!({"type": "RUN_ERROR", "message": "boom"})))
+        .unwrap();
+    let owners = v.state.steps.get("s").map_or(0, HashSet::capacity);
+    assert!(owners <= floor, "step owners {owners}");
+    let activity = v.state.activity.capacity();
+    assert!(activity <= floor, "activity {activity}");
+    let active = v.state.subagents_active.capacity();
+    assert!(active <= floor, "subagents active {active}");
+    let announced = v.state.subagents_announced.capacity();
+    assert!(announced <= floor, "subagents announced {announced}");
+}
+
+/// A snapshot restating a message as one that carries no owner (here a tool
+/// message) forgets the owner an earlier snapshot gave it, as the producer
+/// verifier does, and credits its charge: before, the stale owner stayed and
+/// a tool call on the message tagged with another owner was refused although
+/// the producer verifier accepts it.
+#[test]
+fn a_snapshot_restating_a_message_without_an_owner_forgets_its_owner() {
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    let base = v.state.run_bytes;
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m1", "role": "assistant", "content": "x", "subagentRunId": "A"}
+    ]})))
+    .unwrap();
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m1", "role": "tool", "content": "x", "toolCallId": "c0"}
+    ]})))
+    .unwrap();
+    assert!(v.state.restated.is_empty());
+    assert_eq!(v.state.run_bytes, base);
+    v.observe(&ev(json!({"type": "TOOL_CALL_START", "toolCallId": "c1",
+        "toolCallName": "x", "parentMessageId": "m1", "subagentRunId": "B"})))
+        .unwrap();
 }

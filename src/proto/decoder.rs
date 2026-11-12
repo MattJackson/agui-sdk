@@ -44,7 +44,7 @@ pub(crate) trait Out {
     fn null(&mut self);
 }
 
-pub(super) const MAX_SAFE: i64 = 9_007_199_254_740_991;
+pub(super) const MAX_SAFE: i64 = crate::json::MAX_SAFE_INTEGER as i64;
 
 /// Prefix of the JSON spelling of an enum number with no value in this build
 /// (`#9`). The encoder maps such a spelling back to its number.

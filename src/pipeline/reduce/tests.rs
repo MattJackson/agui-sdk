@@ -325,7 +325,7 @@ fn duplicate_result_id_replaces_in_place() {
     assert_eq!(h.history().as_array().unwrap().len(), 2);
 }
 
-/// D25: per-run call sets inflated by one run are dropped, not
+/// Per-run call sets inflated by one run are dropped, not
 /// cleared at O(capacity), once later runs are small.
 #[test]
 fn oversized_run_call_sets_are_dropped_after_a_small_run() {

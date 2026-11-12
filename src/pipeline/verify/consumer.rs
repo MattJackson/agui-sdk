@@ -26,8 +26,12 @@
 //!   with its opener's owner; an untagged continuation always agrees (SUB-24,
 //!   SUB-25). A reopening start must name the same owner. A tool call tagged
 //!   to one owner may not hang off a message of another; an untagged call
-//!   inherits its message's owner (SUB-26), text or reasoning alike. Activity deltas agree with the snapshot
-//!   that opened the activity message (SUB-21).
+//!   inherits its message's owner (SUB-26): a text or reasoning message of
+//!   the run, or one a `MESSAGES_SNAPSHOT` of the run restated. A message
+//!   held from before the run (history, or an earlier run) has an owner the
+//!   run does not know, so an untagged call on it takes the owner its first
+//!   tagged continuation names. Activity deltas agree with the snapshot that
+//!   opened the activity message (SUB-21).
 //! * **Subagents.** Attribution without announcement is accepted (SUB-12). An
 //!   announcement of an active or already-finished id, or naming an
 //!   unannounced parent, is a violation; so is a terminal for an invocation
@@ -38,10 +42,11 @@
 //! # Cost
 //!
 //! Every check is a hash lookup keyed by an id (an `Arc<str>` newtype, so
-//! inserting one is a reference-count increment). Maps are cleared, not
-//! dropped, between runs, so their capacity is reused, unless a table is far
-//! larger than the run that just used it (clearing costs O(capacity)). Content events
-//! allocate nothing.
+//! inserting one is a reference-count increment). Run-scoped maps are
+//! cleared, not dropped, between runs, so their capacity is reused, unless a
+//! table has grown beyond a small floor: its charge is credited when the run
+//! ends (D25), so it is dropped rather than kept resident uncharged. Content
+//! events allocate nothing.
 //!
 //! The verifier keeps one entry per id the stream names: each open step,
 //! each item and subagent invocation of the run, and every message id the
@@ -58,6 +63,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::event::Event;
 use crate::ids::{MessageId, RunId, SubagentRunId, ThreadId, ToolCallId};
 use crate::json::text_bytes;
+use crate::message::Message;
 use crate::pipeline::chunks::LANE_SHARE;
 use crate::pipeline::{id_heap, owner_heap, table_slot};
 
@@ -80,6 +86,8 @@ const ENTRY_SLOT: usize = table_slot(16 + std::mem::size_of::<Entry>());
 const STEP_NAME_SLOT: usize = table_slot(24 + std::mem::size_of::<HashSet<Owner>>()) + 80;
 /// An activity message's entry, without its id's heap.
 const ACTIVITY_SLOT: usize = table_slot(16 + std::mem::size_of::<Owner>());
+/// A restated message's owner entry, without its id's heap.
+const RESTATED_SLOT: usize = ACTIVITY_SLOT;
 
 /// What a step name's entry is charged, its owners aside.
 fn step_name_bytes(name: &str) -> usize {
@@ -125,6 +133,9 @@ struct VerifierState {
     open_steps: usize,
     /// Activity message → owner of the snapshot that opened it.
     activity: HashMap<MessageId, Owner>,
+    /// Text or reasoning message a `MESSAGES_SNAPSHOT` of this run restated
+    /// → its owner, for a tool call naming it as parent (SUB-26).
+    restated: HashMap<MessageId, Owner>,
     /// Invocations announced and not yet terminated.
     subagents_active: HashSet<SubagentRunId>,
     /// Invocations announced in this run, active or not.
@@ -161,6 +172,7 @@ impl Default for VerifierState {
             steps: HashMap::new(),
             open_steps: 0,
             activity: HashMap::new(),
+            restated: HashMap::new(),
             subagents_active: HashSet::new(),
             subagents_announced: HashSet::new(),
             expected: None,
@@ -213,6 +225,10 @@ impl<K> Tracker<K> {
 struct Entry {
     owner: Owner,
     open: bool,
+    /// The owner is not known: an untagged call on a message the thread
+    /// holds from before this run. Its first tagged continuation or
+    /// reopening names it.
+    adoptable: bool,
 }
 
 /// Why a tracker refused an event.
@@ -225,7 +241,7 @@ enum Refusal {
 
 impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
     fn reset(&mut self) {
-        crate::pipeline::reset_map(&mut self.items);
+        end_run_map(&mut self.items);
         self.open = 0;
         self.bytes = 0;
         self.hot = None;
@@ -244,21 +260,43 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         owner: &Owner,
         id_bytes: usize,
     ) -> std::result::Result<(), Refusal> {
+        self.start_owned(id, owner, false, id_bytes)
+    }
+
+    /// As [`start`](Self::start); with `adoptable`, `owner` is not known
+    /// (see [`Entry::adoptable`]): a reopening keeps the item's owner, and a
+    /// new item's owner is named by its first tagged continuation.
+    fn start_owned(
+        &mut self,
+        id: &K,
+        owner: &Owner,
+        adoptable: bool,
+        id_bytes: usize,
+    ) -> std::result::Result<(), Refusal> {
         self.hot = None;
+        let extra = self.extra;
         match self.items.get_mut(id) {
             Some(entry) if entry.open => Err(Refusal::AlreadyOpen),
-            Some(entry) if entry.owner != *owner => Err(Refusal::Owner(entry.owner.clone())),
-            Some(entry) => {
+            Some(entry) if entry.owner == *owner || adoptable => {
+                entry.adoptable &= adoptable;
                 entry.open = true;
                 self.open += 1;
                 Ok(())
             }
+            Some(entry) if entry.adoptable => {
+                self.bytes = self.bytes.saturating_add(adopt(entry, owner, extra));
+                entry.open = true;
+                self.open += 1;
+                Ok(())
+            }
+            Some(entry) => Err(Refusal::Owner(entry.owner.clone())),
             None => {
                 self.items.insert(
                     id.clone(),
                     Entry {
                         owner: owner.clone(),
                         open: true,
+                        adoptable,
                     },
                 );
                 self.open += 1;
@@ -302,7 +340,11 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         }
         if let Some(tag) = tag {
             if entry.owner.as_ref() != Some(tag) {
-                return Err(Refusal::Owner(entry.owner.clone()));
+                if !entry.adoptable {
+                    return Err(Refusal::Owner(entry.owner.clone()));
+                }
+                let charge = adopt(entry, &Some(tag.clone()), self.extra);
+                self.bytes = self.bytes.saturating_add(charge);
             }
         }
         if close {
@@ -334,12 +376,43 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
     }
 }
 
+/// Gives an adoptable `entry` (owned by nobody known, charged as the
+/// parent's) the owner `owner`; returns the extra charge, as
+/// [`Tracker::start`] charges a subagent-owned entry.
+fn adopt(entry: &mut Entry, owner: &Owner, extra: usize) -> usize {
+    entry.adoptable = false;
+    let old = owner_heap(entry.owner.as_ref()) + if entry.owner.is_some() { extra } else { 0 };
+    let new = owner_heap(owner.as_ref()) + if owner.is_some() { extra } else { 0 };
+    entry.owner = owner.clone();
+    new.saturating_sub(old)
+}
+
+/// Empties a run-scoped `map` when its run ends. Its entries' charge is
+/// credited then (D25), so a table above the retain floor is dropped rather
+/// than kept resident and uncharged into the next run.
+fn end_run_map<K, V>(map: &mut HashMap<K, V>) {
+    if map.capacity() > crate::pipeline::RETAIN_FLOOR {
+        *map = HashMap::new();
+    } else {
+        map.clear();
+    }
+}
+
+/// [`end_run_map`] for sets.
+fn end_run_set<T>(set: &mut HashSet<T>) {
+    if set.capacity() > crate::pipeline::RETAIN_FLOOR {
+        *set = HashSet::new();
+    } else {
+        set.clear();
+    }
+}
+
 /// Most ids quoted by [`quote_list`]; the rest are counted.
-const MAX_LISTED_IDS: usize = 16;
+pub(super) const MAX_LISTED_IDS: usize = 16;
 
 /// Single-quotes each id (previewed) and joins up to [`MAX_LISTED_IDS`] with
 /// commas, then counts the rest, for error text.
-fn quote_list<I>(ids: I) -> String
+pub(super) fn quote_list<I>(ids: I) -> String
 where
     I: IntoIterator,
     I::Item: AsRef<str>,
@@ -602,13 +675,15 @@ impl VerifierState {
             self.steps = HashMap::new();
             self.step_name_bytes = 0;
         } else {
-            self.steps.values_mut().for_each(crate::pipeline::reset_set);
+            self.steps.values_mut().for_each(end_run_set);
         }
         self.open_steps = 0;
-        crate::pipeline::reset_map(&mut self.activity);
-        crate::pipeline::reset_set(&mut self.subagents_active);
-        crate::pipeline::reset_set(&mut self.subagents_announced);
-        // Step owners, activity owners and subagent sets are all gone.
+        end_run_map(&mut self.activity);
+        end_run_map(&mut self.restated);
+        end_run_set(&mut self.subagents_active);
+        end_run_set(&mut self.subagents_announced);
+        // Step owners, activity and restated owners and subagent sets are all
+        // gone.
         self.run_bytes = 0;
     }
 
@@ -787,13 +862,22 @@ impl VerifierState {
             ),
             Event::ToolCallStart(e) => {
                 let mut owner = e.subagent_run_id.clone();
+                let mut adoptable = false;
                 if let Some(parent) = &e.parent_message_id {
                     // The parent is whichever message the producer verifier
-                    // would find: a text message, else a reasoning message.
+                    // would find: a text message, else a reasoning message,
+                    // else one a snapshot of this run restated.
                     let message_owner = self
                         .text
                         .owner_of(parent)
-                        .or_else(|| self.reasoning.owner_of(parent));
+                        .or_else(|| self.reasoning.owner_of(parent))
+                        .or_else(|| self.restated.get(parent));
+                    // A message held from before this run has an owner this
+                    // run does not know: an untagged call's is taken from its
+                    // first tagged continuation (SUB-26).
+                    adoptable = owner.is_none()
+                        && message_owner.is_none()
+                        && self.known_messages.contains(parent);
                     if let Some(message_owner) = message_owner {
                         match &owner {
                             Some(_) if owner != *message_owner => {
@@ -817,9 +901,10 @@ impl VerifierState {
                     }
                 }
                 self.tools
-                    .start(
+                    .start_owned(
                         &e.tool_call_id,
                         &owner,
+                        adoptable,
                         id_heap(e.tool_call_id.as_str().len()),
                     )
                     .map_err(|r| {
@@ -1014,6 +1099,31 @@ impl VerifierState {
                 // reserved, as it was already used in this thread.
                 for message in &e.messages {
                     self.know(message.id());
+                    let owner = match message {
+                        Message::Assistant(_)
+                        | Message::User(_)
+                        | Message::System(_)
+                        | Message::Developer(_)
+                        | Message::Reasoning(_) => message.subagent_run_id().cloned(),
+                        // Restated as a message that holds no tool call: an
+                        // owner an earlier snapshot gave it is forgotten, as
+                        // the producer verifier does.
+                        _ => {
+                            if let Some(old) = self.restated.remove(message.id()) {
+                                self.run_bytes = self
+                                    .run_bytes
+                                    .saturating_sub(RESTATED_SLOT + owner_heap(old.as_ref()));
+                            }
+                            continue;
+                        }
+                    };
+                    let charge = owner_heap(owner.as_ref());
+                    let id = self.interned(message.id());
+                    let (charge, credit) = match self.restated.insert(id, owner) {
+                        Some(old) => (charge, owner_heap(old.as_ref())),
+                        None => (RESTATED_SLOT + charge, 0),
+                    };
+                    self.run_bytes = self.run_bytes.saturating_add(charge).saturating_sub(credit);
                 }
                 Ok(())
             }
