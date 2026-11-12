@@ -41,8 +41,8 @@
 //! Chunk expansion and verification are O(1) per event with no allocation
 //! beyond the ids they track, apart from copying an opening chunk's metadata
 //! onto each event synthesized from it, O(metadata); the reducer is
-//! O(delta). Output goes into a
-//! caller-owned `Vec` so its capacity is reused across events.
+//! O(delta). Output goes into a caller-owned `Vec` so its capacity is reused
+//! across events.
 //!
 //! Public items here are building blocks: stable, documented, but most
 //! applications never touch them.
@@ -201,9 +201,12 @@ pub struct Limits {
     /// `validate_*` use the same limit.
     pub max_container_entries: usize,
     /// Deepest accepted JSON nesting in one event, clamped to 512 levels
-    /// (a stack-safe ceiling) whatever this is set to. Events decoded from
-    /// the protobuf wire are additionally bounded at 128 levels (the codec's
-    /// stack-safe ceiling).
+    /// whatever this is set to: a ceiling that is stack-safe on a 2 MiB
+    /// thread (a tokio worker's default) in an optimized build. An
+    /// unoptimized build uses far larger frames and can overflow such a
+    /// stack below 512, so keep the default (128) there or give the thread
+    /// more stack. Events decoded from the protobuf wire are additionally
+    /// bounded at 128 levels (the codec's stack-safe ceiling).
     pub max_depth: usize,
     /// JSON Patch limits for state and activity content.
     pub patch: PatchLimits,

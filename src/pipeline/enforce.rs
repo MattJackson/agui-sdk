@@ -78,7 +78,9 @@ use tree::{Tree, Verdict};
 /// per level, so a raised limit must not let a peer frame exhaust the stack
 /// (the patch engine and the protobuf codec have ceilings of their own).
 /// An optimized build walks about 1,500 levels on a 2 MiB thread stack, so
-/// 512 leaves room for the caller's own frames.
+/// 512 leaves room for the caller's own frames. An unoptimized build
+/// overflows that stack near 200 levels, so the ceiling protects release
+/// builds only; debug builds rely on the 128 default.
 const JSON_DEPTH_CEILING: usize = 512;
 
 /// The enforcement stage.
