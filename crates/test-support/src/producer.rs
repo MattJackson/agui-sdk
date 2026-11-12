@@ -101,11 +101,18 @@ impl ProducerFixture {
 ///
 /// # Errors
 ///
-/// Every malformed fixture.
+/// Every malformed fixture, and every directory entry that cannot be read.
 pub fn fixtures_in(dir: &Path) -> Result<Vec<ProducerFixture>, Vec<String>> {
+    let mut problems = Vec::new();
     let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter_map(|e| match e {
+                Ok(e) => Some(e.path()),
+                Err(e) => {
+                    problems.push(format!("{}: {e}", dir.display()));
+                    None
+                }
+            })
             .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
             .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -113,7 +120,6 @@ pub fn fixtures_in(dir: &Path) -> Result<Vec<ProducerFixture>, Vec<String>> {
     };
     paths.sort();
     let mut ok = Vec::new();
-    let mut problems = Vec::new();
     for path in paths {
         match ProducerFixture::from_path(&path) {
             Ok(f) => ok.push(f),
