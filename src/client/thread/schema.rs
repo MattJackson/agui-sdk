@@ -100,12 +100,12 @@ pub(super) fn check(schema: &Value, instance: &Value) -> Result<()> {
 }
 
 fn violation(pointer: &str, what: &str) -> Error {
-    let at = if pointer.is_empty() { "/" } else { pointer };
-    Error::new(
-        ErrorCode::ToolArguments,
-        format!("tool arguments at `{at}` {what}"),
-    )
-    .with_pointer(pointer)
+    let message = if pointer.is_empty() {
+        format!("tool arguments at the root {what}")
+    } else {
+        format!("tool arguments at `{pointer}` {what}")
+    };
+    Error::new(ErrorCode::ToolArguments, message).with_pointer(pointer)
 }
 
 fn check_at(schema: &Value, instance: &Value, pointer: &mut String) -> Result<()> {
@@ -211,12 +211,11 @@ fn is_type(name: &str, instance: &Value) -> bool {
 /// JSON equality with numbers compared by value (`1` equals `1.0`).
 fn json_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => match (x.as_i64(), y.as_i64()) {
+        (Value::Number(x), Value::Number(y)) => match (integer(x), integer(y)) {
             (Some(x), Some(y)) => x == y,
-            _ => match (x.as_u64(), y.as_u64()) {
-                (Some(x), Some(y)) => x == y,
-                _ => x.as_f64() == y.as_f64(),
-            },
+            (Some(i), None) => float_equals_integer(y.as_f64(), i),
+            (None, Some(i)) => float_equals_integer(x.as_f64(), i),
+            (None, None) => x.as_f64() == y.as_f64(),
         },
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(x, y)| json_eq(x, y))
@@ -227,6 +226,27 @@ fn json_eq(a: &Value, b: &Value) -> bool {
                     .all(|(k, v)| y.get(k).is_some_and(|w| json_eq(v, w)))
         }
         _ => a == b,
+    }
+}
+
+/// The exact value of an integer number (`i64` or `u64`).
+fn integer(n: &serde_json::Number) -> Option<i128> {
+    n.as_i64()
+        .map(i128::from)
+        .or_else(|| n.as_u64().map(i128::from))
+}
+
+/// Whether a float is exactly the integer `i`: it must be whole and within
+/// the integer range, then compare without rounding the integer to `f64`.
+fn float_equals_integer(f: Option<f64>, i: i128) -> bool {
+    // -2^63 and 2^64: the range an `i64`/`u64` integer can hold.
+    const MIN: f64 = -9_223_372_036_854_775_808.0;
+    const END: f64 = 18_446_744_073_709_551_616.0;
+    match f {
+        // In range and whole, so the cast is exact.
+        #[allow(clippy::cast_possible_truncation)]
+        Some(f) if f.is_finite() && f.fract() == 0.0 && (MIN..END).contains(&f) => f as i128 == i,
+        _ => false,
     }
 }
 
@@ -243,6 +263,35 @@ mod tests {
         assert!(!json_eq(&json!({"a": 1}), &json!({"a": 1, "b": 2})));
         assert!(is_type("integer", &json!(3.0)));
         assert!(!is_type("integer", &json!(3.5)));
+    }
+
+    /// An integer is compared with a float exactly, not after rounding
+    /// both to `f64` (2^53 + 1 is not 2^53).
+    #[test]
+    fn large_integers_compare_exactly_with_floats() {
+        assert!(!json_eq(
+            &json!(9_007_199_254_740_993_u64),
+            &json!(9_007_199_254_740_992.0)
+        ));
+        assert!(!json_eq(
+            &json!(9_007_199_254_740_992.0),
+            &json!(9_007_199_254_740_993_i64)
+        ));
+        assert!(!json_eq(
+            &json!(-9_007_199_254_740_993_i64),
+            &json!(-9_007_199_254_740_992.0)
+        ));
+        assert!(json_eq(
+            &json!(9_007_199_254_740_992_u64),
+            &json!(9_007_199_254_740_992.0)
+        ));
+        assert!(json_eq(&json!(-3), &json!(-3.0)));
+        assert!(!json_eq(
+            &json!(u64::MAX),
+            &json!(18_446_744_073_709_551_616.0)
+        ));
+        assert!(!json_eq(&json!(1), &json!(1.5)));
+        assert!(json_eq(&json!(1.5), &json!(1.5)));
     }
 
     #[test]
