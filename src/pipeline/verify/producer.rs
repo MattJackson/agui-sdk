@@ -473,6 +473,8 @@ struct ProducerState {
     calls: HashMap<ToolCallId, Call>,
     /// Tool calls from the input history: id → name fingerprint.
     history_calls: HashMap<ToolCallId, u64>,
+    /// Tool messages of the input history: id → the call it answered.
+    history_answers: HashMap<MessageId, ToolCallId>,
     /// Explicitly open items (text, reasoning, spans, calls, steps), for
     /// [`check_finish`](Self::check_finish).
     open_explicit: usize,
@@ -523,6 +525,7 @@ impl Default for ProducerState {
             spans: HashMap::new(),
             calls: HashMap::new(),
             history_calls: HashMap::new(),
+            history_answers: HashMap::new(),
             open_explicit: 0,
             open_owned: HashMap::new(),
             steps: HashMap::new(),
@@ -804,6 +807,11 @@ impl ProducerState {
                 self.activity
                     .entry(activity.id.clone())
                     .or_insert_with(|| activity.subagent_run_id.clone());
+            }
+            if let Message::Tool(tool) = message {
+                self.history_answers
+                    .entry(tool.id.clone())
+                    .or_insert_with(|| tool.tool_call_id.clone());
             }
             for call in message.tool_calls() {
                 self.history_calls
@@ -2424,10 +2432,10 @@ impl ProducerState {
             }
             // A frontend call this run made is answered by the client, never
             // by a fabricated tool message (TOOL-24). The client's answer the
-            // input history holds may be restated.
+            // input history holds may be restated, as the answer to the
+            // call it answered there and no other.
             if let Message::Tool(tool) = message {
-                let restated = self.messages.get(&tool.id) == Some(&MessageKind::History)
-                    && self.history_calls.contains_key(&tool.tool_call_id);
+                let restated = self.history_answers.get(&tool.id) == Some(&tool.tool_call_id);
                 if !restated
                     && self
                         .calls
@@ -3209,6 +3217,48 @@ mod tests {
             ]})))
             .unwrap_err();
         assert_eq!(err.rule, ProducerRule::Outcome);
+    }
+
+    /// The restatement exemption covers only the call the history tool
+    /// message answered: its id restated as an answer to another history
+    /// frontend call this run reopened is a fabricated answer (TOOL-24).
+    #[test]
+    fn a_snapshot_may_not_move_a_history_answer_to_another_reopened_call() {
+        use serde_json::json;
+        let thread = json!([
+            {"id": "a1", "role": "assistant", "content": "x",
+             "toolCalls": [{"id": "h1", "type": "function",
+                            "function": {"name": "ask", "arguments": "{}"}},
+                           {"id": "h2", "type": "function",
+                            "function": {"name": "ask", "arguments": "{}"}}]},
+            {"id": "t1", "role": "tool", "content": "yes", "toolCallId": "h1"}
+        ]);
+        let input: RunAgentInput = serde_json::from_value(json!({
+            "threadId": "t", "runId": "r", "messages": thread,
+            "tools": [{"name": "ask", "description": "d"}], "context": [],
+            "state": {}, "forwardedProps": {}
+        }))
+        .unwrap();
+        let mut v = ProducerVerifier::for_input(&input);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "h2", "toolCallName": "ask"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "h2"}),
+            ],
+        );
+        let err = v
+            .check(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                {"id": "t1", "role": "tool", "content": "fake", "toolCallId": "h2"}
+            ]})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::Outcome);
+        // The history answer to h1 is still restated as it was.
+        feed(
+            &mut v,
+            vec![json!({"type": "MESSAGES_SNAPSHOT", "messages": thread})],
+        );
     }
 
     /// Steps are indexed by owner. A regression guard for the O(1) per
