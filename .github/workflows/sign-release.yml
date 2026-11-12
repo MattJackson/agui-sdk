@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: 2026 Matthew Jackson <matthew@pq.io>
+# SPDX-License-Identifier: MIT
+#
+# One-off: attest and sign an already published release whose own release run
+# stopped before its signing step (v0.9.0: the packaging step tried to package
+# the unpublished test-support crate; fixed in release.yml). It repackages
+# both crates from the tag, refuses unless the bytes equal what crates.io
+# serves, then attaches SLSA provenance and keyless cosign bundles to the
+# existing GitHub release. Publishes nothing to crates.io.
+
+name: sign release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v0.9.0"
+        required: true
+
+permissions: {}
+
+jobs:
+  sign:
+    name: attest and sign ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ inputs.tag }}
+      PRIMARY_CRATE: agui-sdk
+      ALIAS_CRATE: ag-ui-sdk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+
+      - name: repackage from the tag; must equal what crates.io serves
+        run: |
+          set -euo pipefail
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::not a release tag: $TAG" >&2; exit 1 ;; esac
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          cargo package --locked --no-verify -p "$PRIMARY_CRATE" -p "$ALIAS_CRATE"
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            f="target/package/${c}-${VERSION}.crate"
+            served="$RUNNER_TEMP/served-${c}.crate"
+            curl -sS --fail --location --retry 5 \
+              -H "User-Agent: agui-sdk release (https://github.com/MattJackson/agui-sdk)" \
+              -o "$served" "https://static.crates.io/crates/${c}/${c}-${VERSION}.crate"
+            if [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$(sha256sum "$served" | cut -d' ' -f1)" ]; then
+              echo "::error::$c $VERSION: local package differs from crates.io; refusing to sign" >&2
+              exit 1
+            fi
+            mv "$served" "$RUNNER_TEMP/${c}-${VERSION}.crate"
+          done
+
+      - name: attest build provenance (SLSA)
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: ${{ runner.temp }}/*.crate
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: cosign-sign, verify, attach to the release
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          cp "$BUNDLE_PATH" "agui-sdk-${VERSION}.intoto.jsonl"
+          assets=("agui-sdk-${VERSION}.intoto.jsonl")
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            f="${c}-${VERSION}.crate"
+            cosign sign-blob --yes --bundle "$f.cosign.bundle" "$f"
+            cosign verify-blob --bundle "$f.cosign.bundle" \
+              --certificate-identity-regexp '^https://github.com/MattJackson/agui-sdk/' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "$f"
+            assets+=("$f.cosign.bundle")
+          done
+          gh release upload "$TAG" "${assets[@]}" --clobber -R "$GITHUB_REPOSITORY"
