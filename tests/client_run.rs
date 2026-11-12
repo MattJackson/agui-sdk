@@ -241,8 +241,11 @@ fn cancelling_wakes_a_parked_run_and_never_synthesizes_a_finish() {
     let stalled = Arc::clone(&transport.stalled);
     let canceller = std::thread::spawn(move || {
         // Cancel only once RUN_STARTED has been handed over and the stream
-        // has parked, so the run is known to have started.
-        while !stalled.load(Ordering::SeqCst) {
+        // has parked, so the run is known to have started. The deadline keeps
+        // the join below from hanging if the run ends before it ever parks;
+        // the assertions on `err` then report that failure.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !stalled.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
             std::thread::yield_now();
         }
         token.cancel();
