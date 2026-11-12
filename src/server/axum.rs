@@ -229,7 +229,8 @@ impl AguiResponse {
     }
 
     /// The capability declaration (`200` JSON), or `404` when none is
-    /// configured (CAP-12).
+    /// configured (CAP-12). The `404` body's code, `server.not_found`, is not
+    /// an [`ErrorCode`]: `ErrorCode::parse` returns `None` for it.
     #[must_use]
     pub fn capabilities(config: &ServeConfig) -> Self {
         let inner = match super::http::capabilities_response(config) {
