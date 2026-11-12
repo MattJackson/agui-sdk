@@ -168,15 +168,8 @@ pub(in crate::client) struct RunDriver {
     via_middleware: bool,
     processor: Option<Processor>,
     boundary: Option<Boundary>,
-    /// What the boundaries in the middleware path's `Upstream` stages keep
-    /// (their `retained` figures, summed), charged like `boundary`'s (D28).
-    upstream_retained: Arc<AtomicUsize>,
-    /// Set by an `Upstream` stage that caught a transport panic, so the
-    /// panic fails the run as it does without middleware.
-    upstream_panicked: Arc<AtomicBool>,
-    /// What the processor charges apart from the `Upstream` boundaries,
-    /// after the last frame it took: the room those boundaries have left.
-    processor_charged: Arc<AtomicUsize>,
+    /// What the driver and the middleware path's `Upstream` stages share.
+    shared: Arc<UpstreamShared>,
     era: Option<EraShims>,
     sink: Arc<RunSink>,
     reporter: Reporter,
@@ -234,9 +227,7 @@ impl RunDriver {
             via_middleware: false,
             processor: None,
             boundary: None,
-            upstream_retained: Arc::new(AtomicUsize::new(0)),
-            upstream_panicked: Arc::new(AtomicBool::new(false)),
-            processor_charged: Arc::new(AtomicUsize::new(0)),
+            shared: Arc::default(),
             era: None,
             sink,
             reporter,
@@ -365,7 +356,7 @@ impl RunDriver {
                             panicked = true;
                             Poll::Ready(Some(Err(fallback())))
                         });
-                    panicked |= self.upstream_panicked.load(Ordering::Relaxed);
+                    panicked |= self.shared.panicked.load(Ordering::Relaxed);
                     match polled {
                         Poll::Ready(Some(Ok(frame))) => {
                             frames += 1;
@@ -545,9 +536,7 @@ impl RunDriver {
                 era,
                 Arc::clone(&self.sink),
                 limits,
-                Arc::clone(&self.upstream_retained),
-                Arc::clone(&self.upstream_panicked),
-                Arc::clone(&self.processor_charged),
+                Arc::clone(&self.shared),
             );
             let request =
                 MiddlewareRequest::new(value, Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>);
@@ -569,11 +558,12 @@ impl RunDriver {
         let result = if self.via_middleware {
             // What the boundary in `Upstream` keeps is charged with the
             // processor's own id bookkeeping (D28).
-            processor.charge_boundary(self.upstream_retained.load(Ordering::Relaxed));
+            processor.charge_boundary(self.shared.retained.load(Ordering::Relaxed));
             let result = frame
                 .into_value()
                 .and_then(|value| processor.push_value(value, &mut self.reporter, &mut self.out));
-            self.processor_charged
+            self.shared
+                .processor_charged
                 .store(processor.charged_apart_from_boundary(), Ordering::Relaxed);
             result
         } else if let Some(json) = frame.as_json() {
@@ -1059,9 +1049,7 @@ fn upstream(
     era: Option<EraShims>,
     sink: Arc<RunSink>,
     limits: crate::pipeline::Limits,
-    retained: Arc<AtomicUsize>,
-    panicked: Arc<AtomicBool>,
-    processor_charged: Arc<AtomicUsize>,
+    shared: Arc<UpstreamShared>,
 ) -> Next {
     Next::from_fn(move |request: MiddlewareRequest| {
         let sink = sink as Arc<dyn DiagnosticSink>;
@@ -1075,10 +1063,8 @@ fn upstream(
         FrameStream::new(Upstream {
             state: UpstreamState::Opening(open(parts.into_request(body))),
             boundary: Boundary::new(),
-            retained: Arc::clone(&retained),
+            shared: Arc::clone(&shared),
             charged: 0,
-            panicked: Arc::clone(&panicked),
-            processor_charged: Arc::clone(&processor_charged),
             era,
             reporter,
             max_frame_bytes: limits.max_frame_bytes,
@@ -1094,17 +1080,27 @@ enum UpstreamState {
     Done,
 }
 
+/// What the driver shares with the middleware path's `Upstream` stages.
+#[derive(Default)]
+struct UpstreamShared {
+    /// What the live stages' boundaries keep (their `retained` figures,
+    /// summed), charged like the direct path's boundary (D28).
+    retained: AtomicUsize,
+    /// Set by a stage that caught a transport panic, so the panic fails the
+    /// run as it does without middleware.
+    panicked: AtomicBool,
+    /// What the processor charges apart from those boundaries, after the
+    /// last frame it took: the room the boundaries have left.
+    processor_charged: AtomicUsize,
+}
+
 struct Upstream {
     state: UpstreamState,
     boundary: Boundary,
-    /// The driver's sum of what live `Upstream` boundaries keep; this
-    /// stage's share of it is `charged`.
-    retained: Arc<AtomicUsize>,
+    /// Shared with the driver; this stage's share of `shared.retained` is
+    /// `charged`.
+    shared: Arc<UpstreamShared>,
     charged: usize,
-    /// The driver's flag for a transport panic caught here.
-    panicked: Arc<AtomicBool>,
-    /// What the processor charges apart from these boundaries.
-    processor_charged: Arc<AtomicUsize>,
     era: Option<EraShims>,
     reporter: Reporter,
     max_frame_bytes: usize,
@@ -1143,9 +1139,10 @@ impl Upstream {
         // Every live boundary's share, with the processor's own charge: the
         // processor's combined check, judged here as well.
         let charged = self
+            .shared
             .retained
             .load(Ordering::Relaxed)
-            .saturating_add(self.processor_charged.load(Ordering::Relaxed));
+            .saturating_add(self.shared.processor_charged.load(Ordering::Relaxed));
         if charged > self.max_history_bytes {
             return Err(Error::new(
                 ErrorCode::LimitExceeded,
@@ -1164,10 +1161,12 @@ impl Upstream {
     /// Moves this stage's share of `retained` to `now`.
     fn recharge(&mut self, now: usize) {
         if now >= self.charged {
-            self.retained
+            self.shared
+                .retained
                 .fetch_add(now - self.charged, Ordering::Relaxed);
         } else {
-            self.retained
+            self.shared
+                .retained
                 .fetch_sub(self.charged - now, Ordering::Relaxed);
         }
         self.charged = now;
@@ -1195,7 +1194,7 @@ impl FrameSource for Upstream {
                 UpstreamState::Opening(future) => {
                     match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx)))
                         .unwrap_or_else(|_| {
-                            this.panicked.store(true, Ordering::Relaxed);
+                            this.shared.panicked.store(true, Ordering::Relaxed);
                             Poll::Ready(Err(transport_panicked()))
                         }) {
                         Poll::Ready(Ok(stream)) => {
@@ -1209,7 +1208,7 @@ impl FrameSource for Upstream {
                 UpstreamState::Streaming(stream) => {
                     match catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx))).unwrap_or_else(
                         |_| {
-                            this.panicked.store(true, Ordering::Relaxed);
+                            this.shared.panicked.store(true, Ordering::Relaxed);
                             Poll::Ready(Some(Err(transport_panicked())))
                         },
                     ) {
