@@ -103,9 +103,9 @@ pub(crate) fn decode_event_within(payload: &[u8], max_entries: usize) -> Result<
 /// On error `out` is left as it was.
 ///
 /// Like [`decode_event`], not bounded by `Limits`: the text appended is up to
-/// about 10 times the payload's size (20 bytes of `{"id":"","role":""},` per
-/// 2-byte empty message), which `Processor::push_json` then budgets as it
-/// parses.
+/// about 16 times the payload's size (31 bytes of
+/// `{"interruptId":"","status":""},` per 2-byte empty resume entry), which
+/// `Processor::push_json` then budgets as it parses.
 ///
 /// # Errors
 ///
@@ -290,6 +290,23 @@ mod tests {
             "unshown content field",
         );
         assert!(fails.is_empty(), "accepted: {fails:#?}");
+    }
+
+    /// The expansion `decode_event_json` documents: its worst shape, a run
+    /// input of empty resume entries, is about 16 times the payload.
+    #[test]
+    fn json_text_is_at_most_about_16_times_the_payload() {
+        let n = 10_000;
+        let input = len_field(5, &[0x4a, 0x00].repeat(n));
+        let bytes = len_field(12, &input);
+        let mut json = String::new();
+        assert_eq!(
+            decode_event_json(&bytes, &mut json).unwrap(),
+            DecodedJson::Event("RUN_STARTED")
+        );
+        assert!(json.contains(r#"{"interruptId":"","status":""},"#));
+        let ratio = json.len() as f64 / bytes.len() as f64;
+        assert!((15.0..=16.0).contains(&ratio), "{ratio}");
     }
 
     /// proto-1: the decoder's entry budget is the count the tree enforcer
