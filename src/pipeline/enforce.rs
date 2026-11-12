@@ -532,7 +532,11 @@ fn root_type(v: &Value) -> Option<&str> {
 
 fn report_root_drop(findings: &mut Findings, removal: Removal, event_type: Option<&str>) {
     if removal.code == DiagnosticCode::UnknownEvent && findings.builds_next() {
-        findings.unknown_type = event_type.map(str::to_owned);
+        // Cut as `Diagnostic::with_unknown_type` cuts it (a preview of a
+        // preview is unchanged), so a long name is not copied whole.
+        findings.unknown_type = event_type.map(|t| {
+            crate::diagnostics::preview(t, crate::diagnostics::MAX_UNKNOWN_TYPE_BYTES).into_owned()
+        });
     }
     findings.push(removal.code, &Path::ROOT, || {
         match (removal.code, event_type) {

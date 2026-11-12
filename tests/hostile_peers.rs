@@ -910,6 +910,15 @@ fn l4_diagnostics_carry_only_bounded_previews_of_peer_strings() {
         assert!(!text.contains(&secret), "member name verbatim: {text}");
         assert!(d.pointer.len() <= 260);
     }
+    let dropped = seen
+        .iter()
+        .find(|d| d.code == DiagnosticCode::UnknownEvent)
+        .expect("the unknown event's diagnostic");
+    assert_eq!(
+        dropped.unknown_type, d.unknown_type,
+        "the same bounded preview"
+    );
+    assert!(dropped.message.contains(&*d.unknown_type.clone().unwrap()));
 }
 
 // ---------------------------------------------------------------- reducer
