@@ -319,8 +319,8 @@ fn run(cmd: &mut Command, name: &str) -> Result<(), String> {
 }
 
 /// Moves `staging` to `dest`, replacing any existing `dest`. The old `dest`
-/// is moved aside first and put back if `staging` cannot be moved in, so a
-/// failure never leaves no cache at all.
+/// is moved aside first and put back if `staging` cannot be moved in; if
+/// even that fails, the error names where the previous cache remains.
 fn replace_dir(staging: &Path, dest: &Path) -> Result<(), String> {
     let name = dest
         .file_name()
@@ -335,7 +335,13 @@ fn replace_dir(staging: &Path, dest: &Path) -> Result<(), String> {
     };
     if let Err(e) = std::fs::rename(staging, dest) {
         if had_old {
-            let _ = std::fs::rename(&old, dest);
+            if let Err(e2) = std::fs::rename(&old, dest) {
+                return Err(format!(
+                    "{}: {e}; restoring the previous cache also failed ({e2}); it remains at {}",
+                    dest.display(),
+                    old.display()
+                ));
+            }
         }
         return Err(format!("{}: {e}", dest.display()));
     }
