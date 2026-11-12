@@ -10,11 +10,11 @@
 //!   self-contained blocks (text messages, tool calls, steps, reasoning,
 //!   state, custom, raw), so every generated stream is legal.
 //! * [`chunk_stream`]: a run built from `*_CHUNK` events mixed with explicit
-//!   ones, for the chunk-expansion property.
+//!   ones, intended for a chunk-expansion property (none uses it yet).
 //! * [`with_unknown_member`]: adds a member the schema does not define.
 //! * [`split_points`], [`rechunk`]: arbitrary re-chunking of a byte buffer.
 //! * [`json_value`], [`patch_ops`], [`patch_case`]: open JSON and RFC 6902
-//!   operations for the patch properties.
+//!   operations, intended for patch properties (none uses them yet).
 
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -288,8 +288,9 @@ pub fn conformant_stream() -> impl Strategy<Value = Vec<Value>> {
 }
 
 /// A run whose body mixes `TEXT_MESSAGE_CHUNK` / `TOOL_CALL_CHUNK` events with
-/// explicit ones, in arbitrary order. Expansion must either produce a stream
-/// the verifier accepts or fail with a `verify.chunk` error.
+/// explicit ones, in arbitrary order. A stream may or may not be legal: the
+/// intended property is that expansion either produces a stream the verifier
+/// accepts or fails with a `verify.chunk` error.
 pub fn chunk_stream() -> impl Strategy<Value = Vec<Value>> {
     let body = prop_oneof![
         (0u8..3, proptest::option::of(text())).prop_map(|(m, d)| {

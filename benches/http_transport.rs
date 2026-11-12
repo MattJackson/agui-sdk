@@ -2,6 +2,8 @@
 //! the response, decode SSE (and protobuf with `proto`) into frames.
 //!
 //! Reports throughput (MB/s of body, events/s) and allocations per event.
+//! The throughput includes the mock server copying the body for every
+//! request, so it slightly understates the transport's own.
 //! The count covers only the thread driving `block_on` (the allocator counts
 //! per thread, so the mock server and hyper's connection tasks, which run on
 //! the runtime's worker threads, are not included) and depends on how TCP
@@ -66,7 +68,8 @@ fn measure(
     let transport = HttpTransport::builder(server.url("/bench"))
         .build()
         .unwrap_or_else(|e| panic!("build: {e}"));
-    // Warm the pool and the allocator.
+    // Warm the allocator and the runtime (the mock closes every connection,
+    // so there is no pooled connection to warm).
     let (events, _) = rt.block_on(exchange(&transport, len));
     assert_eq!(events, expected, "{name}: the stream did not arrive whole");
     let ((events, bytes), stats) = alloc::measure(|| rt.block_on(exchange(&transport, len)));

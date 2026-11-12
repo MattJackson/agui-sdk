@@ -145,13 +145,18 @@ fn main() {
             v.push(json!({"op": "test", "path": "/k0", "value": 1}));
             let ops: Vec<PatchOperation> =
                 serde_json::from_value(Value::Array(v)).unwrap_or_else(|e| panic!("{e}"));
+            // `run` parks the rolled-back document here so its O(document)
+            // drop happens in the next untimed `prepare`, as above.
+            let parked: Rc<RefCell<Option<Value>>> = Rc::default();
+            let park = Rc::clone(&parked);
             let prepare = move || {
+                drop(park.borrow_mut().take());
                 let budget = PatchBudget::for_document(&wide, PatchLimits::default());
                 (wide.clone(), budget)
             };
             let run = move |(mut doc, mut budget): (Value, PatchBudget)| {
                 assert!(apply(&mut doc, &ops, &mut budget).is_err());
-                std::hint::black_box(doc);
+                *parked.borrow_mut() = Some(std::hint::black_box(doc));
                 Work {
                     events: ops.len() as u64,
                     bytes: 0,

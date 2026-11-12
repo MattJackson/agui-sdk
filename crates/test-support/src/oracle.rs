@@ -191,6 +191,24 @@ fn input_messages(fixture: &StreamFixture) -> Result<Vec<agui_sdk::message::Mess
     prepared_history(fixture, None, &mut quiet)
 }
 
+/// `input.tools`, typed: the frontend tools the client advertises in its
+/// request. A list that is not an array, or an entry that is not a `Tool`,
+/// is a harness error rather than silently dropped.
+fn input_tools(fixture: &StreamFixture) -> Result<Vec<agui_sdk::tool::Tool>, String> {
+    let Some(raw) = fixture.document.pointer("/input/tools") else {
+        return Ok(Vec::new());
+    };
+    let Some(list) = fixture.input_tools() else {
+        return Err(format!("harness: input.tools {raw} is not an array"));
+    };
+    list.iter()
+        .map(|t| {
+            serde_json::from_value(t.clone())
+                .map_err(|e| format!("harness: input.tools entry does not parse: {e}"))
+        })
+        .collect()
+}
+
 /// Runs a fixture's frames straight into a [`Processor`] and records what
 /// happened. The input's messages seed the history. This lane sends no
 /// request, so `request` and `requestAbsentPaths` are unobservable on it.
@@ -266,9 +284,10 @@ pub fn observe(fixture: &StreamFixture, way: Way) -> Observed {
 }
 
 /// A `client.maxProtocolVersion` that is not a string, or names neither a
-/// pre-versioning era nor a protocol version: the fixture cannot be run as
-/// written, so the lanes report a harness error instead of running it against
-/// the current peer.
+/// pre-versioning `0.0.N` release nor a protocol version: the fixture cannot
+/// be run as written, so the lanes report a harness error instead of running
+/// it against the current peer. A `0.0.N` pin at or above 0.0.58 needs no
+/// shim and runs as current ([`peer_pin`]).
 fn unrecognised_pin(fixture: &StreamFixture) -> Option<String> {
     let raw = fixture.document.pointer("/client/maxProtocolVersion")?;
     let Some(v) = raw.as_str() else {
@@ -276,13 +295,25 @@ fn unrecognised_pin(fixture: &StreamFixture) -> Option<String> {
             "harness: client.maxProtocolVersion {raw} is not a string"
         ));
     };
-    if LegacyEra::parse(v).is_some() || agui_sdk::version::ProtocolVersion::parse(v).is_some() {
+    if is_pre_versioning(v) || agui_sdk::version::ProtocolVersion::parse(v).is_some() {
         None
     } else {
         Some(format!(
             "harness: client.maxProtocolVersion {v:?} is neither a legacy era nor a protocol version"
         ))
     }
+}
+
+/// Whether `v` is a well-formed pre-versioning `0.0.N` pin: `N` a decimal
+/// integer without sign or leading zeros, the syntax [`LegacyEra::parse`]
+/// reads (which returns `None` for N >= 58, where no shim is needed).
+fn is_pre_versioning(v: &str) -> bool {
+    v.strip_prefix("0.0.").is_some_and(|n| {
+        !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && (n == "0" || !n.starts_with('0'))
+            && n.parse::<u64>().is_ok()
+    })
 }
 
 /// The peer the client is pinned to: `client.maxProtocolVersion` as a
@@ -328,6 +359,13 @@ pub async fn observe_client(fixture: &StreamFixture, delivery: Delivery) -> Obse
             return observed;
         }
     };
+    let tools = match input_tools(fixture) {
+        Ok(t) => t,
+        Err(e) => {
+            observed.outcome = Outcome::Harness(e);
+            return observed;
+        }
+    };
     let transport = MockTransport::new(fixture.stream().to_vec(), delivery);
     let sink = Arc::new(CollectingSink::new());
     let mut builder = AgentClient::with_transport(transport.clone()).diagnostic_sink(sink.clone());
@@ -343,6 +381,11 @@ pub async fn observe_client(fixture: &StreamFixture, delivery: Delivery) -> Obse
         }
     };
     let mut request = RunRequest::new().messages(history);
+    if fixture.document.pointer("/input/tools").is_some() {
+        // Only when the fixture lists tools: an empty `tools()` call would
+        // still add `"tools": []` to every request.
+        request = request.tools(tools);
+    }
     if let Some((thread, run)) = first_run_ids(fixture) {
         request = request.thread_id(thread).run_id(run);
     }
@@ -773,6 +816,93 @@ mod tests {
             "{:?}",
             observed.outcome
         );
+    }
+
+    #[test]
+    fn a_post_shim_pre_versioning_pin_runs_as_current() {
+        for pin in ["0.0.58", "0.0.100"] {
+            let fixture = StreamFixture {
+                name: "post-shim-pin".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({
+                    "client": {"maxProtocolVersion": pin},
+                    "stream": [],
+                    "expect": {"outcome": "completed"}
+                }),
+            };
+            assert_eq!(peer_pin(&fixture), agui_sdk::version::PeerPin::Current);
+            for way in [Way::Json, Way::Value] {
+                let observed = observe(&fixture, way);
+                assert!(
+                    !matches!(&observed.outcome, Outcome::Harness(_)),
+                    "{pin}: {:?}",
+                    observed.outcome
+                );
+            }
+            let observed = observe_client_blocking(&fixture, Delivery::Frames);
+            assert!(
+                !matches!(&observed.outcome, Outcome::Harness(_)),
+                "{pin}: {:?}",
+                observed.outcome
+            );
+        }
+        // Not well-formed `0.0.N`: still refused.
+        for pin in ["0.0.058", "0.0.", "0.0.5x"] {
+            let fixture = StreamFixture {
+                name: "bad-pin".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({"client": {"maxProtocolVersion": pin}, "stream": []}),
+            };
+            assert!(unrecognised_pin(&fixture).is_some(), "{pin}");
+        }
+    }
+
+    #[test]
+    fn input_tools_reach_the_client_request() {
+        let tool = json!({"name": "lookup", "description": "Looks a thing up", "parameters": {"type": "object"}});
+        let fixture = StreamFixture {
+            name: "tools".to_owned(),
+            path: std::path::PathBuf::new(),
+            document: json!({
+                "input": {"tools": [tool]},
+                "stream": [],
+                "expect": {"outcome": "completed"}
+            }),
+        };
+        let observed = observe_client_blocking(&fixture, Delivery::Frames);
+        let request = observed.request.unwrap_or(Value::Null);
+        assert_eq!(
+            request.pointer("/tools/0/name"),
+            Some(&json!("lookup")),
+            "{request}"
+        );
+
+        // No `input.tools`, no `tools` member.
+        let fixture = StreamFixture {
+            name: "no-tools".to_owned(),
+            path: std::path::PathBuf::new(),
+            document: json!({"stream": []}),
+        };
+        let observed = observe_client_blocking(&fixture, Delivery::Frames);
+        let request = observed.request.unwrap_or(Value::Null);
+        assert!(request.get("tools").is_none(), "{request}");
+
+        for bad in [
+            json!({"tools": [{"name": 1}]}),
+            json!({"tools": {"name": "x"}}),
+        ] {
+            let fixture = StreamFixture {
+                name: "bad-tools".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({"input": bad, "stream": []}),
+            };
+            let observed = observe_client_blocking(&fixture, Delivery::Frames);
+            assert!(
+                matches!(&observed.outcome, Outcome::Harness(e) if e.contains("input.tools")),
+                "{bad}: {:?}",
+                observed.outcome
+            );
+        }
     }
 
     #[test]
