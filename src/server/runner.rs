@@ -582,7 +582,14 @@ impl<A: Agent> Driver<A> {
             // stream already has runs, so open this one first.
             if replayed {
                 if let Some(started) = self.started.take() {
-                    let _ = self.push_verified(started.into());
+                    if let Err(why) = self.push_verified(started.into()) {
+                        // The run cannot even be opened: that is the error.
+                        self.fail_now(
+                            ErrorCode::ProducerViolation,
+                            &format!("RUN_STARTED was refused: {why}"),
+                        );
+                        return;
+                    }
                 }
             }
             self.tail
