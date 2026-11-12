@@ -337,11 +337,23 @@ fn truncate_at_boundary(text: &mut String, max: usize) {
     text.truncate(end);
 }
 
-/// Writes `text`, escaping control characters so that peer-chosen strings
-/// (an unknown event type, a pointer) cannot forge extra log lines.
+/// Whether [`write_escaped`] escapes `c`: control characters, the Unicode
+/// line and paragraph separators, and the bidi marks, embeddings, overrides
+/// and isolates (all of which `escape_debug` in [`shown`] escapes too).
+fn needs_escape(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200E}' | '\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// Writes `text`, escaping control characters, line separators and bidi
+/// controls so that peer-chosen strings (an unknown event type, a pointer)
+/// cannot forge extra log lines or reorder what is shown.
 pub(crate) fn write_escaped(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
     let mut rest = text;
-    while let Some(at) = rest.find(char::is_control) {
+    while let Some(at) = rest.find(needs_escape) {
         f.write_str(&rest[..at])?;
         let mut chars = rest[at..].chars();
         if let Some(c) = chars.next() {
@@ -808,6 +820,24 @@ mod tests {
         let text = forged.to_string();
         assert!(!text.contains('\n'), "{text}");
         assert!(text.contains("X\\nWARN fake: line"), "{text}");
+    }
+
+    #[test]
+    fn display_escapes_line_separators_and_bidi_controls() {
+        let forged = Diagnostic::new(
+            DiagnosticCode::UnknownField,
+            Scope::Event,
+            "/a\u{2028}b\u{2029}c\u{202E}d\u{2066}e\u{200F}f",
+            "stripped",
+        );
+        let text = forged.to_string();
+        for c in ['\u{2028}', '\u{2029}', '\u{202E}', '\u{2066}', '\u{200F}'] {
+            assert!(!text.contains(c), "{text:?}");
+        }
+        assert!(text.contains("/a\\u{2028}b\\u{2029}c\\u{202e}d"), "{text}");
+        // Ordinary non-ASCII text is left alone.
+        let plain = Diagnostic::new(DiagnosticCode::UnknownField, Scope::Event, "/é✓", "x");
+        assert!(plain.to_string().contains("/é✓"));
     }
 
     #[test]
