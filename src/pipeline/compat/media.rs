@@ -23,8 +23,9 @@
 //!
 //! Producers that sent both shapes during the transition (a modern part plus
 //! its legacy mirror) would otherwise duplicate the attachment, so an upgraded
-//! part identical in type and source to a modern part of the same list, and
-//! whose filename that modern part already keeps, is removed. Nothing is lost.
+//! part identical in type and source to a modern part of the same list, whose
+//! filename that modern part already keeps, and which carries no other member
+//! (nor other metadata), is removed. Nothing is lost.
 
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
@@ -195,14 +196,31 @@ fn mirrored(parts: &[Value], modern: &[bool], upgraded: &[usize]) -> Vec<bool> {
     let mut mirror = vec![false; parts.len()];
     for &at in upgraded {
         let part = &parts[at];
-        mirror[at] = mirror_key(part)
-            .and_then(|key| index.get(&key))
-            .is_some_and(|names| match part.pointer("/metadata/filename") {
-                None => true,
-                Some(filename) => names.contains(filename, &state),
-            });
+        mirror[at] = only_key_members(part)
+            && mirror_key(part)
+                .and_then(|key| index.get(&key))
+                .is_some_and(|names| match part.pointer("/metadata/filename") {
+                    None => true,
+                    Some(filename) => names.contains(filename, &state),
+                });
     }
     mirror
+}
+
+/// Whether an upgraded part carries nothing beyond what [`mirror_key`] and
+/// the filename compare: `type`, `source`, and `metadata` holding at most a
+/// `filename`. Anything else would be lost with the part.
+fn only_key_members(part: &Value) -> bool {
+    let Some(map) = part.as_object() else {
+        return false;
+    };
+    map.iter().all(|(key, value)| match key.as_str() {
+        "type" | "source" => true,
+        "metadata" => value
+            .as_object()
+            .is_some_and(|metadata| metadata.keys().all(|k| k == "filename")),
+        _ => false,
+    })
 }
 
 /// The source members of a legacy part, in order of preference.

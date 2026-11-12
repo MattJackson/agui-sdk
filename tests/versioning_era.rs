@@ -1121,6 +1121,27 @@ fn an_empty_metadata_object_loses_nothing_and_warns_nothing() {
     assert!(sink.take().is_empty());
 }
 
+/// An upgraded part carrying members beyond the mirror key is not a mirror:
+/// removing it would discard them silently.
+/// covers: VER-13, VER-32
+#[test]
+fn a_legacy_part_with_members_of_its_own_is_not_a_mirror() {
+    let mut input = json!({"threadId": "t", "runId": "r", "messages": [
+        {"id": "u1", "role": "user", "content": [
+            {"type": "image", "source": {"type": "url", "value": "https://x/a.png", "mimeType": "image/png"}},
+            {"type": "binary", "mimeType": "image/png", "url": "https://x/a.png",
+             "metadata": {"alt": "cat"}},
+            {"type": "binary", "mimeType": "image/png", "url": "https://x/a.png", "note": "n"}
+        ]}
+    ]});
+    let (mut reporter, _sink) = collecting();
+    Boundary::upgrade_input(&mut input, &mut reporter);
+    let content = input["messages"][0]["content"].as_array().expect("parts");
+    assert_eq!(content.len(), 3, "{content:#?}");
+    assert_eq!(content[1]["metadata"]["alt"], "cat");
+    assert_eq!(content[2]["note"], "n");
+}
+
 /// covers: VER-13, VER-32
 #[test]
 fn legacy_mirror_matching_keeps_its_exact_semantics() {
