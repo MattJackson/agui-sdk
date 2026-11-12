@@ -1441,3 +1441,41 @@ fn metadata_merges_charge_what_the_merged_map_holds() {
     assert_eq!(held[0]["metadata"]["x.b"], Value::Null);
     assert_eq!(held[0]["metadata"]["x.c"]["k2"][0], true);
 }
+
+/// The allocation-free pointer lookup behind the activity credit answers
+/// exactly as `serde_json`'s `Value::pointer`, escapes, odd indices and
+/// malformed text included.
+#[test]
+fn pointer_lookup_answers_as_serde_json_does() {
+    let doc = json!({"a": {"b/c": [10, {"~": 1, "~1": 2, "d~e": 3}], "": {"": 4}},
+                     "0": "zero", "x~y": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]});
+    let pointers = [
+        "",
+        "/",
+        "a",
+        "/a",
+        "/a/b~1c",
+        "/a/b~1c/0",
+        "/a/b~1c/1/~0",
+        "/a/b~1c/1/~01",
+        "/a/b~1c/1/d~0e",
+        "/a/b~1c/1/~2",
+        "/a/b~1c/1/~",
+        "/a//",
+        "/a/",
+        "/0",
+        "/x~0y/10",
+        "/x~0y/01",
+        "/x~0y/+1",
+        "/x~0y/-",
+        "/x~0y/1e1",
+        "/x~0y/99",
+        "/x~0y/18446744073709551616",
+        "/a/b~1c/-1",
+        "//",
+        "/~1",
+    ];
+    for p in pointers {
+        assert_eq!(crate::json::pointer(&doc, p), doc.pointer(p), "{p:?}");
+    }
+}

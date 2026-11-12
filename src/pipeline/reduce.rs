@@ -88,7 +88,7 @@ use crate::diagnostics::{Diagnostic, DiagnosticCode, Reporter, Scope};
 use crate::event::{Event, EventType};
 use crate::ids::{MessageId, SubagentRunId, ToolCallId};
 use crate::interrupt::Interrupt;
-use crate::json::{map_bytes, resident_bytes, seq_bytes, text_bytes, wire_bytes_upto};
+use crate::json::{map_bytes, pointer, resident_bytes, seq_bytes, text_bytes, wire_bytes_upto};
 use crate::lifecycle::RunFinishedOutcome;
 use crate::message::{
     ActivityMessage, AssistantMessage, DeveloperMessage, Message, ReasoningMessage, SystemMessage,
@@ -2125,10 +2125,12 @@ fn patch_credit<'a>(
 ) -> (usize, usize, std::collections::HashSet<&'a str>) {
     let mut remaining = budget;
     let mut entries: Vec<(&str, usize)> = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // At most two paths per operation: sized once, not rehashed as it grows.
+    let mut seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(operations.len().saturating_mul(2));
     let shifts = |path: &str| {
         path.rfind('/')
-            .is_some_and(|at| matches!(content.pointer(&path[..at]), Some(Value::Array(_))))
+            .is_some_and(|at| matches!(pointer(content, &path[..at]), Some(Value::Array(_))))
     };
     // Values this patch wrote at members of objects the content held before
     // it, with what they were charged: when the same patch frees one again
@@ -2161,7 +2163,7 @@ fn patch_credit<'a>(
             if seen.insert(p) {
                 let mut amount = 0;
                 if credited {
-                    if let Some(old) = content.pointer(p) {
+                    if let Some(old) = pointer(content, p) {
                         match freed_within(old, remaining) {
                             Some((work, freed)) => {
                                 remaining -= work;
@@ -2204,7 +2206,7 @@ fn patch_credit<'a>(
             let parent_held = may_place
                 && p.rfind('/').is_some_and(|at| {
                     remaining = remaining.saturating_sub(at);
-                    matches!(content.pointer(&p[..at]), Some(Value::Object(_)))
+                    matches!(pointer(content, &p[..at]), Some(Value::Object(_)))
                 });
             let placed = if parent_held {
                 match op.op {
@@ -2257,7 +2259,7 @@ fn patch_credit<'a>(
         }
     }
     let mut credit = 0usize;
-    let mut credited = std::collections::HashSet::new();
+    let mut credited = std::collections::HashSet::with_capacity(entries.len());
     'entries: for (p, n) in &entries {
         if ancestors.contains(p) {
             continue;

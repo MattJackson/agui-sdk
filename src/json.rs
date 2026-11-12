@@ -387,6 +387,38 @@ pub(crate) fn present(value: Value) -> Option<Value> {
     }
 }
 
+/// [`Value::pointer`], with the same answer for every input, without
+/// allocating: `serde_json` builds two `String`s per token to unescape it,
+/// this only for a token that holds a `~`.
+pub(crate) fn pointer<'v>(value: &'v Value, pointer: &str) -> Option<&'v Value> {
+    if pointer.is_empty() {
+        return Some(value);
+    }
+    if !pointer.starts_with('/') {
+        return None;
+    }
+    pointer.split('/').skip(1).try_fold(value, |target, raw| {
+        let token: std::borrow::Cow<'_, str> = if raw.contains('~') {
+            raw.replace("~1", "/").replace("~0", "~").into()
+        } else {
+            raw.into()
+        };
+        match target {
+            Value::Object(map) => map.get(token.as_ref()),
+            Value::Array(list) => pointer_index(&token).and_then(|i| list.get(i)),
+            _ => None,
+        }
+    })
+}
+
+/// An array index token as [`Value::pointer`] reads it.
+fn pointer_index(s: &str) -> Option<usize> {
+    if s.starts_with('+') || (s.starts_with('0') && s.len() != 1) {
+        return None;
+    }
+    s.parse().ok()
+}
+
 /// The serialized size of `value`, counted without building it.
 pub(crate) fn wire_bytes<T: Serialize + ?Sized>(value: &T) -> usize {
     struct Count(usize);
