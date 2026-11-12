@@ -1136,11 +1136,11 @@ impl ProducerState {
     }
 
     /// Ends the run: everything run-scoped is forgotten. Items are tracked per
-    /// run (a later run reusing an id opens a new message, which BASIC-15
-    /// refuses through `messages`); only message ids outlive the run. A
-    /// table is cleared for reuse, or dropped when far larger than the run
-    /// that just used it, so this is O(that run), never O(the stream's
-    /// largest run).
+    /// run; only message ids outlive the run (a later run's opener for an id
+    /// reopens it when the kinds match, else BASIC-15 refuses it through
+    /// `messages`). A table is cleared for reuse, or dropped when far larger
+    /// than the run that just used it, so this is amortized O(that run): the
+    /// one end of run that drops a large table costs O(its capacity), once.
     fn end_run(&mut self, phase: RunPhase) {
         use crate::pipeline::{reset_map, reset_set, RETAIN_FLOOR};
         self.phase = phase;
