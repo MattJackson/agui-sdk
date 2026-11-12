@@ -1474,3 +1474,57 @@ fn plain_run_matches_the_bytewise_scan() {
     }
     assert_eq!(stream::plain_run(b"no terminator here", 0), 18);
 }
+
+/// Findings built only while the reporter would deliver them reach every
+/// sink exactly as fully built ones do: the same diagnostics, the same
+/// per-event cap and the same summaries, for every reporter cap.
+#[test]
+fn muted_findings_deliver_what_built_ones_do() {
+    use std::sync::Arc;
+
+    use crate::diagnostics::{CollectingSink, Diagnostic, Reporter};
+    let frames = [
+        json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "m", "delta": "d",
+            "a": 1, "b": {"c": 2}, "e~/f": [3]}),
+        json!({"type": "VENDOR_EVENT", "x": 1}),
+        json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+            {"id": "1", "role": "user", "content": "u", "x": 1, "y": 2},
+            {"id": "2", "role": "robot", "content": "?"}]}),
+    ];
+    let run = |frame: &Value, cap: usize, max_findings: usize, muted: bool| -> Vec<Diagnostic> {
+        let sink = Arc::new(CollectingSink::new());
+        let mut reporter = Reporter::new(sink.clone(), cap);
+        let opts = Options {
+            max_findings,
+            ..lenient()
+        };
+        let bytes = serde_json::to_vec(frame).unwrap_or_default();
+        let mut findings = if muted {
+            Findings::for_reporter(opts.max_findings, &reporter)
+        } else {
+            Findings::new(opts.max_findings)
+        };
+        let out = event_from_bytes::<Value>(&bytes, &opts, &mut findings);
+        flush(
+            findings,
+            &mut reporter,
+            Scope::Event,
+            out.ok().and_then(|o| o.1),
+        );
+        reporter.end_event(Some("TEXT_MESSAGE_CONTENT"));
+        sink.take()
+    };
+    for frame in &frames {
+        for cap in 0..5 {
+            for max_findings in [0, 1, 2, 256] {
+                let built = run(frame, cap, max_findings, false);
+                assert!(!built.is_empty());
+                assert_eq!(
+                    run(frame, cap, max_findings, true),
+                    built,
+                    "{frame} cap {cap} max_findings {max_findings}"
+                );
+            }
+        }
+    }
+}

@@ -257,8 +257,10 @@ when feature `tracing` is on and a subscriber is interested; otherwise `log`
 when feature `log` is on and a logger is set; otherwise standard error. Only
 an explicit `NullSink` silences (VER-10, VER-11). `Reporter` caps diagnostics
 per event (default 256) and emits one `diagnostics.limit` summary. Its
-`report(|| …)` takes a closure, so nothing is allocated once the cap is hit
-or when there is nothing to say. Client runs also collect diagnostics into
+`report(|| …)` takes a closure, so nothing is allocated once the cap is hit,
+when there is nothing to say, or when the sink is not
+`DiagnosticSink::enabled` (`NullSink`; the counts and caps still move as if
+delivered). Client runs also collect diagnostics into
 `RunReport::diagnostics` and pass each to `Observer::on_diagnostic`.
 
 ## 7. Extension points

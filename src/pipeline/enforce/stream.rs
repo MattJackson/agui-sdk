@@ -1241,7 +1241,7 @@ impl<'a, 'de, 'o> MapAccess<'de> for ObjAccess<'a, 'de, 'o> {
                         format_args!("unrecognised property of {anchor}"),
                     )));
                 }
-                if self.st.findings.has_room() {
+                if self.st.findings.builds_next() {
                     let pointer = self.path.key(self.st.text(&key)).pointer();
                     self.st.findings.push_owned(
                         DiagnosticCode::UnknownField,
@@ -1249,7 +1249,7 @@ impl<'a, 'de, 'o> MapAccess<'de> for ObjAccess<'a, 'de, 'o> {
                         format!("unrecognised property of {anchor} removed"),
                     );
                 } else {
-                    self.st.findings.suppressed += 1;
+                    self.st.findings.skip();
                 }
                 self.st.skip_value(self.path, self.depth, true)?;
                 continue;

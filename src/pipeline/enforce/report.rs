@@ -87,11 +87,39 @@ impl<'a> Path<'a> {
         }
     }
 
-    /// The RFC 6901 pointer to this location (`""` for the root).
+    /// The RFC 6901 pointer to this location (`""` for the root), built in
+    /// one allocation of its exact length.
     pub(crate) fn pointer(&self) -> String {
-        let mut out = String::new();
+        let mut out = String::with_capacity(self.pointer_len());
         self.write(&mut out);
         out
+    }
+
+    /// The length of [`pointer`](Self::pointer)'s text.
+    fn pointer_len(&self) -> usize {
+        let mut len = 0_usize;
+        let mut at = Some(self);
+        while let Some(path) = at {
+            len = len.saturating_add(match path.seg {
+                None => 0,
+                Some(Seg::Index(mut i)) => {
+                    let mut digits = 1;
+                    while i >= 10 {
+                        i /= 10;
+                        digits += 1;
+                    }
+                    1 + digits
+                }
+                // `~` and `/` are escaped as two characters each.
+                Some(Seg::Key(k)) => k
+                    .bytes()
+                    .filter(|&b| b == b'~' || b == b'/')
+                    .count()
+                    .saturating_add(1 + k.len()),
+            });
+            at = path.parent;
+        }
+        len
     }
 
     fn write(&self, out: &mut String) {
@@ -303,69 +331,110 @@ pub(crate) struct Finding {
 
 /// The findings for one document, capped. Holds nothing (and allocates
 /// nothing) for a conformant document.
+///
+/// Of the findings kept under the cap, only the first `deliver` are built:
+/// the rest would reach no sink (the reporter is at its own cap, or its sink
+/// is not enabled), so they are only counted (`muted`) and handed on as
+/// such, which moves the reporter's counts exactly as delivered ones would.
 #[derive(Debug, Default)]
 pub(crate) struct Findings {
     pub(crate) items: Vec<Finding>,
+    /// Findings kept under the cap but not built, after `items` in order.
+    pub(crate) muted: usize,
     /// Findings beyond the cap, counted but not kept.
     pub(crate) suppressed: usize,
     /// Wire `type` of a dropped unknown event, for its diagnostic.
     pub(crate) unknown_type: Option<String>,
     cap: usize,
+    deliver: usize,
 }
 
 impl Findings {
+    /// Findings for a document, every kept one built.
     pub(crate) fn new(cap: usize) -> Self {
+        Findings::delivering(cap, usize::MAX)
+    }
+
+    /// Findings building only the first `deliver` of those kept.
+    pub(crate) fn delivering(cap: usize, deliver: usize) -> Self {
         Findings {
             items: Vec::new(),
+            muted: 0,
             suppressed: 0,
             unknown_type: None,
             cap,
+            deliver,
         }
     }
 
-    /// Records a finding at `path`; the message is built only under the cap.
+    /// Findings for a document whose diagnostics go to `reporter`: built
+    /// only while it would deliver them.
+    pub(crate) fn for_reporter(cap: usize, reporter: &crate::diagnostics::Reporter) -> Self {
+        Findings::delivering(cap, reporter.room())
+    }
+
+    /// Empty findings with the same cap and delivery.
+    pub(crate) fn fresh(&self) -> Self {
+        Findings::delivering(self.cap, self.deliver)
+    }
+
+    /// Records a finding at `path`; the pointer and message are built only
+    /// when it will be delivered.
     pub(crate) fn push(
         &mut self,
         code: DiagnosticCode,
         path: &Path<'_>,
         message: impl FnOnce() -> String,
     ) {
-        if self.items.len() >= self.cap {
-            self.suppressed += 1;
-            return;
-        }
-        self.items.push(Finding {
-            code,
-            pointer: path.pointer(),
-            message: message(),
-        });
-    }
-
-    /// Whether another finding would be kept rather than counted.
-    pub(crate) fn has_room(&self) -> bool {
-        self.items.len() < self.cap
-    }
-
-    /// Records a finding whose pointer and message are already built.
-    pub(crate) fn push_owned(&mut self, code: DiagnosticCode, pointer: String, message: String) {
-        if self.has_room() {
+        if self.builds_next() {
             self.items.push(Finding {
                 code,
-                pointer,
-                message,
+                pointer: path.pointer(),
+                message: message(),
             });
+        } else {
+            self.skip();
+        }
+    }
+
+    /// Whether the next finding is kept and delivered, so worth building.
+    pub(crate) fn builds_next(&self) -> bool {
+        self.kept() < self.cap && self.items.len() < self.deliver
+    }
+
+    /// Counts the next finding without building it: muted under the cap,
+    /// suppressed beyond it.
+    pub(crate) fn skip(&mut self) {
+        if self.kept() < self.cap {
+            self.muted += 1;
         } else {
             self.suppressed += 1;
         }
     }
 
+    fn kept(&self) -> usize {
+        self.items.len().saturating_add(self.muted)
+    }
+
+    /// Records a finding whose pointer and message are already built, when
+    /// [`builds_next`](Self::builds_next) said so.
+    pub(crate) fn push_owned(&mut self, code: DiagnosticCode, pointer: String, message: String) {
+        debug_assert!(self.builds_next(), "push_owned without builds_next");
+        self.items.push(Finding {
+            code,
+            pointer,
+            message,
+        });
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.suppressed == 0
+        self.items.is_empty() && self.muted == 0 && self.suppressed == 0
     }
 
     /// Forgets everything (used when a document is re-walked from scratch).
     pub(crate) fn clear(&mut self) {
         self.items.clear();
+        self.muted = 0;
         self.suppressed = 0;
         self.unknown_type = None;
     }

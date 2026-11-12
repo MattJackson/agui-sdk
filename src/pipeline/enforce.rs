@@ -143,7 +143,7 @@ impl Enforcer {
     ) -> Result<Option<Event>> {
         self.check_frame_size(frame)?;
         let opts = self.options();
-        let mut findings = Findings::new(opts.max_findings);
+        let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome = event_from_bytes::<Event>(frame, &opts, &mut findings);
         flush(
             findings,
@@ -168,7 +168,7 @@ impl Enforcer {
         reporter: &mut Reporter,
     ) -> Result<Option<Event>> {
         let opts = self.options();
-        let mut findings = Findings::new(opts.max_findings);
+        let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome = event_from_value::<Event>(frame, &opts, &mut findings);
         flush(
             findings,
@@ -202,7 +202,7 @@ impl Enforcer {
             )
         })?;
         let opts = self.options();
-        let mut findings = Findings::new(opts.max_findings);
+        let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome =
             document_from_bytes::<IgnoredAny>(&text, run_input_shape(), &opts, &mut findings);
         flush(findings, reporter, Scope::RunInput, None);
@@ -218,7 +218,7 @@ impl Enforcer {
     /// [`ErrorCode::InvalidRequest`].
     pub fn enforce_outgoing_value(&self, input: &mut Value, reporter: &mut Reporter) -> Result<()> {
         let opts = self.options();
-        let mut findings = Findings::new(opts.max_findings);
+        let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let verdict = Tree::new(&opts, &mut findings).root(run_input_shape(), input);
         flush(findings, reporter, Scope::RunInput, None);
         match verdict {
@@ -240,7 +240,7 @@ impl Enforcer {
         reporter: &mut Reporter,
     ) -> Result<RunAgentInput> {
         let opts = self.options();
-        let mut findings = Findings::new(opts.max_findings);
+        let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome =
             document_from_bytes::<RunAgentInput>(body, run_input_shape(), &opts, &mut findings);
         flush(findings, reporter, Scope::RunInput, None);
@@ -282,7 +282,7 @@ pub fn validate_strict(anchor: &str, document: &[u8]) -> Result<()> {
 pub fn enforce_document(anchor: &str, document: Value, reporter: &mut Reporter) -> Result<Value> {
     let shape = anchor_shape(anchor)?;
     let opts = Options::lenient(false);
-    let mut findings = Findings::new(opts.max_findings);
+    let mut findings = Findings::for_reporter(opts.max_findings, reporter);
     let mut document = document;
     let verdict = Tree::new(&opts, &mut findings).root(shape, &mut document);
     let out = match verdict {
@@ -393,7 +393,7 @@ fn retry_as_value<O>(
     let Ok(value) = parse_value(frame, opts) else {
         return Err(fault);
     };
-    let mut retry = Findings::new(opts.max_findings);
+    let mut retry = findings.fresh();
     match judge(value, opts, &mut retry) {
         Ok(out) => {
             *findings = retry;
@@ -498,7 +498,7 @@ fn root_type(v: &Value) -> Option<&str> {
 }
 
 fn report_root_drop(findings: &mut Findings, removal: Removal, event_type: Option<&str>) {
-    if removal.code == DiagnosticCode::UnknownEvent {
+    if removal.code == DiagnosticCode::UnknownEvent && findings.builds_next() {
         findings.unknown_type = event_type.map(str::to_owned);
     }
     findings.push(removal.code, &Path::ROOT, || {
@@ -525,6 +525,7 @@ fn flush(
         return;
     }
     let suppressed = findings.suppressed;
+    let muted = findings.muted;
     let unknown_type = findings.unknown_type;
     for finding in findings.items {
         let unknown_type = match finding.code {
@@ -542,6 +543,10 @@ fn flush(
                 None => d,
             }
         });
+    }
+    // Kept but not built: the reporter would not have delivered them.
+    for _ in 0..muted {
+        reporter.report_unbuilt();
     }
     if suppressed > 0 {
         reporter.report(move || {

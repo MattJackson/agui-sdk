@@ -388,6 +388,14 @@ impl fmt::Display for Diagnostic {
 pub trait DiagnosticSink: Send + Sync {
     /// Handles one diagnostic.
     fn report(&self, diagnostic: &Diagnostic);
+
+    /// Whether this sink handles diagnostics at all. `false` (as for
+    /// [`NullSink`]) lets a [`Reporter`] skip building them: the pipeline
+    /// then spends no allocation on a finding nobody receives. Asked once,
+    /// when the reporter is created. Defaults to `true`.
+    fn enabled(&self) -> bool {
+        true
+    }
 }
 
 impl<F> DiagnosticSink for F
@@ -402,6 +410,10 @@ where
 impl<S: DiagnosticSink + ?Sized> DiagnosticSink for Arc<S> {
     fn report(&self, diagnostic: &Diagnostic) {
         (**self).report(diagnostic);
+    }
+
+    fn enabled(&self) -> bool {
+        (**self).enabled()
     }
 }
 
@@ -443,6 +455,10 @@ impl DiagnosticSink for GuardedSink {
             self.panicked
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    fn enabled(&self) -> bool {
+        self.inner.enabled()
     }
 }
 
@@ -520,6 +536,10 @@ pub struct NullSink;
 
 impl DiagnosticSink for NullSink {
     fn report(&self, _diagnostic: &Diagnostic) {}
+
+    fn enabled(&self) -> bool {
+        false
+    }
 }
 
 /// Collects diagnostics in memory, for tests and for
@@ -578,6 +598,10 @@ impl<A: DiagnosticSink, B: DiagnosticSink> DiagnosticSink for Tee<A, B> {
         self.0.report(diagnostic);
         self.1.report(diagnostic);
     }
+
+    fn enabled(&self) -> bool {
+        self.0.enabled() || self.1.enabled()
+    }
 }
 
 /// The shared default sink ([`DefaultSink`]).
@@ -596,6 +620,9 @@ pub fn default_sink() -> Arc<dyn DiagnosticSink> {
 /// emits the `diagnostics.limit` summary if needed and resets the count.
 pub struct Reporter {
     sink: Arc<dyn DiagnosticSink>,
+    /// [`DiagnosticSink::enabled`], asked once: when `false` nothing is
+    /// built, but every count moves as if it were delivered.
+    enabled: bool,
     max_per_event: usize,
     count: usize,
     suppressed: usize,
@@ -606,6 +633,7 @@ impl Reporter {
     /// every diagnostic, leaving only the per-event summary.
     pub fn new(sink: Arc<dyn DiagnosticSink>, max_per_event: usize) -> Self {
         Reporter {
+            enabled: sink.enabled(),
             sink,
             max_per_event,
             count: 0,
@@ -617,11 +645,39 @@ impl Reporter {
     ///
     /// Under the cap, `build` runs and its result goes to the sink. At the
     /// cap, `build` is not called and only a counter moves, so a flood costs
-    /// no allocation.
+    /// no allocation. Nor is it called for a sink that is not
+    /// [`enabled`](DiagnosticSink::enabled).
     pub fn report(&mut self, build: impl FnOnce() -> Diagnostic) {
         if self.count < self.max_per_event {
             self.count += 1;
-            self.sink.report(&build());
+            if self.enabled {
+                self.sink.report(&build());
+            }
+        } else {
+            self.suppressed = self.suppressed.saturating_add(1);
+        }
+    }
+
+    /// How many more diagnostics this event would deliver: 0 at the cap or
+    /// for a sink that is not enabled. A stage that knows this up front can
+    /// skip building what would never be delivered.
+    pub(crate) fn room(&self) -> usize {
+        if self.enabled {
+            self.max_per_event.saturating_sub(self.count)
+        } else {
+            0
+        }
+    }
+
+    /// Counts a diagnostic its stage did not build because [`room`] said
+    /// it would not be delivered: the counts move exactly as
+    /// [`report`](Self::report)'s would.
+    ///
+    /// [`room`]: Self::room
+    pub(crate) fn report_unbuilt(&mut self) {
+        if self.count < self.max_per_event {
+            debug_assert!(!self.enabled, "an unbuilt diagnostic had room");
+            self.count += 1;
         } else {
             self.suppressed = self.suppressed.saturating_add(1);
         }
@@ -650,7 +706,7 @@ impl Reporter {
     }
 
     fn close(&mut self, scope: Scope, event_type: Option<&str>, cap_name: &str) {
-        if self.suppressed > 0 {
+        if self.suppressed > 0 && self.enabled {
             let mut summary = Diagnostic::new(
                 DiagnosticCode::Limit,
                 scope,
@@ -868,9 +924,47 @@ mod tests {
             stripped()
         });
         silenced.end_event(None);
-        assert!(built, "the reporter still builds; only the sink discards");
+        assert!(!built, "nothing is built for a sink that discards it");
         Tee(NullSink, Arc::clone(&seen)).report(&stripped());
         assert_eq!(seen.take().len(), 1);
+        // A tee or an `Arc` with a live half still builds.
+        let mut teed = Reporter::new(
+            Arc::new(Tee(NullSink, Arc::clone(&seen))),
+            DEFAULT_MAX_PER_EVENT,
+        );
+        teed.report(stripped);
+        assert_eq!(seen.take().len(), 1);
+        assert!(!Arc::new(NullSink).enabled());
+    }
+
+    /// A reporter over a sink that is not enabled keeps the counts a live
+    /// one would: the per-event cap and the summary behave the same, only
+    /// nothing is built.
+    #[test]
+    fn a_disabled_sink_keeps_the_counts() {
+        let mut quiet = Reporter::new(Arc::new(NullSink), 2);
+        assert_eq!(quiet.room(), 0);
+        for _ in 0..3 {
+            quiet.report(|| unreachable!("not built for a disabled sink"));
+        }
+        assert_eq!((quiet.count, quiet.suppressed), (2, 1));
+        quiet.report_unbuilt();
+        assert_eq!((quiet.count, quiet.suppressed), (2, 2));
+        quiet.end_event(None);
+        assert_eq!((quiet.count, quiet.suppressed), (0, 0));
+
+        let sink = Arc::new(CollectingSink::new());
+        let mut live = Reporter::new(sink.clone(), 2);
+        assert_eq!(live.room(), 2);
+        live.report(stripped);
+        assert_eq!(live.room(), 1);
+        live.report(stripped);
+        live.report_unbuilt();
+        assert_eq!(live.room(), 0);
+        live.end_event(None);
+        let all = sink.take();
+        assert_eq!(all.len(), 3);
+        assert!(all[2].message.starts_with("1 more"), "{}", all[2].message);
     }
 
     #[test]

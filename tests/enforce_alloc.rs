@@ -95,3 +95,34 @@ fn enforced_event_costs_what_the_event_costs() {
         );
     }
 }
+
+/// Unknown members (a newer minor's additions) cost nothing beyond the
+/// event's own allocations when no diagnostic would be delivered: under a
+/// `NullSink`, or past the reporter's cap. Delivered, each costs its
+/// pointer and its message, one allocation each, plus the findings list.
+#[test]
+fn unknown_members_cost_nothing_when_no_diagnostic_is_delivered() {
+    use agui_sdk::diagnostics::{CollectingSink, DiagnosticSink};
+    let enforcer = Enforcer::new(Limits::default());
+    let plain = br#"{"type":"TEXT_MESSAGE_CONTENT","messageId":"m-1","delta":"Hello"}"#;
+    let extra =
+        br#"{"type":"TEXT_MESSAGE_CONTENT","messageId":"m-1","delta":"Hello","zNew":1,"zOther":{"a":[1]}}"#;
+    let cost = |frame: &[u8], sink: Arc<dyn DiagnosticSink>, cap: usize| {
+        count(|| {
+            let mut reporter = Reporter::new(Arc::clone(&sink), cap);
+            assert!(enforcer.enforce_event_json(frame, &mut reporter).is_ok());
+        })
+    };
+    let base = cost(plain, Arc::new(NullSink), 256);
+    assert_eq!(cost(extra, Arc::new(NullSink), 256), base, "NullSink");
+    let at_cap = cost(extra, Arc::new(CollectingSink::new()), 0);
+    assert_eq!(at_cap, base, "reporter at its cap");
+    // Delivered to a sink that keeps nothing: two pointers, two messages
+    // and the findings list.
+    let delivered = cost(
+        extra,
+        Arc::new(|_: &agui_sdk::diagnostics::Diagnostic| {}),
+        256,
+    );
+    assert_eq!(delivered, base + 5, "delivered");
+}
