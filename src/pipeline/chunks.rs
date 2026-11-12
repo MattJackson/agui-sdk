@@ -42,7 +42,8 @@
 //! (on the first) and attribution. Its `timestamp` is not: the synthesized
 //! events are not the chunk (PROC-25).
 //!
-//! Cost: O(1) per event. The parent lane is a slot, subagent lanes are a hash
+//! Cost: O(1) per event (amortized: a lane table that closing lanes has left
+//! sparse is shrunk). The parent lane is a slot, subagent lanes are a hash
 //! map keyed by the invocation id, and three per-kind indexes (keyed by the
 //! item id's shared `Arc<str>`) find the lane assembling a named item. Ids are
 //! reference-counted clones, so a continuation chunk allocates nothing.
@@ -222,6 +223,14 @@ fn role_str(role: TextMessageRole) -> &'static str {
     }
 }
 
+/// Shrinks `map` to twice its contents once it is far larger than them, so
+/// lanes closed mid-run do not leave a sparse table behind.
+fn shrink_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
+    if crate::pipeline::oversized(map.capacity(), map.len()) {
+        map.shrink_to(map.len() * 2);
+    }
+}
+
 fn chunk_error(message: String) -> Error {
     Error::new(ErrorCode::Chunk, message)
 }
@@ -350,7 +359,14 @@ impl ChunkExpander {
             Some(id) => self.subagents.remove(id),
         };
         let Some(lane) = lane else { return };
-        self.by_item[lane.item.kind().index()].remove(lane.item.key());
+        let index = &mut self.by_item[lane.item.kind().index()];
+        index.remove(lane.item.key());
+        // Removal never shrinks a table, and an id-less continuation that
+        // resolves to the sole open lane scans its kind's index: a table
+        // left at its peak capacity would make each such scan O(peak). Shrink
+        // one that has become sparse (amortized O(1) per removal).
+        shrink_sparse(index);
+        shrink_sparse(&mut self.subagents);
         let owner = lane.owner;
         out.push(match lane.item {
             Item::Text { id, .. } => Event::TextMessageEnd(TextMessageEnd {

@@ -193,3 +193,46 @@ fn a_run_boundary_releases_peak_sized_lane_tables() {
         .iter()
         .all(|t| t.capacity() <= crate::pipeline::RETAIN_FLOOR));
 }
+
+/// Closing most of many subagent lanes mid-run does not leave the lane tables
+/// sparse: an id-less, untagged continuation resolving to the sole open lane
+/// scans its kind's index, so a table kept at its peak capacity would make
+/// every such continuation cost O(peak) (quadratic over the run).
+#[test]
+fn closing_lanes_mid_run_keeps_lane_tables_dense() {
+    let mut x = ChunkExpander::new();
+    let mut out = Vec::new();
+    let lanes = crate::pipeline::RETAIN_FLOOR * 8;
+    for n in 0..lanes {
+        x.push(
+            ev(json!({
+                "type": "TOOL_CALL_CHUNK",
+                "toolCallId": format!("t{n}"),
+                "toolCallName": "f",
+                "subagentRunId": format!("s{n}"),
+            })),
+            &mut out,
+        )
+        .unwrap();
+    }
+    for n in 1..lanes {
+        x.push(
+            ev(json!({"type": "SUBAGENT_FINISHED", "subagentRunId": format!("s{n}")})),
+            &mut out,
+        )
+        .unwrap();
+    }
+    assert_eq!(x.by_item[Kind::Tool.index()].len(), 1);
+    assert!(x.by_item[Kind::Tool.index()].capacity() <= crate::pipeline::RETAIN_FLOOR);
+    assert!(x.subagents.capacity() <= crate::pipeline::RETAIN_FLOOR);
+    out.clear();
+    x.push(
+        ev(json!({"type": "TOOL_CALL_CHUNK", "delta": "{}"})),
+        &mut out,
+    )
+    .unwrap();
+    match out.as_slice() {
+        [Event::ToolCallArgs(args)] => assert_eq!(args.tool_call_id.as_str(), "t0"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
