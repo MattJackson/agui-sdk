@@ -69,7 +69,7 @@ pub enum DecodedJson {
 /// do not decode as a message (PB-18);
 /// [`ErrorCode::LimitExceeded`] when open
 /// JSON nests deeper than 128 levels (the event object counted as 1);
-/// [`ErrorCode::FrameTooLarge`] for a payload over `u32::MAX` bytes.
+/// [`ErrorCode::FrameTooLarge`] for a payload of `u32::MAX` bytes or more.
 pub fn decode_event(payload: &[u8]) -> Result<Decoded> {
     decode_event_within(payload, usize::MAX)
 }

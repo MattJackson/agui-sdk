@@ -732,8 +732,7 @@ impl Dec {
         out: &mut O,
         max_entries: usize,
     ) -> Result<Transcoded> {
-        // Positions are held as `u32` (the wire cannot frame more anyway).
-        if u32::try_from(buf.len()).is_err() {
+        if !positions_fit(buf.len()) {
             return Err(Error::InputTooLarge);
         }
         self.spans.clear();
@@ -1433,6 +1432,13 @@ impl Dec {
     }
 }
 
+/// Whether every position in a message of `len` bytes, and its end, fit a
+/// `u32` other than `u32::MAX`, which marks a dropped `Struct` entry
+/// ([`Dec::ents`]). The wire cannot frame more anyway.
+fn positions_fit(len: usize) -> bool {
+    len < u32::MAX as usize
+}
+
 /// Entries in one `Struct` above which duplicate keys are found by sorting
 /// instead of pairwise comparison.
 const SORTED_DUP_CHECK_ABOVE: usize = 32;
@@ -1462,6 +1468,17 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// A payload of exactly `u32::MAX` bytes is refused: an empty key whose
+    /// field ends the message would start at `u32::MAX`, the dropped-entry
+    /// mark, and be lost.
+    #[test]
+    fn a_payload_of_u32_max_bytes_is_too_large() {
+        assert!(positions_fit(0));
+        assert!(positions_fit(u32::MAX as usize - 1));
+        assert!(!positions_fit(u32::MAX as usize));
+        assert!(!positions_fit(usize::MAX));
+    }
 
     fn js(x: f64) -> String {
         let mut s = String::new();
