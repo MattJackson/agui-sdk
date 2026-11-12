@@ -191,6 +191,24 @@ fn input_messages(fixture: &StreamFixture) -> Result<Vec<agui_sdk::message::Mess
     prepared_history(fixture, None, &mut quiet)
 }
 
+/// `input.tools`, typed: the frontend tools the client advertises in its
+/// request. A list that is not an array, or an entry that is not a `Tool`,
+/// is a harness error rather than silently dropped.
+fn input_tools(fixture: &StreamFixture) -> Result<Vec<agui_sdk::tool::Tool>, String> {
+    let Some(raw) = fixture.document.pointer("/input/tools") else {
+        return Ok(Vec::new());
+    };
+    let Some(list) = fixture.input_tools() else {
+        return Err(format!("harness: input.tools {raw} is not an array"));
+    };
+    list.iter()
+        .map(|t| {
+            serde_json::from_value(t.clone())
+                .map_err(|e| format!("harness: input.tools entry does not parse: {e}"))
+        })
+        .collect()
+}
+
 /// Runs a fixture's frames straight into a [`Processor`] and records what
 /// happened. The input's messages seed the history. This lane sends no
 /// request, so `request` and `requestAbsentPaths` are unobservable on it.
@@ -341,6 +359,13 @@ pub async fn observe_client(fixture: &StreamFixture, delivery: Delivery) -> Obse
             return observed;
         }
     };
+    let tools = match input_tools(fixture) {
+        Ok(t) => t,
+        Err(e) => {
+            observed.outcome = Outcome::Harness(e);
+            return observed;
+        }
+    };
     let transport = MockTransport::new(fixture.stream().to_vec(), delivery);
     let sink = Arc::new(CollectingSink::new());
     let mut builder = AgentClient::with_transport(transport.clone()).diagnostic_sink(sink.clone());
@@ -356,6 +381,11 @@ pub async fn observe_client(fixture: &StreamFixture, delivery: Delivery) -> Obse
         }
     };
     let mut request = RunRequest::new().messages(history);
+    if fixture.document.pointer("/input/tools").is_some() {
+        // Only when the fixture lists tools: an empty `tools()` call would
+        // still add `"tools": []` to every request.
+        request = request.tools(tools);
+    }
     if let Some((thread, run)) = first_run_ids(fixture) {
         request = request.thread_id(thread).run_id(run);
     }
@@ -824,6 +854,47 @@ mod tests {
                 document: json!({"client": {"maxProtocolVersion": pin}, "stream": []}),
             };
             assert!(unrecognised_pin(&fixture).is_some(), "{pin}");
+        }
+    }
+
+    #[test]
+    fn input_tools_reach_the_client_request() {
+        let tool = json!({"name": "lookup", "description": "Looks a thing up", "parameters": {"type": "object"}});
+        let fixture = StreamFixture {
+            name: "tools".to_owned(),
+            path: std::path::PathBuf::new(),
+            document: json!({
+                "input": {"tools": [tool]},
+                "stream": [],
+                "expect": {"outcome": "completed"}
+            }),
+        };
+        let observed = observe_client_blocking(&fixture, Delivery::Frames);
+        let request = observed.request.unwrap_or(Value::Null);
+        assert_eq!(request.pointer("/tools/0/name"), Some(&json!("lookup")), "{request}");
+
+        // No `input.tools`, no `tools` member.
+        let fixture = StreamFixture {
+            name: "no-tools".to_owned(),
+            path: std::path::PathBuf::new(),
+            document: json!({"stream": []}),
+        };
+        let observed = observe_client_blocking(&fixture, Delivery::Frames);
+        let request = observed.request.unwrap_or(Value::Null);
+        assert!(request.get("tools").is_none(), "{request}");
+
+        for bad in [json!({"tools": [{"name": 1}]}), json!({"tools": {"name": "x"}})] {
+            let fixture = StreamFixture {
+                name: "bad-tools".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({"input": bad, "stream": []}),
+            };
+            let observed = observe_client_blocking(&fixture, Delivery::Frames);
+            assert!(
+                matches!(&observed.outcome, Outcome::Harness(e) if e.contains("input.tools")),
+                "{bad}: {:?}",
+                observed.outcome
+            );
         }
     }
 
