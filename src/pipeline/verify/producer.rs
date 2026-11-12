@@ -1784,6 +1784,27 @@ impl ProducerState {
         if previous.is_none() {
             self.calls_order.push(id.clone());
         }
+        // A parent nothing opened is the assistant message the reducer mints
+        // for it, under the call's owner: its id is taken (BASIC-15), a later
+        // call under it agrees with that owner (SUB-26, TOOL-02), and a text
+        // opener reopens it.
+        if let Some(parent) = parent {
+            if !self.messages.contains_key(parent) {
+                let seq = self.next_seq();
+                self.text.insert(
+                    parent.clone(),
+                    Item {
+                        owner: owner.clone(),
+                        open: false,
+                        chunk: false,
+                        seq,
+                        role: Some(TextMessageRole::Assistant),
+                        name: None,
+                    },
+                );
+                self.messages.insert(parent.clone(), MessageKind::Text);
+            }
+        }
     }
 
     fn tool_continue(&mut self, id: &ToolCallId, tag: &Owner, end: bool) -> Verdict {
@@ -2382,9 +2403,21 @@ impl ProducerState {
         }
         self.close_all_lanes();
         for message in messages {
+            // The restated message is the one a reopening agrees with from
+            // now on (TEXT-06, BASIC-15), not what this run opened under the
+            // id before; an item still open keeps its run state.
             self.messages
-                .entry(message.id().clone())
-                .or_insert(MessageKind::Snapshot);
+                .insert(message.id().clone(), MessageKind::Snapshot);
+            if self.text.get(message.id()).is_some_and(|item| !item.open) {
+                self.text.remove(message.id());
+            }
+            if self
+                .reasoning
+                .get(message.id())
+                .is_some_and(|item| !item.open)
+            {
+                self.reasoning.remove(message.id());
+            }
             match Held::of(message) {
                 Some(held) => {
                     self.held.insert(message.id().clone(), held);
@@ -2843,6 +2876,115 @@ mod tests {
                 json!({"type": "TEXT_MESSAGE_END", "messageId": "m1", "subagentRunId": "s1"}),
                 json!({"type": "SUBAGENT_ERROR", "subagentRunId": "s1", "message": "x"}),
                 json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r"}),
+            ],
+        );
+    }
+
+    /// A parent nothing opened becomes the assistant message the reducer
+    /// mints for it: its id is taken (BASIC-15) and later calls under it
+    /// agree with its owner (SUB-26, TOOL-02).
+    #[test]
+    fn a_minted_parent_is_tracked() {
+        use serde_json::json;
+        let base = || {
+            let mut v = ProducerVerifier::new();
+            feed(
+                &mut v,
+                vec![
+                    json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                    json!({"type": "SUBAGENT_STARTED", "subagentRunId": "A", "name": "a"}),
+                    json!({"type": "SUBAGENT_STARTED", "subagentRunId": "B", "name": "b"}),
+                    json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x",
+                           "parentMessageId": "P", "subagentRunId": "A"}),
+                    json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+                ],
+            );
+            v
+        };
+        let mut v = base();
+        let err = v
+            .check(&ev(json!({"type": "TOOL_CALL_RESULT", "messageId": "P",
+                              "toolCallId": "c1", "content": "ok"})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+        let err = v
+            .check(&ev(
+                json!({"type": "REASONING_MESSAGE_START", "messageId": "P", "role": "reasoning"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+        let err = v
+            .check(&ev(
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c2", "toolCallName": "x",
+                       "parentMessageId": "P", "subagentRunId": "B"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c3", "toolCallName": "x",
+                       "parentMessageId": "P"}),
+                json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c3", "delta": "{}",
+                       "subagentRunId": "A"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c3"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "P", "subagentRunId": "A"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "P"}),
+            ],
+        );
+        // The chunk form mints the same way.
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TOOL_CALL_CHUNK", "toolCallId": "c1", "toolCallName": "x",
+                       "parentMessageId": "Q"}),
+                json!({"type": "CUSTOM", "name": "n", "value": 1}),
+            ],
+        );
+        let err = v
+            .check(&ev(json!({"type": "TOOL_CALL_RESULT", "messageId": "Q",
+                              "toolCallId": "c1", "content": "ok"})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+    }
+
+    /// A snapshot restating an id as another kind of message makes the
+    /// restated message the one a reopening agrees with (TEXT-06, BASIC-15).
+    #[test]
+    fn a_snapshot_restating_an_id_judges_reopens_by_the_restatement() {
+        use serde_json::json;
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+                json!({"type": "TOOL_CALL_RESULT", "messageId": "r1", "toolCallId": "c1",
+                       "content": "ok"}),
+                json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                    {"id": "m1", "role": "reasoning", "content": "hmm"},
+                    {"id": "r1", "role": "assistant", "content": "x"}
+                ]}),
+            ],
+        );
+        let err = v
+            .check(&ev(
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "REASONING_MESSAGE_START", "messageId": "m1", "role": "reasoning"}),
+                json!({"type": "REASONING_MESSAGE_END", "messageId": "m1"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "r1"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "r1"}),
             ],
         );
     }
