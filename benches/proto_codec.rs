@@ -6,7 +6,8 @@
 //! per row (default 300).
 //!
 //! Modes, as for the other benches (benches/support/mod.rs): with `--bench`
-//! (`cargo bench`) every row is measured and gated; without it (`cargo test
+//! (`cargo bench`) every row is measured and the budgets below are gated
+//! (`encode_value` is printed, not gated); without it (`cargo test
 //! --benches` / `--all-targets`) it is a smoke run, each row a few calls
 //! after as many warm-up calls, printed and not gated.
 //!
