@@ -752,17 +752,21 @@ pub fn apply(
 /// publisher. Emits `replace` for changed scalars, `add`/`remove` for
 /// object members and a whole-array `replace` when arrays differ (simple,
 /// predictable, O(size of both documents); the delta it builds is bounded by
-/// the default walk budget and by the size of `after`). With `preserve-order`, an object
-/// whose deleted members would cost more to shift out than to rebuild is sent
-/// as one `replace` of the object. Returns an empty patch when the documents
-/// are equal. When the member-wise delta would exceed what the default
+/// the default walk budget). With `preserve-order`, an object whose deleted
+/// members would cost more to shift out than to rebuild is sent as one
+/// `replace` of the object. Returns an empty patch when the documents are
+/// equal. When the member-wise delta would exceed what the default
 /// [`PatchLimits`] allow [`apply`] to spend (the walk budget, or net growth
 /// past the node budget or ceiling; for a `before` already above the ceiling,
-/// any addition at all, which older versions' `apply` refuse), or when its paths alone would be larger
-/// on the wire than `after`, returns a single `replace` of the root with
-/// `after` instead. That replace is larger than `after` itself, so callers
-/// building their own `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT`
-/// in that case, as the server's state publisher does.
+/// any addition at all, which older versions' `apply` refuse), or when its
+/// path text outweighs `after` on the wire, returns a single `replace` of the
+/// root with `after` instead. Path text is compared with the size of `after`
+/// only once it passes 64 KiB, and then each time it doubles, so a delta may
+/// carry up to about `max(64 KiB, 2 x size of after)` of path text and still
+/// be larger than `after`: callers that want the smaller form should compare
+/// wire sizes themselves, as the server's state publisher does. The root
+/// replace is larger than `after` itself, so callers building their own
+/// `STATE_DELTA` should send `after` as a `STATE_SNAPSHOT` in that case.
 #[must_use]
 pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
     diff_or_none(before, None, after).unwrap_or_else(|| {
