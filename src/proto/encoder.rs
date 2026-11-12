@@ -506,10 +506,20 @@ fn single<'a, N: JNode<'a>, S: Sink>(
                 return Err(mismatch(f, "string", v));
             }
             let st = v.as_str();
-            let text = st.cow();
+            // An escaped value is expanded on the stack when it fits, as every
+            // spelling and `#<i32>` does; a longer one is copied to the heap.
+            let mut buf = [0u8; 32];
+            let owned;
+            let text: &str = match st.in_buf(&mut buf) {
+                Some(t) => t,
+                None => {
+                    owned = st.cow();
+                    &owned
+                }
+            };
             // A known spelling, or the decoder's `#<number>` for a value this
             // build predates (so a decoded frame re-encodes unchanged).
-            let number = match e.by_json(&text) {
+            let number = match e.by_json(text) {
                 Some(ev) => ev.number,
                 None => text
                     .strip_prefix(UNKNOWN_ENUM_PREFIX)
@@ -518,7 +528,7 @@ fn single<'a, N: JNode<'a>, S: Sink>(
                     .filter(|&n| e.by_number(n).is_none())
                     .ok_or_else(|| Error::UnknownEnumValue {
                         field: f.proto,
-                        value: text.clone().into_owned(),
+                        value: text.to_owned(),
                     })?,
             };
             if f.label == Label::Implicit && number == 0 {
@@ -652,15 +662,31 @@ fn entry<'a, N: JNode<'a>, S: Sink>(
 fn key_eq(a: JStr<'_>, b: JStr<'_>) -> bool {
     match (a, b) {
         (JStr::Plain(x), JStr::Plain(y)) => x == y,
-        _ => a.cow() == b.cow(),
+        _ => a.bytes().eq(b.bytes()),
     }
 }
 
 fn key_index(k: JStr<'_>) -> Option<u32> {
     match k {
         JStr::Plain(p) => array_index(p),
-        JStr::Escaped(_) => array_index(&k.cow()),
+        // An index is at most 10 digits; a longer value is not one.
+        JStr::Escaped(_) => array_index(k.in_buf(&mut [0u8; 10])?),
     }
+}
+
+/// `ix` in canonical decimal, the key it is the array index of.
+fn index_key(ix: u32, buf: &mut [u8; 10]) -> &str {
+    let mut at = buf.len();
+    let mut v = ix;
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    std::str::from_utf8(&buf[at..]).unwrap_or("")
 }
 
 /// Encodes the body of a `google.protobuf.Struct`, members in the order a JS
@@ -697,15 +723,21 @@ fn structure<'a, N: JNode<'a>, S: Sink>(
     }
     if !N::MAY_HAVE_DUPLICATE_KEYS {
         // A map cannot repeat a key, and positional access into it is not
-        // O(1): walk the members twice instead, index keys first.
-        let mut idx: Vec<(u32, JStr<'a>, N)> = obj
-            .members()
-            .filter_map(|(k, v)| key_index(k).map(|ix| (ix, k, v)))
-            .collect();
-        idx.sort_by_key(|e| e.0);
-        for (_, k, v) in idx {
-            entry(k, v, s, order, depth)?;
+        // O(1): park the index keys' values in `order` (above whatever
+        // enclosing structs have parked there), ascending, and look each up
+        // by key; then walk the members for the rest.
+        let base = order.len();
+        order.extend(obj.members().filter_map(|(k, _)| key_index(k)));
+        order[base..].sort_unstable();
+        let end = order.len();
+        for at in base..end {
+            let mut buf = [0u8; 10];
+            let k = index_key(order[at], &mut buf);
+            if let Some(v) = obj.get(k) {
+                entry(JStr::Plain(k), v, s, order, depth)?;
+            }
         }
+        order.truncate(base);
         for (k, v) in obj.members() {
             if key_index(k).is_none() {
                 entry(k, v, s, order, depth)?;
@@ -771,16 +803,21 @@ fn structure<'a, N: JNode<'a>, S: Sink>(
     }
     let end = order.len();
     if any_index {
-        let mut idx: Vec<(u32, u32, u32)> = Vec::new();
+        // The pairs whose key is an index, by offset, parked above `end` and
+        // sorted by that index (keys are distinct here, so indices are too).
         let mut j = base;
         while j < end {
-            if let Some(ix) = key_index(obj.member(order[j] as usize).0) {
-                idx.push((ix, order[j], order[j + 1]));
+            if key_index(obj.member(order[j] as usize).0).is_some() {
+                order.push(j as u32);
             }
             j += 2;
         }
-        idx.sort_by_key(|e| e.0);
-        for &(_, kp, vp) in &idx {
+        let (pairs, idx) = order.split_at_mut(end);
+        idx.sort_unstable_by_key(|&j| key_index(obj.member(pairs[j as usize] as usize).0));
+        let tail = order.len();
+        for at in end..tail {
+            let j = order[at] as usize;
+            let (kp, vp) = (order[j], order[j + 1]);
             entry(
                 obj.member(kp as usize).0,
                 obj.member(vp as usize).1,
@@ -789,6 +826,7 @@ fn structure<'a, N: JNode<'a>, S: Sink>(
                 depth,
             )?;
         }
+        order.truncate(end);
     }
     let mut j = base;
     while j < end {
@@ -810,14 +848,15 @@ const SORTED_DEDUP_ABOVE: usize = 16;
 fn key_cmp(a: JStr<'_>, b: JStr<'_>) -> std::cmp::Ordering {
     match (a, b) {
         (JStr::Plain(x), JStr::Plain(y)) => x.cmp(y),
-        _ => a.cow().cmp(&b.cow()),
+        // `str` orders by its UTF-8 bytes.
+        _ => a.bytes().cmp(b.bytes()),
     }
 }
 
 /// Whether an object repeats a key. Small objects compare pairwise; larger
 /// ones sort member indices in the shared scratch (no allocation once warm).
 fn has_duplicates<'a, N: JNode<'a>>(obj: N, n: usize, order: &mut Vec<u32>) -> bool {
-    if n <= 16 {
+    if n <= SORTED_DEDUP_ABOVE {
         for i in 1..n {
             let ki = obj.member(i).0;
             for j in 0..i {

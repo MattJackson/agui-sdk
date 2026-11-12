@@ -6,7 +6,8 @@
 //! a JSON text writer that never materialises a tree.
 
 use super::codec_error::{Error, Result};
-use super::json::array_index;
+use super::encoder::SCRATCH_KEEP_ENTRIES;
+use super::json::{array_index, needs_attention};
 use super::schema::{
     Arm, Body, ContentKind, Field, Json, Label, MsgDesc, Ty, BASE_EVENT, EVENT, MAX_FIELDS,
 };
@@ -291,27 +292,14 @@ fn needs_escaping(text: &[u8]) -> bool {
     for chunk in &mut words {
         let mut word = [0; 8];
         word.copy_from_slice(chunk);
-        if escapes_any(u64::from_le_bytes(word)) {
+        if needs_attention(u64::from_le_bytes(word)) {
             return true;
         }
     }
     let tail = words.remainder();
     let mut word = [b' '; 8];
     word[..tail.len()].copy_from_slice(tail);
-    escapes_any(u64::from_le_bytes(word))
-}
-
-/// Whether any byte of `word` is one [`TextOut::quoted`] escapes: a control
-/// character, `"` or `\\` (exact, by the usual bytewise-zero tests).
-#[inline]
-fn escapes_any(word: u64) -> bool {
-    const ONES: u64 = 0x0101_0101_0101_0101;
-    const HIGH: u64 = 0x8080_8080_8080_8080;
-    let zero_in = |x: u64| x.wrapping_sub(ONES) & !x & HIGH != 0;
-    let below_space = word.wrapping_sub(ONES * 0x20) & !word & HIGH != 0;
-    below_space
-        || zero_in(word ^ (ONES * u64::from(b'"')))
-        || zero_in(word ^ (ONES * u64::from(b'\\')))
+    needs_attention(u64::from_le_bytes(word))
 }
 
 impl Out for TextOut<'_> {
@@ -607,10 +595,19 @@ pub(crate) struct Dec {
     ents: Vec<[u32; 4]>,
     /// Scratch for duplicate detection in large structs.
     sort: Vec<u32>,
+    /// Array-index keys of the structs being emitted, (index, entry), used as
+    /// a stack like [`Dec::spans`].
+    idx: Vec<(u32, u32)>,
     defs: DefCache,
     /// Occurrence ranges of merged message fields ([`Src::Many`]), used as
     /// a stack: each merge pushes its ranges and truncates them when done.
     spans: Vec<[u32; 2]>,
+    /// The decode's entry budget, and what is left of it for wire entries:
+    /// every `Struct` entry read and every merged occurrence held, before
+    /// duplicates collapse, so the scratch above stays within the budget
+    /// whatever the frame repeats.
+    raw_max: usize,
+    raw_left: usize,
 }
 
 /// The JSON-schema object a decoded wire message becomes, from the generated
@@ -681,7 +678,135 @@ fn has_arm(root: &[u8], f: &WireField, arms: &'static [Arm]) -> Result<bool> {
     Ok(false)
 }
 
+// Parsing bytes that are not emitted. A protobuf parser parses every
+// occurrence of a field, so bytes it would reject (bad framing, a string that
+// is not UTF-8) are malformed even where a later occurrence, oneof arm or
+// duplicate key supersedes them, or where the JSON form has no member for
+// them (PB-18). The decoder emits only what survives; these walk the rest.
+// Each superseded byte is walked once, by the scan that drops it. Depth here
+// counts containers and messages from where the walk starts, never more than
+// the decode would count for the same bytes, so nothing the decoder accepts
+// as the surviving occurrence is refused when superseded.
+
+/// Checks one occurrence `w` of a field of type `ty` (wire type matching).
+fn check_field(ty: Ty, root: &[u8], w: &WireField, depth: usize) -> Result<()> {
+    match ty {
+        Ty::String => utf8(&root[w.start..w.end]).map(|_| ()),
+        Ty::Bool | Ty::Int64 | Ty::Enum(_) => Ok(()),
+        Ty::Message(m) => check_message(m, root, w.start, w.end, depth + 1),
+        Ty::Struct => check_struct(root, w.start, w.end, depth + 1),
+        Ty::Value => check_value(root, w.start, w.end, depth),
+    }
+}
+
+/// Checks a message body of type `m`.
+fn check_message(m: &MsgDesc, root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    if depth > DECODE_MAX_DEPTH {
+        return Err(Error::DepthLimit);
+    }
+    let mut r = Reader::span(root, start, end);
+    while let Some(g) = r.next_field()? {
+        match m.body {
+            Body::Fields(fs) => {
+                if let Some(f) = fs
+                    .iter()
+                    .find(|f| f.number == g.number && f.ty.wire_type() == g.wt)
+                {
+                    check_field(f.ty, root, &g, depth)?;
+                }
+            }
+            Body::Union { arms, .. } => {
+                if let Some(a) = arms.iter().find(|a| a.number == g.number) {
+                    if g.wt == LEN {
+                        check_message(a.msg, root, g.start, g.end, depth + 1)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks a `google.protobuf.Value` body.
+fn check_value(root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    let mut r = Reader::span(root, start, end);
+    while let Some(g) = r.next_field()? {
+        check_kind(root, &g, depth)?;
+    }
+    Ok(())
+}
+
+/// Checks one `Value` kind occurrence.
+fn check_kind(root: &[u8], g: &WireField, depth: usize) -> Result<()> {
+    if g.wt != LEN {
+        return Ok(());
+    }
+    match g.number {
+        3 => utf8(&root[g.start..g.end]).map(|_| ()),
+        5 => check_struct(root, g.start, g.end, depth + 1),
+        6 => {
+            if depth + 1 > DECODE_MAX_DEPTH {
+                return Err(Error::DepthLimit);
+            }
+            let mut r = Reader::span(root, g.start, g.end);
+            while let Some(e) = r.next_field()? {
+                if e.number == 1 && e.wt == LEN {
+                    check_value(root, e.start, e.end, depth + 1)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Checks a `google.protobuf.Struct` body.
+fn check_struct(root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    if depth > DECODE_MAX_DEPTH {
+        return Err(Error::DepthLimit);
+    }
+    let mut r = Reader::span(root, start, end);
+    while let Some(e) = r.next_field()? {
+        if e.number == 1 && e.wt == LEN {
+            check_entry(root, e.start, e.end, depth)?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks a `Struct` entry body: its keys and values.
+fn check_entry(root: &[u8], start: usize, end: usize, depth: usize) -> Result<()> {
+    let mut r = Reader::span(root, start, end);
+    while let Some(g) = r.next_field()? {
+        if g.wt == LEN {
+            match g.number {
+                1 => {
+                    utf8(&root[g.start..g.end])?;
+                }
+                2 => check_value(root, g.start, g.end, depth)?,
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Dec {
+    /// Checks every occurrence of field `f` in `body` (none of them emitted).
+    fn check_unshown(&self, f: &Field, root: &[u8], body: Src, o: &Occ) -> Result<()> {
+        if o.count == 0 {
+            return Ok(());
+        }
+        let wt = f.ty.wire_type();
+        let mut r = Fields::new(root, body);
+        while let Some(w) = r.next(&self.spans)? {
+            if w.number == f.number && w.wt == wt {
+                check_field(f.ty, root, &w, 0)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Releases the capacity a large event grew the scratch vectors to.
     fn trim(&mut self) {
         self.sort.clear();
@@ -694,6 +819,10 @@ impl Dec {
         if self.spans.capacity() > SCRATCH_KEEP_ENTRIES {
             self.spans.shrink_to(SCRATCH_KEEP_ENTRIES);
         }
+        self.idx.clear();
+        if self.idx.capacity() > SCRATCH_KEEP_ENTRIES {
+            self.idx.shrink_to(SCRATCH_KEEP_ENTRIES);
+        }
     }
 
     pub(crate) fn new() -> Self {
@@ -701,9 +830,22 @@ impl Dec {
             frames: Vec::new(),
             ents: Vec::new(),
             sort: Vec::new(),
+            idx: Vec::new(),
             defs: DefCache::new(),
             spans: Vec::new(),
+            raw_max: usize::MAX,
+            raw_left: usize::MAX,
         }
+    }
+
+    /// Charges one wire entry to the decode's budget.
+    #[inline]
+    fn charge_raw(&mut self) -> Result<()> {
+        if self.raw_left == 0 {
+            return Err(Error::EntryLimit { max: self.raw_max });
+        }
+        self.raw_left -= 1;
+        Ok(())
     }
 
     /// Decodes an `Event` envelope into a `serde_json::Value` (`None` unless
@@ -725,18 +867,21 @@ impl Dec {
 
     /// Decodes an `Event` envelope, producing at most `max_entries`
     /// container entries (object members plus array elements; see
-    /// [`Budget`]); [`Error::EntryLimit`] beyond that.
+    /// [`Budget`]); [`Error::EntryLimit`] beyond that, or when the wire holds
+    /// more than `max_entries` `Struct` entries and merged occurrences, which
+    /// the decoder's scratch holds before duplicates collapse.
     pub(crate) fn event<O: Out>(
         &mut self,
         buf: &[u8],
         out: &mut O,
         max_entries: usize,
     ) -> Result<Transcoded> {
-        // Positions are held as `u32` (the wire cannot frame more anyway).
-        if u32::try_from(buf.len()).is_err() {
+        if !positions_fit(buf.len()) {
             return Err(Error::InputTooLarge);
         }
         self.spans.clear();
+        self.raw_max = max_entries;
+        self.raw_left = max_entries;
         let mut budget = Budget::new(out, max_entries);
         let r = self.event_in(buf, &mut budget);
         let over = budget.over;
@@ -778,6 +923,7 @@ impl Dec {
         while let Some(f) = r.next(&self.spans)? {
             // Empty occurrences contribute nothing to a merge.
             if f.number == o.last.number && f.wt == LEN && f.end > f.start && f.start >= o.from {
+                self.charge_raw()?;
                 self.spans.push([f.start as u32, f.end as u32]);
             }
         }
@@ -796,6 +942,7 @@ impl Dec {
         let mut r = Fields::new(root, body);
         let mut cur: Option<(&'static Arm, Occ)> = None;
         let mut unknown = None;
+        let mut switched = false;
         while let Some(f) = r.next(&self.spans)? {
             match arms.iter().find(|a| a.number == f.number) {
                 Some(a) if f.wt == LEN => match &mut cur {
@@ -804,6 +951,7 @@ impl Dec {
                         o.last = f;
                     }
                     _ => {
+                        switched |= cur.is_some();
                         cur = Some((
                             a,
                             Occ {
@@ -815,6 +963,18 @@ impl Dec {
                     }
                 },
                 _ => unknown = Some(f.number),
+            }
+        }
+        if let (true, Some((kept, o))) = (switched, &cur) {
+            // Arms a later one replaced: parsed, never emitted.
+            let mut r = Fields::new(root, body);
+            while let Some(f) = r.next(&self.spans)? {
+                if f.wt != LEN || (f.number == kept.number && f.start >= o.from) {
+                    continue;
+                }
+                if let Some(a) = arms.iter().find(|a| a.number == f.number) {
+                    check_message(a.msg, root, f.start, f.end, 0)?;
+                }
             }
         }
         match cur {
@@ -864,6 +1024,14 @@ impl Dec {
         while let Some(f) = r.next(&self.spans)? {
             if let Some(i) = fs.iter().position(|d| d.number == f.number) {
                 if fs[i].ty.wire_type() == f.wt {
+                    if occ[i].count > 0
+                        && matches!(fs[i].ty, Ty::String)
+                        && fs[i].label != Label::Repeated
+                    {
+                        // Superseded by this one, so never emitted.
+                        let p = occ[i].last;
+                        utf8(&root[p.start..p.end])?;
+                    }
                     occ[i].count += 1;
                     occ[i].last = f;
                 }
@@ -900,6 +1068,11 @@ impl Dec {
                             break;
                         }
                     }
+                    for (j, g) in fs.iter().enumerate() {
+                        if Some(j) != pick && matches!(g.json, Json::Content(_)) {
+                            self.check_unshown(g, root, body, &occ[j])?;
+                        }
+                    }
                     if let Some(j) = pick {
                         self.member(&fs[j], "content", root, body, &occ[j], out, depth, false)?;
                     } else if requires_list(schema, "content") {
@@ -914,11 +1087,18 @@ impl Dec {
                     }
                 }
                 Json::OutcomeType => {
-                    if o.count == 0 {
-                        continue;
-                    }
-                    let t = utf8(&root[o.last.start..o.last.end])?;
+                    let t = if o.count == 0 {
+                        ""
+                    } else {
+                        utf8(&root[o.last.start..o.last.end])?
+                    };
                     if t.is_empty() {
+                        // No outcome object, so its members are not shown.
+                        for (j, g) in fs.iter().enumerate() {
+                            if let Json::OutcomeKey(_) = g.json {
+                                self.check_unshown(g, root, body, &occ[j])?;
+                            }
+                        }
                         continue;
                     }
                     if depth + 1 > DECODE_MAX_DEPTH {
@@ -1181,6 +1361,7 @@ impl Dec {
     fn value<O: Out>(&mut self, root: &[u8], body: Src, out: &mut O, depth: usize) -> Result<()> {
         let mut r = Fields::new(root, body);
         let mut kind: Option<Occ> = None;
+        let mut switched = false;
         while let Some(f) = r.next(&self.spans)? {
             let ok = match f.number {
                 1 | 4 => f.wt == VARINT,
@@ -1197,6 +1378,7 @@ impl Dec {
                     k.last = f;
                 }
                 _ => {
+                    switched |= kind.is_some();
                     kind = Some(Occ {
                         count: 1,
                         last: f,
@@ -1210,6 +1392,23 @@ impl Dec {
             return Ok(());
         };
         let w = k.last;
+        if switched || (w.number == 3 && k.count > 1) {
+            // Kinds and strings a later occurrence replaced: parsed, never
+            // emitted. A struct or list kind's own occurrences are merged.
+            let merged = w.number == 5 || w.number == 6;
+            let mut r = Fields::new(root, body);
+            while let Some(f) = r.next(&self.spans)? {
+                let kept = f.number == w.number
+                    && if merged {
+                        f.start >= k.from
+                    } else {
+                        f.start == w.start
+                    };
+                if !kept {
+                    check_kind(root, &f, 0)?;
+                }
+            }
+        }
         match w.number {
             1 => out.null(),
             2 => out.f64(f64::from_bits(w.v)),
@@ -1279,11 +1478,16 @@ impl Dec {
             let (mut ks, mut ke) = (0, 0);
             while let Some(g) = er.next_field()? {
                 if g.number == 1 && g.wt == LEN {
+                    // A repeated key: the earlier one is superseded.
+                    if ke > ks {
+                        utf8(&root[ks..ke])?;
+                    }
                     ks = g.start;
                     ke = g.end;
                 }
             }
             utf8(&root[ks..ke])?;
+            self.charge_raw()?;
             self.ents
                 .push([ks as u32, ke as u32, f.start as u32, f.end as u32]);
             if self.ents.len() - base > SORTED_DUP_CHECK_ABOVE {
@@ -1294,8 +1498,7 @@ impl Dec {
         let n = self.ents.len() - base;
         if n > 1 {
             if use_sorted_dup_check {
-                // Sort entry indices by key (stable, so equal keys stay in
-                // wire order); each run of equal keys keeps its first
+                // Sort entry indices by key (equal keys in wire order); each run of equal keys keeps its first
                 // position and takes its last value.
                 let mut order = std::mem::take(&mut self.sort);
                 order.clear();
@@ -1305,7 +1508,11 @@ impl Dec {
                     &buf[e[0] as usize..e[1] as usize]
                 }
                 let ents = &self.ents;
-                order.sort_by(|&a, &b| key(ents, root, a).cmp(key(ents, root, b)));
+                // Ties by position: the order a stable sort gives, with no
+                // merge buffer to allocate.
+                order.sort_unstable_by(|&a, &b| {
+                    key(ents, root, a).cmp(key(ents, root, b)).then(a.cmp(&b))
+                });
                 let mut g = 0;
                 while g < order.len() {
                     let mut h = g + 1;
@@ -1315,6 +1522,11 @@ impl Dec {
                     }
                     if h - g > 1 {
                         let (first, last) = (order[g] as usize, order[h - 1] as usize);
+                        // Values the last one replaces: parsed, never emitted.
+                        for &dropped in &order[g..h - 1] {
+                            let [_, _, ds, de] = self.ents[dropped as usize];
+                            check_entry(root, ds as usize, de as usize, 0)?;
+                        }
                         let [_, _, es, ee] = self.ents[last];
                         self.ents[first][2] = es;
                         self.ents[first][3] = ee;
@@ -1332,6 +1544,8 @@ impl Dec {
                     for j in base..i {
                         let [js, je, _, _] = self.ents[j];
                         if js != u32::MAX && &root[js as usize..je as usize] == k {
+                            let [_, _, ds, de] = self.ents[j];
+                            check_entry(root, ds as usize, de as usize, 0)?;
                             self.ents[j][2] = es;
                             self.ents[j][3] = ee;
                             self.ents[i][0] = u32::MAX;
@@ -1356,20 +1570,43 @@ impl Dec {
             // Validated in collect_entries.
             std::str::from_utf8(&root[e[0] as usize..e[1] as usize]).unwrap_or("")
         };
-        let mut idx: Vec<(u32, usize)> = Vec::new();
+        let mark = self.idx.len();
         for i in base..end {
             let e = self.ents[i];
             if e[0] != u32::MAX {
                 if let Some(ix) = array_index(key_of(e)) {
-                    idx.push((ix, i));
+                    self.idx.push((ix, i as u32));
                 }
             }
         }
+        let r = self.emit_ordered(root, base, end, mark, out, depth);
+        self.idx.truncate(mark);
+        r
+    }
+
+    /// [`emit_entries`](Self::emit_entries) once the index keys of
+    /// `ents[base..end]` are parked at `idx[mark..]`.
+    fn emit_ordered<O: Out>(
+        &mut self,
+        root: &[u8],
+        base: usize,
+        end: usize,
+        mark: usize,
+        out: &mut O,
+        depth: usize,
+    ) -> Result<()> {
+        let key_of = |e: [u32; 4]| -> &str {
+            // Validated in collect_entries.
+            std::str::from_utf8(&root[e[0] as usize..e[1] as usize]).unwrap_or("")
+        };
+        let top = self.idx.len();
+        let any_index = top > mark;
         out.begin_obj();
-        if !idx.is_empty() {
-            idx.sort_by_key(|p| p.0);
-            for &(_, i) in &idx {
-                let e = self.ents[i];
+        if any_index {
+            // Indices are distinct: duplicate keys are already collapsed.
+            self.idx[mark..].sort_unstable_by_key(|p| p.0);
+            for at in mark..top {
+                let e = self.ents[self.idx[at].1 as usize];
                 self.entry(root, e, key_of(e), out, depth)?;
             }
         }
@@ -1379,7 +1616,7 @@ impl Dec {
                 continue;
             }
             let k = key_of(e);
-            if !idx.is_empty() && array_index(k).is_some() {
+            if any_index && array_index(k).is_some() {
                 continue;
             }
             self.entry(root, e, k, out, depth)?;
@@ -1433,13 +1670,20 @@ impl Dec {
     }
 }
 
+/// Whether every position in a message of `len` bytes, and its end, fit a
+/// `u32` other than `u32::MAX`, which marks a dropped `Struct` entry
+/// ([`Dec::ents`]). The wire cannot frame more anyway.
+fn positions_fit(len: usize) -> bool {
+    len < u32::MAX as usize
+}
+
 /// Entries in one `Struct` above which duplicate keys are found by sorting
 /// instead of pairwise comparison.
 const SORTED_DUP_CHECK_ABOVE: usize = 32;
 
-/// Scratch vector capacity (in entries) kept between decodes; anything a
-/// larger event grew beyond this is released when the decode ends.
-const SCRATCH_KEEP_ENTRIES: usize = 4096;
+// Scratch vector capacity (in entries) kept between decodes is the
+// encoder's bound, `SCRATCH_KEEP_ENTRIES`; anything a larger event grew
+// beyond it is released when the decode ends.
 
 thread_local! {
     static DEC: std::cell::RefCell<Dec> = std::cell::RefCell::new(Dec::new());
@@ -1462,6 +1706,80 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use crate::proto::wire::put_varint;
+
+    /// A `STATE_SNAPSHOT` envelope whose `snapshot` is the `Value` bytes `v`.
+    fn snapshot_of(v: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x12];
+        put_varint(&mut body, v.len() as u64);
+        body.extend_from_slice(v);
+        let mut env = vec![0x3a];
+        put_varint(&mut env, body.len() as u64);
+        env.extend_from_slice(&body);
+        env
+    }
+
+    /// A `Value` holding `struct_value` with body `s`.
+    fn struct_value(s: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x2a];
+        put_varint(&mut v, s.len() as u64);
+        v.extend_from_slice(s);
+        v
+    }
+
+    /// The entry budget counts wire entries, not just the ones that survive
+    /// duplicate collapsing: a frame of many repeats of one key is refused
+    /// before its scratch grows with the frame.
+    #[test]
+    fn duplicate_struct_entries_are_charged_to_the_entry_budget() {
+        let n = 200_000;
+        let bytes = snapshot_of(&struct_value(&[0x0a, 0x00].repeat(n)));
+        let mut d = Dec::new();
+        let (t, v) = d.event_value(&bytes, usize::MAX).unwrap();
+        assert!(matches!(t, Transcoded::Event("STATE_SNAPSHOT")));
+        assert_eq!(v.unwrap()["snapshot"], serde_json::json!({"": null}));
+        let mut d = Dec::new();
+        let e = d.event_value(&bytes, 1000).unwrap_err();
+        assert_eq!(e, Error::EntryLimit { max: 1000 });
+        assert!(
+            d.ents.capacity() < 4096,
+            "{} entries held",
+            d.ents.capacity()
+        );
+        assert!(d.sort.capacity() < 4096, "{} sort slots", d.sort.capacity());
+    }
+
+    /// Merged occurrences of a message field are charged the same way: each
+    /// is a range held while the merge is decoded.
+    #[test]
+    fn merged_occurrences_are_charged_to_the_entry_budget() {
+        let n = 200_000;
+        // `struct_value` repeated, each occurrence one unknown field.
+        let value = [0x2a, 0x02, 0x10, 0x01].repeat(n);
+        let bytes = snapshot_of(&value);
+        let mut d = Dec::new();
+        let (_, v) = d.event_value(&bytes, usize::MAX).unwrap();
+        assert_eq!(v.unwrap()["snapshot"], serde_json::json!({}));
+        let mut d = Dec::new();
+        let e = d.event_value(&bytes, 1000).unwrap_err();
+        assert_eq!(e, Error::EntryLimit { max: 1000 });
+        assert!(
+            d.spans.capacity() < 4096,
+            "{} spans held",
+            d.spans.capacity()
+        );
+    }
+
+    /// A payload of exactly `u32::MAX` bytes is refused: an empty key whose
+    /// field ends the message would start at `u32::MAX`, the dropped-entry
+    /// mark, and be lost.
+    #[test]
+    fn a_payload_of_u32_max_bytes_is_too_large() {
+        assert!(positions_fit(0));
+        assert!(positions_fit(u32::MAX as usize - 1));
+        assert!(!positions_fit(u32::MAX as usize));
+        assert!(!positions_fit(usize::MAX));
+    }
 
     fn js(x: f64) -> String {
         let mut s = String::new();

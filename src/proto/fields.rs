@@ -4,7 +4,9 @@
 // file differs from what the pinned spec produces.
 
 //! The protobuf field table: every message, field and enum of the AG-UI
-//! `.proto` files as `static` data, for the hand-written codec.
+//! `.proto` files as `static` data. The codec does not read it (it is driven
+//! by the hand-written `src/proto/schema.rs`); `tests/spec_drift.rs` compiles
+//! it and checks it against what the pinned spec generates.
 //!
 //! The `.proto` files give each field's type and label; `proto-freeze.txt`
 //! is the authority on wire numbers, and the generator refuses a `.proto`
