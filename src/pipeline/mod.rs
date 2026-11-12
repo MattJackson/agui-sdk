@@ -801,6 +801,12 @@ impl Processor {
     /// A stream that ended inside a run, or before any run began, is
     /// [`Termination::Truncated`]. Nothing is synthesized for it: open chunk
     /// streams stay open and no `RUN_FINISHED` is invented (TRN-09, LIFE-20).
+    ///
+    /// This reports only where the run lifecycle stands. It does not say
+    /// whether an earlier push was rejected: a stream refused after its
+    /// `RUN_FINISHED` still reads `Complete` here. Use
+    /// [`finish_checked`](Self::finish_checked) for the verdict of a
+    /// processor that may be spent.
     pub fn finish(&mut self) -> Termination {
         match self.verifier.phase() {
             verify::RunPhase::Finished | verify::RunPhase::Failed => Termination::Complete,
@@ -817,7 +823,9 @@ impl Processor {
     /// # Errors
     ///
     /// `verify.identity`, as above. The processor is spent afterwards.
+    /// A processor already spent by a rejected push fails with that code.
     pub fn finish_checked(&mut self) -> Result<Termination> {
+        self.check_live()?;
         let termination = self.finish();
         if termination == Termination::Complete {
             if let Err(err) = self.verifier.finish() {
