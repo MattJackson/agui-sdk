@@ -5,6 +5,10 @@
 //! global allocator; fails if the allocation budget is exceeded. Runs at x1
 //! and x8 stream sizes and fails when allocations per event differ between
 //! them (the per-event cost must not grow with the stream).
+//!
+//! As for the other benches (benches/support/mod.rs, "Modes"), it gates only
+//! under `cargo bench`, which passes `--bench`. Under `cargo test --benches`
+//! or `--all-targets` it is a smoke run: one pass at x1, nothing gated.
 
 // Test code: a failed unwrap is a failed test.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -96,8 +100,14 @@ fn report(name: &str, scale: usize, bytes_per_event: f64, sample: &Sample) {
 }
 
 fn main() {
+    let gated = std::env::args().any(|a| a == "--bench");
     let quick = std::env::args().any(|a| a == "--quick");
-    let iterations = if quick { 50 } else { 500 };
+    let iterations = match (gated, quick) {
+        (false, _) => 1,
+        (true, true) => 50,
+        (true, false) => 500,
+    };
+    let scales: &[usize] = if gated { &[1, 8] } else { &[1] };
 
     let budget: usize = TYPICAL.iter().map(|(_, n)| n).sum();
     let budget_per_event = budget as f64 / TYPICAL.len() as f64;
@@ -107,7 +117,7 @@ fn main() {
     let mut failures = Vec::new();
     let mut parse_allocs = Vec::new();
     let mut write_allocs = Vec::new();
-    for scale in [1usize, 8] {
+    for &scale in scales {
         let stream: Vec<&str> = (0..scale * 100)
             .flat_map(|_| TYPICAL.iter().map(|(j, _)| *j))
             .collect();
@@ -146,6 +156,9 @@ fn main() {
             ));
         }
         write_allocs.push(write.allocs_per_event);
+    }
+    if !gated {
+        return;
     }
     if parse_allocs[0] != parse_allocs[1] || write_allocs[0] != write_allocs[1] {
         failures.push("allocations per event changed with stream size".to_owned());

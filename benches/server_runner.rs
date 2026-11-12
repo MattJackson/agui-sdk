@@ -7,6 +7,11 @@
 //! agent future, the queue, the verifier's first sets). Budget: 0.
 //!
 //! `cargo bench --features server --bench server_runner`
+//!
+//! As for the other benches (benches/support/mod.rs, "Modes"), it gates only
+//! under `cargo bench`, which passes `--bench`. Under `cargo test --benches`
+//! or `--all-targets` it is a smoke run: one small stream per capacity,
+//! nothing gated.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -81,7 +86,15 @@ fn measure(n: usize, capacity: usize) -> (usize, f64) {
 }
 
 fn main() {
+    let gated = std::env::args().any(|a| a == "--bench");
     for capacity in [16usize, 1024] {
+        if !gated {
+            let (allocations, secs) = measure(500, capacity);
+            println!(
+                "server_runner capacity={capacity} (smoke): 500 events, {allocations} allocs, {secs:.4} s"
+            );
+            continue;
+        }
         let _ = measure(10_000, capacity); // warm-up
         let small = 100_000;
         let (a1, _) = measure(small, capacity);
