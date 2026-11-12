@@ -123,6 +123,8 @@ diagnostic_codes! {
     /// A content part the producer cannot use was skipped (RUNIN-11, RUNIN-16, TOOL-17).
     ContentPartSkipped = "content.part_skipped";
     /// Content was flattened to text for a string-only reader (TOOL-20).
+    /// Reserved: this release reports lossy flattening as `downgrade.lossy`
+    /// (emitted by the 0.0.39 downgrade shim); lossless flattening is silent.
     ContentFlattened = "content.flattened";
     /// Metadata tried to write the reserved `ag-ui` key (META-04).
     ReservedMetadataKey = "metadata.reserved_key";

@@ -127,7 +127,9 @@ error_codes! {
     Ownership = "verify.ownership", Protocol;
     /// Chunk violation: missing first-chunk field, conflict, ambiguity (STRM-16, STRM-20, STRM-24).
     Chunk = "verify.chunk", Protocol;
-    /// Activity event violation (ACT-19).
+    /// Activity event violation (ACT-19). Reserved: this release reports
+    /// malformed activity events as `processing.invalid_value` and attribution
+    /// mismatches as `verify.ownership`.
     Activity = "verify.activity", Protocol;
     /// Stream identity mismatch (run or thread ids disagree, RUNIN-04, RUNIN-05).
     Identity = "verify.identity", Protocol;
@@ -397,9 +399,10 @@ impl Error {
         self.inner.retry_after
     }
 
-    /// Whether retrying the same request is safe and might succeed: only
-    /// failures before response headers, and only connect errors and
-    /// 429/502/503/504. Never true once a run started.
+    /// Whether retrying might succeed: connect errors and 429/502/503/504
+    /// received before the stream started. Never true once a run started. A
+    /// 502/504 from a gateway does not prove the agent never received the
+    /// request, so retrying a non-idempotent run can duplicate it.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         if self.inner.run_started {

@@ -16,9 +16,11 @@ use crate::tool::Tool;
 /// (RUNIN-08, RUNIN-12, PROC-32..PROC-34). Servers receive it through
 /// [`server::input::admit`][crate::server::input::admit].
 ///
-/// `tools`, `context` and `resume` are plain vectors: absent and empty mean the
-/// same thing (RUNIN-20, RUNIN-23) and an empty list is omitted on the wire
-/// (RUNIN-21).
+/// `tools`, `context` and `resume` are `Option<Vec<_>>`: absent and empty mean
+/// the same thing (RUNIN-20, RUNIN-23) and read the same through `tools()`,
+/// `context()` and `resume()`, but `Some(vec![])` is kept and written as `[]`
+/// so an echoed input matches what was received (RUNIN-21 allows, but does
+/// not require, omitting it).
 ///
 /// Schema: `$defs/RunAgentInput`. Spec rules: RUNIN-01..RUNIN-31.
 #[cfg_attr(

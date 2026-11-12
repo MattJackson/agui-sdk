@@ -6,8 +6,9 @@
 //! downgrade ([`LegacyEra`]). When the peer's version is unknown the SDK
 //! behaves as though it were current (VER-31).
 //!
-//! Nothing here allocates except [`PeerVersion::Uninterpretable`], which keeps
-//! the declaration it could not read.
+//! Classification allocates nothing except [`PeerVersion::Uninterpretable`],
+//! which keeps the declaration it could not read; [`PeerVersion::diagnostic`]
+//! builds an owned message.
 
 use std::fmt;
 

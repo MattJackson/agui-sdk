@@ -21,8 +21,10 @@
 //! The derived `Deserialize` on [`Event`] (and every protocol type) is
 //! *unchecked decoding of trusted, stored data*: it fails on an unknown
 //! closed-set value instead of stripping it (D3, PROC-17), drops unknown
-//! fields without a warning and verifies nothing. It does not buffer: the
-//! `type` tag selects the variant and the fields are read straight into it.
+//! fields without a warning and verifies nothing. It does not build an
+//! intermediate tree for the whole object: members before `type` are held as
+//! values and replayed, so when `type` is first (as this crate writes events)
+//! nothing is buffered.
 //! Use it for your own storage and fixtures. Frames received from a peer go
 //! through [`pipeline::Processor`](crate::pipeline::Processor).
 #![cfg_attr(
@@ -126,8 +128,10 @@ pub enum Event {
 }
 
 /// Calls `$callback!($args; <every variant name>)`. Variant names equal both
-/// the `EventType` names and the event struct names, so one list drives every
-/// per-type table below.
+/// the `EventType` names and the event struct names, so one list drives the
+/// per-variant projections on `Event` below (`event_type`, `timestamp`,
+/// `metadata`, `raw_event`); `EventType`'s tables are hand-written and checked
+/// by `tests/basic_events.rs`.
 macro_rules! all_events {
     ($callback:ident ! ( $($args:tt)* )) => {
         $callback! {
@@ -350,7 +354,8 @@ pub enum EventType {
 }
 
 impl EventType {
-    /// Every event type this build knows, in schema order.
+    /// Every event type this build knows, in declaration order (lifecycle
+    /// first, the order of the [`Event`] enum).
     pub const ALL: &'static [EventType] = &[
         EventType::RunStarted,
         EventType::RunFinished,

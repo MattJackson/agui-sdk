@@ -640,6 +640,8 @@ impl Default for HttpLimits {
 /// exponential backoff with optional jitter, `Retry-After` honoured up to a
 /// cap (a longer `Retry-After` is not waited for: the status is reported,
 /// with the delay, for the caller to decide). Never after a stream started: a replay would duplicate a server run.
+/// A 502/504 from a gateway does not prove the agent never received the
+/// request, so retrying on one can still duplicate a non-idempotent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RetryPolicy {
