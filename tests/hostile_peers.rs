@@ -910,6 +910,15 @@ fn l4_diagnostics_carry_only_bounded_previews_of_peer_strings() {
         assert!(!text.contains(&secret), "member name verbatim: {text}");
         assert!(d.pointer.len() <= 260);
     }
+    let dropped = seen
+        .iter()
+        .find(|d| d.code == DiagnosticCode::UnknownEvent)
+        .expect("the unknown event's diagnostic");
+    assert_eq!(
+        dropped.unknown_type, d.unknown_type,
+        "the same bounded preview"
+    );
+    assert!(dropped.message.contains(&*d.unknown_type.clone().unwrap()));
 }
 
 // ---------------------------------------------------------------- reducer
@@ -2101,5 +2110,82 @@ fn subagent_tool_chunk_lanes_hold_no_copy_of_the_parent_id() {
             "{name}: {} KiB resident after 64 subagent lanes naming a 512 KiB parent",
             live / 1024
         );
+    }
+}
+
+/// An application that raises `max_depth` past what the JSON walk can
+/// recurse through on a thread's stack still gets a verdict, not a stack
+/// overflow: the JSON depth is clamped to a fixed ceiling, as the patch
+/// engine's and the protobuf codec's are. The ceiling itself is reachable on
+/// a default-sized (2 MiB) thread stack in an optimized build; an
+/// unoptimized one has far larger frames, so the test gives it more stack.
+#[test]
+fn a_raised_max_depth_is_clamped_to_a_stack_safe_ceiling() {
+    let _g = lock();
+    let deep = |n: usize| {
+        format!(
+            r#"{{"type":"CUSTOM","name":"n","value":{}1{}}}"#,
+            "[".repeat(n),
+            "]".repeat(n)
+        )
+    };
+    std::thread::Builder::new()
+        .stack_size(if cfg!(debug_assertions) {
+            16 << 20
+        } else {
+            2 << 20
+        })
+        .spawn(move || {
+            let mut config = PipelineConfig::default();
+            config.limits.max_depth = usize::MAX;
+            let push = |frame: &str| {
+                let mut p = Processor::new(config.clone());
+                let mut reporter = Reporter::new(Arc::new(NullSink), 256);
+                let mut out = Vec::new();
+                p.push_json(started().to_string().as_bytes(), &mut reporter, &mut out)
+                    .unwrap();
+                p.push_json(frame.as_bytes(), &mut reporter, &mut out)
+                    .map(|_| ())
+                    .map_err(|e| e.code())
+            };
+            assert_eq!(push(&deep(100_000)), Err(ErrorCode::LimitExceeded));
+            assert_eq!(push(&deep(500)), Ok(()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// The diagnostics of an event that enforcement then rejects still name the
+/// event's type, as those of an accepted event do: the warnings gathered
+/// before the fault and the per-event cap's summary alike.
+#[test]
+fn diagnostics_of_a_rejected_event_name_its_type() {
+    let _g = lock();
+    let frame = json!({"type": "TEXT_MESSAGE_CONTENT", "aa1": 1, "aa2": 2,
+                       "messageId": "m", "delta": 7});
+    for value_path in [false, true] {
+        let sink = Arc::new(CollectingSink::new());
+        let mut reporter = Reporter::new(sink.clone(), 1);
+        let mut p = Processor::new(PipelineConfig::default());
+        push(&mut p, &mut reporter, &started()).unwrap();
+        sink.take();
+        let mut out = Vec::new();
+        let r = if value_path {
+            p.push_value(frame.clone(), &mut reporter, &mut out)
+        } else {
+            p.push_json(frame.to_string().as_bytes(), &mut reporter, &mut out)
+        };
+        assert_eq!(r.map_err(|e| e.code()), Err(ErrorCode::InvalidValue));
+        let seen = sink.take();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        for d in &seen {
+            assert_eq!(
+                d.event_type,
+                Some(agui_sdk::EventType::TextMessageContent),
+                "value path {value_path}: {d:?}"
+            );
+            assert_eq!(d.scope, Scope::Event, "value path {value_path}: {d:?}");
+        }
     }
 }

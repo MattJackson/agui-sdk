@@ -345,6 +345,9 @@ pub(crate) struct Findings {
     pub(crate) suppressed: usize,
     /// Wire `type` of a dropped unknown event, for its diagnostic.
     pub(crate) unknown_type: Option<String>,
+    /// The known event type being enforced, once read: the label for these
+    /// findings even when the event is then rejected.
+    pub(crate) subject: Option<&'static str>,
     cap: usize,
     deliver: usize,
 }
@@ -362,6 +365,7 @@ impl Findings {
             muted: 0,
             suppressed: 0,
             unknown_type: None,
+            subject: None,
             cap,
             deliver,
         }

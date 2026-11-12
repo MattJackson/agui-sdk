@@ -238,7 +238,11 @@ impl Event {
     /// # Errors
     ///
     /// [`ErrorCode::InvalidValue`](crate::ErrorCode::InvalidValue) with the
-    /// offending JSON pointer.
+    /// offending JSON pointer;
+    /// [`ErrorCode::MalformedEvent`](crate::ErrorCode::MalformedEvent) (no
+    /// pointer) for bytes that are not JSON;
+    /// [`ErrorCode::LimitExceeded`](crate::ErrorCode::LimitExceeded) for a
+    /// document over the entry or depth budget.
     pub fn parse_strict(json: &[u8]) -> Result<Self> {
         crate::pipeline::enforce::parse_strict_event(json)
     }

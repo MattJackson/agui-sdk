@@ -159,6 +159,51 @@ fn an_untagged_continuation_continues_what_the_opener_owns() {
     assert_eq!(r.message("m1")["content"], "untagged tagged");
 }
 
+/// An untagged explicit continuation of a subagent's item belongs to the
+/// subagent's lane, not the parent's: it neither ends the parent's pending
+/// chunk stream nor leaves the subagent's pending.
+/// covers: SUB-20, STRM-21
+#[test]
+fn an_untagged_continuation_is_in_its_openers_chunk_lane() {
+    let parent_chunk = |delta: &str| json!({"type": "TEXT_MESSAGE_CHUNK", "delta": delta});
+    // The parent's chunk stream c1 stays open across the subagent's
+    // untagged content: the next id-less chunk still continues it.
+    let r = run(&in_run(&[
+        announce("s1"),
+        json!({"type": "TEXT_MESSAGE_CHUNK", "messageId": "c1", "delta": "a"}),
+        tag(start("m1"), "s1"),
+        content("m1", "sub"),
+        parent_chunk("b"),
+        tag(end("m1"), "s1"),
+        done("s1"),
+    ]));
+    r.assert_ok();
+    assert_eq!(r.message("c1")["content"], "ab");
+    assert_eq!(r.message("m1")["content"], "sub");
+
+    // The reverse: the subagent's pending chunk stream ends at an untagged
+    // event in its lane, before that event, as a tagged one would end it.
+    let r = run(&in_run(&[
+        announce("s1"),
+        tag(start("m1"), "s1"),
+        tag(
+            json!({"type": "TOOL_CALL_CHUNK", "toolCallId": "t1", "toolCallName": "f", "delta": "{}"}),
+            "s1",
+        ),
+        content("m1", "sub"),
+        tag(end("m1"), "s1"),
+        done("s1"),
+    ]));
+    r.assert_ok();
+    let types = r.types();
+    let end_call = types.iter().position(|t| *t == "TOOL_CALL_END").unwrap();
+    let content_at = types
+        .iter()
+        .position(|t| *t == "TEXT_MESSAGE_CONTENT")
+        .unwrap();
+    assert!(end_call < content_at, "{types:?}");
+}
+
 /// covers: SUB-21, SUB-24
 #[test]
 fn a_continuation_disagreeing_with_its_opener_is_rejected() {
@@ -334,9 +379,10 @@ fn parallel_invocations_are_tracked_separately() {
         ),
         end("a"),
         done("s1"),
-        // s1 ending closes none of s2's entities.
-        content("b", "y"),
+        // s1 ending closes none of s2's entities. (An untagged continuation
+        // of `b` is in s2's lane and so would end the chunk stream `c`.)
         tag(json!({"type": "TEXT_MESSAGE_CHUNK", "delta": "ed"}), "s2"),
+        content("b", "y"),
         end("b"),
         done("s2"),
     ]));

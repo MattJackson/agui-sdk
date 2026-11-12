@@ -34,18 +34,27 @@
 //!
 //! An explicit event's own lane is the lane assembling the item it names when
 //! one is (an explicit event naming an assembling id ends the shorthand,
-//! STRM-10), and otherwise the lane of its `subagentRunId` (the parent's when
-//! untagged).
+//! STRM-10), and otherwise the lane of its `subagentRunId`. An untagged
+//! continuation of an item opened earlier continues whatever its opener owns
+//! (SUB-20), so its lane is the opener's owner's: a [`Processor`] takes that
+//! owner from its verifier. Any other untagged event, and every untagged
+//! event given to a standalone [`ChunkExpander::push`], which does not track
+//! explicitly opened items, is in the parent's lane.
+//!
+//! [`Processor`]: crate::pipeline::Processor
 //!
 //! What a chunk carries is moved onto the synthesized events: deltas, opener
 //! fields, metadata (on every event synthesized from the chunk), `rawEvent`
 //! (on the first) and attribution. Its `timestamp` is not: the synthesized
 //! events are not the chunk (PROC-25).
 //!
-//! Cost: O(1) per event. The parent lane is a slot, subagent lanes are a hash
-//! map keyed by the invocation id, and three per-kind indexes (keyed by the
-//! item id's shared `Arc<str>`) find the lane assembling a named item. Ids are
-//! reference-counted clones, so a continuation chunk allocates nothing.
+//! Cost: O(1) per event (amortized: a lane table that closing lanes has left
+//! sparse is shrunk), apart from copying an opening chunk's metadata onto
+//! each event synthesized from it, O(metadata). The parent lane is a slot,
+//! subagent lanes are a hash map keyed by the invocation id, and three
+//! per-kind indexes (keyed by the item id's shared `Arc<str>`) find the lane
+//! assembling a named item. Ids are reference-counted clones, so a
+//! continuation chunk allocates nothing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -222,6 +231,14 @@ fn role_str(role: TextMessageRole) -> &'static str {
     }
 }
 
+/// Shrinks `map` to twice its contents once it is far larger than them, so
+/// lanes closed mid-run do not leave a sparse table behind.
+fn shrink_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
+    if crate::pipeline::oversized(map.capacity(), map.len()) {
+        map.shrink_to(map.len() * 2);
+    }
+}
+
 fn chunk_error(message: String) -> Error {
     Error::new(ErrorCode::Chunk, message)
 }
@@ -280,6 +297,19 @@ impl ChunkExpander {
     /// and [`ErrorCode::Ownership`] for a chunk
     /// whose `subagentRunId` disagrees with the lane assembling its item.
     pub fn push(&mut self, event: Event, out: &mut Vec<Event>) -> Result<()> {
+        self.push_attributed(event, |_| None, out)
+    }
+
+    /// [`push`](Self::push), told the owner of the item an untagged explicit
+    /// continuation names (`opener`, asked only when a chunk stream is
+    /// pending and no lane is assembling the item): that event belongs to
+    /// its opener's lane, not the parent's (SUB-20).
+    pub(crate) fn push_attributed(
+        &mut self,
+        event: Event,
+        opener: impl FnOnce(&Event) -> Option<Owner>,
+        out: &mut Vec<Event>,
+    ) -> Result<()> {
         let explicit = match event {
             Event::TextMessageChunk(text) => return self.text_chunk(text, out),
             Event::ToolCallChunk(call) => return self.tool_chunk(call, out),
@@ -289,7 +319,7 @@ impl ChunkExpander {
         match Reach::of(&explicit) {
             Reach::Everything => self.close_all(out),
             Reach::Subagent(id) => self.close_lane(&Some(id), out),
-            Reach::OwnLane => self.close_own_lane(&explicit, out),
+            Reach::OwnLane => self.close_own_lane(&explicit, opener, out),
             Reach::Nothing => {}
         }
         out.push(explicit);
@@ -350,7 +380,14 @@ impl ChunkExpander {
             Some(id) => self.subagents.remove(id),
         };
         let Some(lane) = lane else { return };
-        self.by_item[lane.item.kind().index()].remove(lane.item.key());
+        let index = &mut self.by_item[lane.item.kind().index()];
+        index.remove(lane.item.key());
+        // Removal never shrinks a table, and an id-less continuation that
+        // resolves to the sole open lane scans its kind's index: a table
+        // left at its peak capacity would make each such scan O(peak). Shrink
+        // one that has become sparse (amortized O(1) per removal).
+        shrink_sparse(index);
+        shrink_sparse(&mut self.subagents);
         let owner = lane.owner;
         out.push(match lane.item {
             Item::Text { id, .. } => Event::TextMessageEnd(TextMessageEnd {
@@ -395,7 +432,12 @@ impl ChunkExpander {
     }
 
     /// The lane an explicit (non-chunk) event belongs to, for closing.
-    fn close_own_lane(&mut self, event: &Event, out: &mut Vec<Event>) {
+    fn close_own_lane(
+        &mut self,
+        event: &Event,
+        opener: impl FnOnce(&Event) -> Option<Owner>,
+        out: &mut Vec<Event>,
+    ) {
         if self.is_idle() {
             return;
         }
@@ -415,7 +457,10 @@ impl ChunkExpander {
         let assembling = named.and_then(|(kind, id)| self.by_item[kind.index()].get(id).cloned());
         let owner = match assembling {
             Some(owner) => owner,
-            None => event.subagent_run_id().cloned(),
+            None => match event.subagent_run_id() {
+                Some(tag) => Some(tag.clone()),
+                None => opener(event).unwrap_or_default(),
+            },
         };
         self.close_lane(&owner, out);
     }

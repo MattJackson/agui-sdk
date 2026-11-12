@@ -39,8 +39,10 @@
 //! middleware moves a frame through a `Value` once (middleware must see raw
 //! material, PROC-29) and the processor then enforces that `Value` in place.
 //! Chunk expansion and verification are O(1) per event with no allocation
-//! beyond the ids they track; the reducer is O(delta). Output goes into a
-//! caller-owned `Vec` so its capacity is reused across events.
+//! beyond the ids they track, apart from copying an opening chunk's metadata
+//! onto each event synthesized from it, O(metadata); the reducer is
+//! O(delta). Output goes into a caller-owned `Vec` so its capacity is reused
+//! across events.
 //!
 //! Public items here are building blocks: stable, documented, but most
 //! applications never touch them.
@@ -198,9 +200,13 @@ pub struct Limits {
     /// that grows it ends the stream. Server input admission and
     /// `validate_*` use the same limit.
     pub max_container_entries: usize,
-    /// Deepest accepted JSON nesting in one event. Events decoded from the
-    /// protobuf wire are additionally bounded at 128 levels (the codec's
-    /// stack-safe ceiling) whatever this is set to.
+    /// Deepest accepted JSON nesting in one event, clamped to 512 levels
+    /// whatever this is set to: a ceiling that is stack-safe on a 2 MiB
+    /// thread (a tokio worker's default) in an optimized build. An
+    /// unoptimized build uses far larger frames and can overflow such a
+    /// stack below 512, so keep the default (128) there or give the thread
+    /// more stack. Events decoded from the protobuf wire are additionally
+    /// bounded at 128 levels (the codec's stack-safe ceiling).
     pub max_depth: usize,
     /// JSON Patch limits for state and activity content.
     pub patch: PatchLimits,
@@ -412,6 +418,10 @@ pub struct Processor {
     /// frames) keeps under peer-chosen ids, charged with the rest (D28).
     external_bookkeeping: usize,
 }
+
+/// An enforcement verdict, with the event's known wire type when it was read
+/// (even for a rejected event: the label for its diagnostics).
+type Enforced = (Result<Option<Event>>, Option<&'static str>);
 
 /// Byte patterns that mark a frame the compatibility boundary may need to
 /// rewrite: a retired `THINKING_*` event type, or legacy binary content.
@@ -675,11 +685,11 @@ impl Processor {
         {
             self.upgrade_and_enforce(frame, reporter)
         } else {
-            let enforced = self.enforcer.enforce_event_json(frame, reporter);
+            let enforced = self.enforcer.enforce_json_typed(frame, reporter);
             // The boundary did not see this frame, but its per-run state
             // (the names it mints, the notices it gave) must still follow
             // the runs, as it does on every other path.
-            if let Ok(Some(Event::RunStarted(started))) = &enforced {
+            if let (Ok(Some(Event::RunStarted(started))), _) = &enforced {
                 self.boundary.run_started(Some(started.run_id.as_str()));
             }
             enforced
@@ -687,23 +697,22 @@ impl Processor {
         self.finish_push(enforced, reporter, out)
     }
 
-    fn upgrade_and_enforce(
-        &mut self,
-        frame: &[u8],
-        reporter: &mut Reporter,
-    ) -> Result<Option<Event>> {
+    fn upgrade_and_enforce(&mut self, frame: &[u8], reporter: &mut Reporter) -> Enforced {
         // Budgets apply while the tree is built, not after (a marker can
         // be anywhere in a frame, so this path is the peer's to choose).
-        let mut value = self.enforcer.parse_frame(frame)?;
+        let mut value = match self.enforcer.parse_frame(frame) {
+            Ok(value) => value,
+            Err(err) => return (Err(err), None),
+        };
         if !self.boundary.upgrade(&mut value, reporter) {
-            return Ok(None);
+            return (Ok(None), None);
         }
         if let Some(shims) = &self.era {
             if !shims.upgrade_event(&mut value, reporter) {
-                return Ok(None);
+                return (Ok(None), None);
             }
         }
-        self.enforcer.enforce_event_value(value, reporter)
+        self.enforcer.enforce_value_typed(value, reporter)
     }
 
     /// Middleware path: one frame that has *already* been through the
@@ -723,7 +732,7 @@ impl Processor {
         out: &mut Vec<Processed>,
     ) -> Result<()> {
         self.check_live()?;
-        let enforced = self.enforcer.enforce_event_value(frame, reporter);
+        let enforced = self.enforcer.enforce_value_typed(frame, reporter);
         self.finish_push(enforced, reporter, out)
     }
 
@@ -741,7 +750,7 @@ impl Processor {
     /// the end of the event's diagnostics budget.
     fn finish_push(
         &mut self,
-        enforced: Result<Option<Event>>,
+        (enforced, subject): Enforced,
         reporter: &mut Reporter,
         out: &mut Vec<Processed>,
     ) -> Result<()> {
@@ -757,7 +766,9 @@ impl Processor {
                 Ok(())
             }
             Err(err) => {
-                reporter.end_event(None);
+                // A rejected event's diagnostics name its type when it was
+                // read, as an accepted event's do.
+                reporter.end_event(subject);
                 Err(err)
             }
         };
@@ -774,7 +785,12 @@ impl Processor {
         out: &mut Vec<Processed>,
     ) -> Result<()> {
         self.scratch.clear();
-        self.chunks.push(event, &mut self.scratch)?;
+        let verifier = &self.verifier;
+        self.chunks.push_attributed(
+            event,
+            |explicit| verifier.opener_owner(explicit),
+            &mut self.scratch,
+        )?;
         for event in self.scratch.drain(..) {
             self.verifier.observe(&event)?;
             // What the verifier keeps under peer-chosen ids is charged to
@@ -823,7 +839,9 @@ impl Processor {
     /// processor told the requested run ([`expecting`](Self::expecting)):
     /// a complete stream on which the requested run never appeared is a
     /// `verify.identity` error (RUNIN-06). The client ends every run with
-    /// this; a host that set no expectation gets exactly `finish`.
+    /// this; a host that set no expectation gets `finish`'s result, unless
+    /// an earlier push was rejected, in which case it gets that rejection's
+    /// code (see Errors).
     ///
     /// # Errors
     ///

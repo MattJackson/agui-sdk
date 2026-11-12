@@ -677,7 +677,16 @@ impl<'de, 'o> Stream<'de, 'o> {
                         Tag::Known(name, obj)
                     }
                     None => {
-                        let name = want_name.then(|| s.to_owned());
+                        // Only a bounded preview is ever reported
+                        // (`Diagnostic::with_unknown_type`), so only that is
+                        // copied; cutting keeps an empty name empty.
+                        let name = want_name.then(|| {
+                            crate::diagnostics::preview(
+                                s,
+                                crate::diagnostics::MAX_UNKNOWN_TYPE_BYTES,
+                            )
+                            .into_owned()
+                        });
                         if !self.opts.strict && self.tag_repeats(u, depth)? {
                             // A later occurrence wins on the value path, so
                             // this verdict would depend on the walk taken.

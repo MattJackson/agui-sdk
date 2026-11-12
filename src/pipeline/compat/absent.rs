@@ -198,8 +198,10 @@ pub(super) fn has_event_null(map: &Map<String, Value>, kind: Kind) -> bool {
         || (!kind.is_subagent_lifecycle() && is_null(map, Rule::SubagentRunId.field()))
 }
 
-/// Applies the rules for one received event, nested run input included.
-/// The content parts inside messages are handled by the media walk.
+/// Applies the event-level rules for one received event; the nested run
+/// input's rules run separately ([`input`], from the boundary's
+/// `input_content`). The content parts inside messages are handled by the
+/// media walk.
 pub(super) fn event(map: &mut Map<String, Value>, kind: Kind, notes: &mut Notes<'_, '_>) {
     let root = Path::ROOT;
     take(map, Rule::RawEvent, &root, notes);

@@ -73,6 +73,16 @@ use shape::{Shape, Union};
 use stream::{RootTag, Rooted, Stream};
 use tree::{Tree, Verdict};
 
+/// Hard ceiling on the JSON nesting enforcement walks, whatever
+/// [`Limits::max_depth`] says: the byte walk and the value walk recurse once
+/// per level, so a raised limit must not let a peer frame exhaust the stack
+/// (the patch engine and the protobuf codec have ceilings of their own).
+/// An optimized build walks about 1,500 levels on a 2 MiB thread stack, so
+/// 512 leaves room for the caller's own frames. An unoptimized build
+/// overflows that stack near 200 levels, so the ceiling protects release
+/// builds only; debug builds rely on the 128 default.
+const JSON_DEPTH_CEILING: usize = 512;
+
 /// The enforcement stage.
 #[derive(Debug, Clone)]
 pub struct Enforcer {
@@ -119,7 +129,7 @@ impl Enforcer {
             strict: false,
             null_as_absent: true,
             max_entries: self.limits.max_container_entries,
-            max_depth: self.limits.max_depth,
+            max_depth: self.limits.max_depth.min(JSON_DEPTH_CEILING),
             max_findings: self.limits.max_diagnostics_per_event,
         }
     }
@@ -141,17 +151,24 @@ impl Enforcer {
         frame: &[u8],
         reporter: &mut Reporter,
     ) -> Result<Option<Event>> {
-        self.check_frame_size(frame)?;
+        self.enforce_json_typed(frame, reporter).0
+    }
+
+    /// [`enforce_event_json`](Self::enforce_event_json), with the event's
+    /// known wire type when it was read, even if the event was then
+    /// rejected (the label for the rest of its diagnostics).
+    pub(crate) fn enforce_json_typed(
+        &self,
+        frame: &[u8],
+        reporter: &mut Reporter,
+    ) -> (Result<Option<Event>>, Option<&'static str>) {
+        if let Err(err) = self.check_frame_size(frame) {
+            return (Err(err), None);
+        }
         let opts = self.options();
         let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome = event_from_bytes::<Event>(frame, &opts, &mut findings);
-        flush(
-            findings,
-            reporter,
-            Scope::Event,
-            outcome.as_ref().ok().and_then(|o| o.1),
-        );
-        outcome.map(|o| o.0).map_err(event_error)
+        finish_event(outcome, findings, reporter)
     }
 
     /// Enforces one event that middleware produced, consuming the `Value`
@@ -167,16 +184,21 @@ impl Enforcer {
         frame: Value,
         reporter: &mut Reporter,
     ) -> Result<Option<Event>> {
+        self.enforce_value_typed(frame, reporter).0
+    }
+
+    /// [`enforce_event_value`](Self::enforce_event_value), with the event's
+    /// known wire type as [`enforce_json_typed`](Self::enforce_json_typed)
+    /// gives it.
+    pub(crate) fn enforce_value_typed(
+        &self,
+        frame: Value,
+        reporter: &mut Reporter,
+    ) -> (Result<Option<Event>>, Option<&'static str>) {
         let opts = self.options();
         let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome = event_from_value::<Event>(frame, &opts, &mut findings);
-        flush(
-            findings,
-            reporter,
-            Scope::Event,
-            outcome.as_ref().ok().and_then(|o| o.1),
-        );
-        outcome.map(|o| o.0).map_err(event_error)
+        finish_event(outcome, findings, reporter)
     }
 
     /// Client side, typed input: a [`RunAgentInput`] carries no unknown
@@ -394,6 +416,7 @@ fn event_walk<T: DeserializeOwned>(
             RootTag::Unknown => (Shape::Union(event_union()), None),
             RootTag::Reroute => return Ok((Rooted::Reroute, None)),
         };
+        st.findings.subject = subject;
         Ok((st.run::<T>(shape)?, subject))
     }
 }
@@ -442,6 +465,7 @@ pub(crate) fn event_from_value<T: DeserializeOwned>(
         Some(Value::String(t)) if !t.is_empty() => event_union().variant(t).map(|v| v.0),
         Some(_) => return Err(Fault::not_an_event("`type` is not a non-empty string")),
     };
+    findings.subject = subject;
     match Tree::new(opts, findings).root(Shape::Union(event_union()), &mut frame)? {
         Verdict::Keep => Ok((
             Some(
@@ -524,7 +548,11 @@ fn root_type(v: &Value) -> Option<&str> {
 
 fn report_root_drop(findings: &mut Findings, removal: Removal, event_type: Option<&str>) {
     if removal.code == DiagnosticCode::UnknownEvent && findings.builds_next() {
-        findings.unknown_type = event_type.map(str::to_owned);
+        // Cut as `Diagnostic::with_unknown_type` cuts it (a preview of a
+        // preview is unchanged), so a long name is not copied whole.
+        findings.unknown_type = event_type.map(|t| {
+            crate::diagnostics::preview(t, crate::diagnostics::MAX_UNKNOWN_TYPE_BYTES).into_owned()
+        });
     }
     findings.push(removal.code, &Path::ROOT, || {
         match (removal.code, event_type) {
@@ -537,6 +565,21 @@ fn report_root_drop(findings: &mut Findings, removal: Removal, event_type: Optio
             _ => removal.message(),
         }
     });
+}
+
+/// Reports an event's findings, labelled with its type when that was read
+/// (a rejected event's too), and returns the verdict with that type.
+fn finish_event(
+    outcome: std::result::Result<EventOutcome<Event>, Fault>,
+    findings: Findings,
+    reporter: &mut Reporter,
+) -> (Result<Option<Event>>, Option<&'static str>) {
+    let subject = match &outcome {
+        Ok(o) => o.1,
+        Err(_) => findings.subject,
+    };
+    flush(findings, reporter, Scope::Event, subject);
+    (outcome.map(|o| o.0).map_err(event_error), subject)
 }
 
 /// Hands findings to the reporter, then the summary for any beyond the cap.
