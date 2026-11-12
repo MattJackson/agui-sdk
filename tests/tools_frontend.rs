@@ -431,6 +431,47 @@ fn absorbing_another_runs_outcome_is_refused() {
 
 /// covers: TOOL-33
 #[test]
+fn absorbing_another_threads_outcome_with_the_same_run_id_is_refused() {
+    // Run ids are the caller's to choose, so two threads can share one: the
+    // thread id must match as well.
+    let (mut t, _) = thread(calling("r1", &["tc1"], None));
+    let foreign: Vec<Value> = calling("r1", &["tc9"], None)
+        .into_iter()
+        .map(|mut frame| {
+            if frame.get("threadId").is_some() {
+                frame["threadId"] = json!("t2");
+            }
+            frame
+        })
+        .collect();
+    let other = {
+        let transport = mock(foreign);
+        let client = AgentClient::with_transport(transport)
+            .diagnostic_sink(NullSink)
+            .build()
+            .unwrap();
+        let mut o = client.thread_with_id("t2");
+        block_on(std::future::IntoFuture::into_future(
+            o.run(RunRequest::new().run_id("r1")).unwrap(),
+        ))
+    };
+    assert!(other.is_ok(), "the foreign run completed");
+    let before = (t.messages().len(), t.pending_tool_calls().len());
+    let handle = t.run(RunRequest::new().run_id("r1")).unwrap();
+    assert_eq!(
+        t.absorb(&other).unwrap_err().code(),
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        (t.messages().len(), t.pending_tool_calls().len()),
+        before,
+        "the refused outcome left the thread unchanged"
+    );
+    drop(handle);
+}
+
+/// covers: TOOL-33
+#[test]
 fn answering_the_middle_call_leaves_the_others_pending_and_it_unanswerable() {
     let (mut t, _) = pending_thread(&["a", "b", "c"], vec![]);
     let b = ToolCallId::from("b");
