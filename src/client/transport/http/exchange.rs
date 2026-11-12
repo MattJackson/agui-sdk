@@ -671,9 +671,10 @@ fn dropped(error: &hyper::Error) -> bool {
 }
 
 pin_project_lite::pin_project! {
-    /// The frame source over an accepted response body.
-    struct BodySource {
-        body: Incoming,
+    /// The frame source over an accepted response body (`B` is generic for
+    /// the unit tests; the transport reads hyper's `Incoming`).
+    struct BodySource<B> {
+        body: B,
         decoder: Decoder,
         cancel: CancelToken,
         cancelled: Cancelled,
@@ -691,7 +692,10 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl FrameSource for BodySource {
+impl<B> FrameSource for BodySource<B>
+where
+    B: http_body::Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + 'static,
+{
     fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame>>> {
         let mut this = self.project();
         if *this.done {
@@ -701,6 +705,11 @@ impl FrameSource for BodySource {
             *done = true;
             Poll::Ready(Some(Err(error)))
         };
+        // Body chunks read in this call without a frame coming of them: a
+        // peer that keeps the body ready with comments, ignored fields or
+        // dropped protobuf arms yields to the executor after
+        // `FRAMES_PER_POLL` of them.
+        let mut chunks = 0usize;
         loop {
             if this.cancel.is_cancelled() {
                 return fail(this.done, cancelled_error());
@@ -709,6 +718,10 @@ impl FrameSource for BodySource {
                 Ok(Some(frame)) => return Poll::Ready(Some(Ok(frame))),
                 Ok(None) => {}
                 Err(e) => return fail(this.done, e),
+            }
+            if chunks == crate::client::run::FRAMES_PER_POLL {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
             if *this.eof {
                 *this.done = true;
@@ -732,6 +745,7 @@ impl FrameSource for BodySource {
                             this.decoder.push(Chunk::from_bytes(data));
                         }
                     }
+                    chunks += 1;
                     continue;
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -780,5 +794,71 @@ impl FrameSource for BodySource {
             }
             return Poll::Pending;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::NullSink;
+
+    /// A body that always has another chunk ready, then ends: a fast peer
+    /// keeping hyper's one-chunk slot refilled.
+    struct Flood(usize);
+
+    impl http_body::Body for Flood {
+        type Data = Bytes;
+        type Error = hyper::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<http_body::Frame<Bytes>, hyper::Error>>> {
+            if self.0 == 0 {
+                return Poll::Ready(None);
+            }
+            self.0 -= 1;
+            Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from_static(
+                b": keep-alive\n",
+            )))))
+        }
+    }
+
+    struct Noop;
+
+    impl std::task::Wake for Noop {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[test]
+    fn a_flood_of_chunks_without_frames_yields_to_the_executor() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let cancel = CancelToken::new();
+        let now = Instant::now();
+        let mut source = Box::pin(BodySource {
+            body: Flood(100_000),
+            decoder: Decoder::Sse(SseDecoder::new(1024)),
+            cancelled: cancel.cancelled(),
+            cancel,
+            idle_limit: None,
+            last_read: now,
+            idle_timer: tokio::time::sleep_until(now + NEVER),
+            total_limit: None,
+            total_timer: tokio::time::sleep_until(now + NEVER),
+            deadline: now + NEVER,
+            diagnostics: Arc::new(NullSink),
+            eof: false,
+            done: false,
+        });
+        let waker = std::task::Waker::from(Arc::new(Noop));
+        let mut cx = Context::from_waker(&waker);
+        assert!(
+            source.as_mut().poll_frame(&mut cx).is_pending(),
+            "one poll read the whole flood without yielding"
+        );
     }
 }
