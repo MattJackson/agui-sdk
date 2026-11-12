@@ -377,6 +377,12 @@ jobs:
             lane: native-tls-floor
             rust: "1.80"
             exclude_feature: ""
+          # The project's original target toolchain, kept as a fixed
+          # checkpoint between the floor and stable.
+          - name: every feature on Rust 1.88
+            lane: rust-1-88
+            rust: "1.88"
+            exclude_feature: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
