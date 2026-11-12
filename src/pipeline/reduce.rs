@@ -221,6 +221,17 @@ fn is_content_delta(event: &Event) -> bool {
     )
 }
 
+/// The events after which the remembered delta targets
+/// ([`Reducer::message_target`], [`Reducer::args_target`]) still hold: the
+/// deltas that only append to a held message or call. Every other event may
+/// add, move, replace or drop messages and calls, so it forgets them.
+fn keeps_hot_targets(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::TextMessageContent(_) | Event::ReasoningMessageContent(_) | Event::ToolCallArgs(_)
+    )
+}
+
 /// Where a tool call lives: `messages[message].tool_calls[position]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CallSlot {
@@ -315,6 +326,14 @@ pub struct Reducer {
     index: HashMap<MessageId, usize>,
     /// Tool call id → where the call lives (the first holder, by position).
     calls: HashMap<ToolCallId, CallSlot>,
+    /// The last content delta's target: `index`'s own key and the position
+    /// it maps to, so a run of deltas to one message hashes its id once.
+    /// Cleared by every event that is not a content delta (see
+    /// [`keeps_hot_targets`]): only those leave `index` and `messages` as
+    /// they were.
+    hot_message: Option<(MessageId, usize)>,
+    /// As `hot_message`, for the last `TOOL_CALL_ARGS` target in `calls`.
+    hot_call: Option<(ToolCallId, CallSlot)>,
     /// Every holder `(message, position)` of a call id that two or more held
     /// calls share, so the mapping can fall back to the next holder when the
     /// first one is replaced or dropped. Empty in the normal case.
@@ -423,6 +442,8 @@ impl Reducer {
             state: StateSlot::owned(state),
             index: HashMap::new(),
             calls: HashMap::new(),
+            hot_message: None,
+            hot_call: None,
             call_dups: HashMap::new(),
             limits,
             activity_budgets: ActivityBudgets::default(),
@@ -563,6 +584,10 @@ impl Reducer {
 
     fn reduce(&mut self, shared: &Arc<Event>, reporter: &mut Reporter) -> Changes {
         let mut changes = Changes::default();
+        if !keeps_hot_targets(shared) {
+            self.hot_message = None;
+            self.hot_call = None;
+        }
         match &**shared {
             Event::RunStarted(_) => self.begin_run(),
             Event::RunFinished(e) => {
@@ -694,7 +719,7 @@ impl Reducer {
                 changes.message = self.extend_call(slot, "", &e.metadata);
             }
             Event::ToolCallArgs(e) => {
-                if let Some(&slot) = self.calls.get(&e.tool_call_id) {
+                if let Some(slot) = self.args_target(&e.tool_call_id) {
                     changes.message = self.extend_call(slot, &e.delta, &e.metadata);
                 } else {
                     report_missing_target(reporter, EventType::ToolCallArgs, "/toolCallId");
@@ -900,6 +925,8 @@ impl Reducer {
     // ----- indices -----
 
     fn rebuild_indices(&mut self) {
+        self.hot_message = None;
+        self.hot_call = None;
         self.index.clear();
         self.minted.clear();
         self.calls.clear();
@@ -1096,7 +1123,7 @@ impl Reducer {
         reporter: &mut Reporter,
         event_type: EventType,
     ) -> Option<MessageId> {
-        let Some(&i) = self.index.get(id) else {
+        let Some(i) = self.message_target(id) else {
             report_missing_target(reporter, event_type, "/messageId");
             return None;
         };
@@ -1107,6 +1134,36 @@ impl Reducer {
         let n = merge_into(metadata_mut(message), metadata);
         self.charge_at(i, n.saturating_add(signed(delta.len())));
         Some(id.clone())
+    }
+
+    /// Where the held message `id` is: the last delta's target when it is
+    /// the same message (an `Arc` pointer compare for a repeated id, no
+    /// hashing), else `index`, remembered for the next delta.
+    fn message_target(&mut self, id: &MessageId) -> Option<usize> {
+        if let Some((hot, i)) = &self.hot_message {
+            if hot == id {
+                debug_assert_eq!(self.index.get(id), Some(i), "stale hot message");
+                return Some(*i);
+            }
+        }
+        let (key, &i) = self.index.get_key_value(id)?;
+        // `index`'s own key: the cache keeps no id alive that the history
+        // does not already hold (D25).
+        self.hot_message = Some((key.clone(), i));
+        Some(i)
+    }
+
+    /// [`message_target`](Self::message_target) for `TOOL_CALL_ARGS`.
+    fn args_target(&mut self, id: &ToolCallId) -> Option<CallSlot> {
+        if let Some((hot, slot)) = &self.hot_call {
+            if hot == id {
+                debug_assert_eq!(self.calls.get(id), Some(slot), "stale hot call");
+                return Some(*slot);
+            }
+        }
+        let (key, &slot) = self.calls.get_key_value(id)?;
+        self.hot_call = Some((key.clone(), slot));
+        Some(slot)
     }
 
     // ----- tool calls -----

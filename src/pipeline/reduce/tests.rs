@@ -1287,3 +1287,60 @@ fn run_ids_stay_the_history_tail_after_dropping_a_duplicate() {
     }
     assert_eq!(h.r.messages().len(), 7);
 }
+
+/// The remembered delta target follows the history: a snapshot that moves
+/// or drops the message, a newly pushed message and a renamed carrier all
+/// make the next delta look its target up again.
+#[test]
+fn remembered_delta_targets_follow_moves_and_drops() {
+    let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "a"}));
+    h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "1"}));
+    h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "2"}));
+    assert!(h.r.hot_message.is_some());
+    // Reordered by a snapshot: `a` moves to position 1.
+    h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "b", "role": "user", "content": "u"},
+        {"id": "a", "role": "assistant", "content": "12"},
+    ]}));
+    assert!(h.r.hot_message.is_none());
+    h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "3"}));
+    h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "4"}));
+    // Dropped by a snapshot: the next delta has no target.
+    h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "b", "role": "user", "content": "u"},
+    ]}));
+    let c = h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "5"}));
+    assert_eq!(c.message, None);
+    assert_eq!(h.codes(), ["stream.missing_target"]);
+    assert_eq!(
+        h.history(),
+        json!([{"id": "b", "role": "user", "content": "u"}])
+    );
+
+    // Arguments: the call's slot moves when a snapshot restates its holder.
+    h.push(json!({"type": "TOOL_CALL_START", "toolCallId": "c", "toolCallName": "f", "parentMessageId": "b"}));
+    h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": "{"}));
+    h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": "\"x\""}));
+    assert!(h.r.hot_call.is_some());
+    let held = h.history();
+    let parent = held.as_array().unwrap().last().unwrap().clone();
+    h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "z", "role": "user", "content": "first"},
+        {"id": "b", "role": "user", "content": "u"},
+        parent,
+    ]}));
+    h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": ":1"}));
+    h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": "}"}));
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c"}));
+    let held = h.history();
+    let calls: Vec<&Value> = held
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m.get("toolCalls"))
+        .collect();
+    assert_eq!(calls.len(), 1, "{held}");
+    assert_eq!(calls[0][0]["function"]["arguments"], "{\"x\":1}");
+    assert!(h.codes().is_empty());
+}

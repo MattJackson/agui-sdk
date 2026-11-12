@@ -184,6 +184,11 @@ struct Tracker<K> {
     /// Charged per subagent-owned entry beyond its slot and owner: a chunk
     /// lane's share.
     extra: usize,
+    /// The open item the last non-closing continuation found, as `items`'
+    /// own key with its owner: a run of deltas to one item hashes its id
+    /// once. Only set for an open item; forgotten by every `start`, close
+    /// and `reset`, the only changes `items` sees.
+    hot: Option<(K, Owner)>,
 }
 
 impl<K> Default for Tracker<K> {
@@ -199,6 +204,7 @@ impl<K> Tracker<K> {
             open: 0,
             bytes: 0,
             extra,
+            hot: None,
         }
     }
 }
@@ -222,6 +228,7 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         crate::pipeline::reset_map(&mut self.items);
         self.open = 0;
         self.bytes = 0;
+        self.hot = None;
     }
 
     fn owner_of(&self, id: &K) -> Option<&Owner> {
@@ -237,6 +244,7 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         owner: &Owner,
         id_bytes: usize,
     ) -> std::result::Result<(), Refusal> {
+        self.hot = None;
         match self.items.get_mut(id) {
             Some(entry) if entry.open => Err(Refusal::AlreadyOpen),
             Some(entry) if entry.owner != *owner => Err(Refusal::Owner(entry.owner.clone())),
@@ -272,6 +280,20 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         tag: Option<&SubagentRunId>,
         close: bool,
     ) -> std::result::Result<(), Refusal> {
+        if !close {
+            if let Some((hot, owner)) = &self.hot {
+                if hot == id && tag.map_or(true, |tag| owner.as_ref() == Some(tag)) {
+                    debug_assert!(
+                        self.items
+                            .get(id)
+                            .is_some_and(|e| e.open && e.owner == *owner),
+                        "stale hot item"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        self.hot = None;
         let Some(entry) = self.items.get_mut(id) else {
             return Err(Refusal::NotOpen);
         };
@@ -286,6 +308,15 @@ impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
         if close {
             entry.open = false;
             self.open -= 1;
+        } else {
+            // `items`' own key (looked up once more, on the first delta of a
+            // run only): the cache keeps no id alive that the table does not
+            // hold and charge already (D25).
+            let owner = entry.owner.clone();
+            self.hot = self
+                .items
+                .get_key_value(id)
+                .map(|(key, _)| (key.clone(), owner));
         }
         Ok(())
     }

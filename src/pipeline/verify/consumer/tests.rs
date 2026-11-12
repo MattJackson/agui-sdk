@@ -372,3 +372,44 @@ fn known_messages_cannot_be_reminted_but_may_be_reopened() {
     v.observe(&result("fresh")).unwrap();
     assert!(v.observe(&result("fresh")).is_err());
 }
+
+/// The remembered delta target never lets a continuation through that the
+/// table would refuse: after its item closed, under another owner, or in a
+/// later run.
+#[test]
+fn a_remembered_delta_target_is_forgotten_when_its_item_changes() {
+    let content = |owner: Option<&str>| {
+        let mut e = json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "m", "delta": "x"});
+        if let Some(owner) = owner {
+            e["subagentRunId"] = json!(owner);
+        }
+        ev(e)
+    };
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    v.observe(&ev(
+        json!({"type": "SUBAGENT_STARTED", "subagentRunId": "s", "name": "n"}),
+    ))
+    .ok();
+    v.observe(&ev(json!({"type": "TEXT_MESSAGE_START", "messageId": "m"})))
+        .unwrap();
+    v.observe(&content(None)).unwrap();
+    v.observe(&content(None)).unwrap();
+    assert!(v.state.text.hot.is_some(), "a repeated delta is remembered");
+    // Another owner's continuation is refused although `m` is remembered.
+    assert!(v.observe(&content(Some("s"))).is_err());
+    v.observe(&content(None)).unwrap();
+    v.observe(&ev(json!({"type": "TEXT_MESSAGE_END", "messageId": "m"})))
+        .unwrap();
+    assert!(v.state.text.hot.is_none(), "a close forgets it");
+    assert!(v.observe(&content(None)).is_err(), "closed: refused");
+    // Reopened, remembered, then the run ends: the next run does not know `m`.
+    v.observe(&ev(json!({"type": "TEXT_MESSAGE_START", "messageId": "m"})))
+        .unwrap();
+    v.observe(&content(None)).unwrap();
+    v.observe(&ev(json!({"type": "RUN_ERROR", "message": "boom"})))
+        .unwrap();
+    assert!(v.state.text.hot.is_none(), "a reset forgets it");
+    v.observe(&started("r2")).unwrap();
+    assert!(v.observe(&content(None)).is_err(), "new run: refused");
+}
