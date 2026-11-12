@@ -75,10 +75,13 @@
 //!
 //! # Cost
 //!
-//! O(1) per accepted event: every check is a hash lookup keyed by an id (an `Arc<str>`
-//! newtype, so a key is a reference-count increment). Content events allocate
-//! nothing; openers allocate only when a table grows. Names are compared by
-//! fingerprint, never stored.
+//! O(1) per content event: every check is a hash lookup keyed by an id (an
+//! `Arc<str>` newtype, so a key is a reference-count increment), and content
+//! events allocate nothing. Openers are amortized O(1), allocating only when
+//! a table grows. `MESSAGES_SNAPSHOT`, an echoed `RUN_STARTED.input` and a
+//! `SUBAGENT_ERROR` with items still open are linear in the payload or in
+//! the run's open items. Tool and text-message names are compared by
+//! fingerprint; step names are stored.
 
 use std::collections::{HashMap, HashSet};
 
@@ -205,8 +208,11 @@ pub struct ProducerVerifier {
 }
 
 impl ProducerVerifier {
-    /// A verifier for one response stream, checking stream-local rules only
-    /// (no identity or history checks). For tests of stream-local rules.
+    /// A verifier for one response stream with no request: stream identity
+    /// (one thread, no reused `runId`, matching terminals, BASIC-15 within
+    /// the stream) is still checked, but nothing is checked against an
+    /// input's ids, history or frontend tools. For tests of stream-local
+    /// rules.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -259,8 +265,9 @@ impl ProducerVerifier {
         self.state.closers(keep, out);
     }
 
-    /// Frontend tool calls started and not answered in this run, in order
-    /// (for `pendingToolCallIds`, TOOL-29..TOOL-31).
+    /// Tool calls started and not answered in this run, in the order made
+    /// (for `pendingToolCallIds`, TOOL-29..TOOL-31); backend and frontend
+    /// alike.
     #[must_use]
     pub fn unanswered_tool_calls(&self) -> Vec<crate::ids::ToolCallId> {
         self.state

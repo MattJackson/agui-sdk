@@ -3,7 +3,8 @@
 //! [`ConsumerVerifier`] runs in the client pipeline after chunk expansion
 //! (PROC-28). It rejects every producer violation a consumer must detect:
 //! a first event other than `RUN_STARTED`/`RUN_ERROR` (LIFE-03), events after a
-//! closed run other than a new `RUN_STARTED` or late `RUN_ERROR` (LIFE-42),
+//! finished run other than a new `RUN_STARTED` or a late `RUN_ERROR`, or after
+//! an errored run other than `RUN_STARTED` (LIFE-41, LIFE-42),
 //! nested runs (LIFE-44), unbalanced steps (LIFE-53), triad discipline for
 //! text, tool calls and reasoning (TEXT-11, TOOL-37, REAS-08..REAS-13), owner
 //! mismatches (SUB-24) and unannounced subagent terminals (SUB-36). It accepts
@@ -15,7 +16,9 @@
 //! stream (ARCH-04). A refused event leaves its state unchanged, so the runner
 //! can report it and continue or fail cleanly.
 //!
-//! Both are O(1) per event: open sets are hash sets of `Arc<str>` ids.
+//! Both are O(1) per content event: open sets are hash sets of `Arc<str>`
+//! ids. Snapshots and the producer's echoed input and `SUBAGENT_ERROR` are
+//! linear in their payload or the run's open items.
 
 mod consumer;
 mod producer;
