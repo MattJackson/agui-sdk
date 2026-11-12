@@ -1801,8 +1801,8 @@ impl Reducer {
     /// Releases the storage of history tables left far larger than what they
     /// hold, after messages were dropped: the slots and index entries
     /// `ITEM_OVERHEAD` charged for are credited with the message, so they
-    /// must not stay resident. O(len), and only once the tables are a
-    /// quarter full, so it amortises over the drops that emptied them.
+    /// must not stay resident. O(len), and only once a table is under a
+    /// quarter full, so it amortises over the drops that emptied it.
     fn release_tables(&mut self) {
         use super::oversized;
         if oversized(self.messages.capacity(), self.messages.len()) {
