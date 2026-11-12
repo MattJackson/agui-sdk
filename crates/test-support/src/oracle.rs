@@ -871,7 +871,11 @@ mod tests {
         };
         let observed = observe_client_blocking(&fixture, Delivery::Frames);
         let request = observed.request.unwrap_or(Value::Null);
-        assert_eq!(request.pointer("/tools/0/name"), Some(&json!("lookup")), "{request}");
+        assert_eq!(
+            request.pointer("/tools/0/name"),
+            Some(&json!("lookup")),
+            "{request}"
+        );
 
         // No `input.tools`, no `tools` member.
         let fixture = StreamFixture {
@@ -883,7 +887,10 @@ mod tests {
         let request = observed.request.unwrap_or(Value::Null);
         assert!(request.get("tools").is_none(), "{request}");
 
-        for bad in [json!({"tools": [{"name": 1}]}), json!({"tools": {"name": "x"}})] {
+        for bad in [
+            json!({"tools": [{"name": 1}]}),
+            json!({"tools": {"name": "x"}}),
+        ] {
             let fixture = StreamFixture {
                 name: "bad-tools".to_owned(),
                 path: std::path::PathBuf::new(),
