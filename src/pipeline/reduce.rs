@@ -38,7 +38,9 @@
 //! become part of the history (`MESSAGES_SNAPSHOT` messages, tool result
 //! content, activity content, metadata) and operation values patched into a
 //! document are copied once, because [`Reducer::messages`] lends `&[Message]`
-//! while the shared event keeps its own payload for the application.
+//! while the shared event keeps its own payload for the application. So are
+//! the run outcome's `RUN_FINISHED` interrupts and `RUN_FINISHED` or
+//! `RUN_ERROR` usage, held until the next `RUN_STARTED`.
 //!
 //! The `Arc` itself is recycled on the streaming hot path. After a content
 //! delta (`TEXT_MESSAGE_CONTENT`, `REASONING_MESSAGE_CONTENT`,
@@ -558,8 +560,10 @@ impl Reducer {
     }
 
     /// Applies one verified event, taking ownership of it. Returns the event,
-    /// now shared with the reducer, and what it changed. No payload is cloned
-    /// here (see the module docs for when a copy-on-write copy can happen).
+    /// now shared with the reducer, and what it changed. The event itself is
+    /// not cloned; the payloads the module docs list (what becomes history,
+    /// patched values, a run's interrupts and usage) are copied once (see
+    /// the module docs also for when a copy-on-write copy can happen).
     ///
     /// The returned `Arc` reuses the previous content delta's allocation
     /// when the application has already dropped that update, so a stream of
