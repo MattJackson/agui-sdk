@@ -24,10 +24,13 @@
 //! * **Items.** Text messages, tool calls, reasoning messages, reasoning spans
 //!   and steps open once, continue and close only while open, and are all
 //!   closed by `RUN_FINISHED` (STRM-01..STRM-03, REAS-02..REAS-04,
-//!   LIFE-49..LIFE-51, LIFE-12). Within its run, a closed message or call may
-//!   reopen only with a `START` that agrees with it (TEXT-05, TEXT-06,
-//!   TOOL-07). A message id is used by one message in the thread, history and
-//!   earlier runs included (BASIC-15).
+//!   LIFE-49..LIFE-51, LIFE-12). A closed message or call may reopen only
+//!   with a `START` that agrees with it (TEXT-05, TEXT-06, TOOL-07): within
+//!   its run on owner, role, name and parent; a text or reasoning message of
+//!   the input history or a `MESSAGES_SNAPSHOT` on its kind, owner and role;
+//!   a message of an earlier run on its kind, as its tracking has reset. A
+//!   message id is used by one message in the thread, history and earlier
+//!   runs included (BASIC-15).
 //! * **Chunks.** The shorthand is tracked in lanes, one per owner, exactly as
 //!   the consumer's chunk expander tracks it, so what this verifier accepts
 //!   expands into a stream the consumer accepts. First chunks carry their
@@ -306,6 +309,34 @@ impl MessageKind {
     }
 }
 
+/// A text or reasoning message the input history or a `MESSAGES_SNAPSHOT`
+/// holds: what a reopening `START` must agree with (TEXT-06), and the owner
+/// a tool call naming it as parent inherits (SUB-26).
+#[derive(Debug)]
+struct Held {
+    owner: Owner,
+    /// `None`: a reasoning message.
+    role: Option<TextMessageRole>,
+}
+
+impl Held {
+    /// The held text or reasoning message `message` is, if it is one.
+    fn of(message: &Message) -> Option<Held> {
+        let role = match message {
+            Message::Assistant(_) => Some(TextMessageRole::Assistant),
+            Message::User(_) => Some(TextMessageRole::User),
+            Message::System(_) => Some(TextMessageRole::System),
+            Message::Developer(_) => Some(TextMessageRole::Developer),
+            Message::Reasoning(_) => None,
+            _ => return None,
+        };
+        Some(Held {
+            owner: message.subagent_run_id().cloned(),
+            role,
+        })
+    }
+}
+
 /// One text message, reasoning message or reasoning span.
 #[derive(Debug)]
 struct Item {
@@ -414,6 +445,8 @@ struct ProducerState {
 
     /// Every message id used in the thread.
     messages: HashMap<MessageId, MessageKind>,
+    /// Text and reasoning messages of the history and of snapshots.
+    held: HashMap<MessageId, Held>,
     text: HashMap<MessageId, Item>,
     reasoning: HashMap<MessageId, Item>,
     spans: HashMap<MessageId, Item>,
@@ -463,6 +496,7 @@ impl Default for ProducerState {
             frontend: HashSet::new(),
             seq: 0,
             messages: HashMap::new(),
+            held: HashMap::new(),
             text: HashMap::new(),
             reasoning: HashMap::new(),
             spans: HashMap::new(),
@@ -760,6 +794,9 @@ impl ProducerState {
             self.messages
                 .entry(message.id().clone())
                 .or_insert(MessageKind::History);
+            if let Some(held) = Held::of(message) {
+                self.held.entry(message.id().clone()).or_insert(held);
+            }
             if let Message::Activity(activity) = message {
                 self.activity
                     .entry(activity.id.clone())
@@ -1269,6 +1306,57 @@ impl ProducerState {
         }
     }
 
+    /// An opener for `id`, which this run does not track: a reopening of a
+    /// message the thread holds when it is one of the opener's kind (a text
+    /// message for `role: Some`, else a reasoning message), else a new
+    /// message (BASIC-15). A message from an earlier run reopens freely (its
+    /// tracking has reset); one from the history or a snapshot agrees with
+    /// its owner and role (TEXT-06, SUB-18).
+    fn check_untracked_opener(
+        &self,
+        id: &MessageId,
+        tag: &Owner,
+        role: Option<Option<TextMessageRole>>,
+        event_type: &str,
+    ) -> Verdict {
+        let text = role.is_some();
+        match self.messages.get(id) {
+            Some(MessageKind::Text) if text => Ok(()),
+            Some(MessageKind::Reasoning) if !text => Ok(()),
+            Some(MessageKind::History | MessageKind::Snapshot) => match self.held.get(id) {
+                Some(held) if held.role.is_some() == text => {
+                    if held.owner != *tag {
+                        return refuse(
+                            ProducerRule::OwnerMismatch,
+                            format!(
+                                "{event_type} reopens message '{id}' under {}, but it belongs to \
+                                 {} (TEXT-06, SUB-18)",
+                                owner_text(tag),
+                                owner_text(&held.owner)
+                            ),
+                        );
+                    }
+                    if let (Some(Some(role)), Some(had)) = (role, held.role) {
+                        if role != had {
+                            return refuse(
+                                ProducerRule::OwnerMismatch,
+                                format!(
+                                    "{event_type} reopens message '{id}' as role '{}', but it is \
+                                     '{}' (TEXT-06)",
+                                    role_text(role),
+                                    role_text(had)
+                                ),
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+                _ => self.check_new_message(id, event_type),
+            },
+            _ => self.check_new_message(id, event_type),
+        }
+    }
+
     fn text_start(&mut self, e: &crate::text::TextMessageStart, tag: &Owner) -> Verdict {
         let role = e.role.unwrap_or(TextMessageRole::Assistant);
         let name = e.name.as_deref().map(fingerprint);
@@ -1359,7 +1447,7 @@ impl ProducerState {
                 }
                 Ok(())
             }
-            None => self.check_new_message(id, event_type),
+            None => self.check_untracked_opener(id, tag, Some(role), event_type),
         }
     }
 
@@ -1404,7 +1492,7 @@ impl ProducerState {
                 ),
             ),
             Some(_) => Ok(()),
-            None => self.check_new_message(id, event_type),
+            None => self.check_untracked_opener(id, tag, None, event_type),
         }
     }
 
@@ -2241,6 +2329,14 @@ impl ProducerState {
             self.messages
                 .entry(message.id().clone())
                 .or_insert(MessageKind::Snapshot);
+            match Held::of(message) {
+                Some(held) => {
+                    self.held.insert(message.id().clone(), held);
+                }
+                None => {
+                    self.held.remove(message.id());
+                }
+            }
             if let Message::Activity(activity) = message {
                 self.activity
                     .insert(activity.id.clone(), activity.subagent_run_id.clone());
@@ -2455,6 +2551,83 @@ mod tests {
         let err = v.check(&delta(Some("A"))).unwrap_err();
         assert_eq!(err.rule, ProducerRule::OwnerMismatch);
         v.check(&delta(None)).unwrap();
+    }
+
+    fn input(messages: serde_json::Value) -> RunAgentInput {
+        serde_json::from_value(serde_json::json!({
+            "threadId": "t", "runId": "r", "messages": messages,
+            "tools": [], "context": [], "state": {}, "forwardedProps": {}
+        }))
+        .unwrap()
+    }
+
+    /// text-messages.mdx: a producer MAY reopen a held message, the input
+    /// history's, a snapshot's or an earlier run's, and the message
+    /// continues; only a message of another kind keeps the id (BASIC-15).
+    #[test]
+    fn a_held_message_reopens_across_runs_history_and_snapshots() {
+        use serde_json::json;
+        let history = json!([
+            {"id": "m1", "role": "assistant", "content": "hi"},
+            {"id": "z1", "role": "reasoning", "content": "hmm"},
+            {"id": "t1", "role": "tool", "content": "ok", "toolCallId": "c0"}
+        ]);
+        let mut v = ProducerVerifier::for_input(&input(history.clone()));
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+                json!({"type": "REASONING_MESSAGE_START", "messageId": "z1", "role": "reasoning"}),
+                json!({"type": "REASONING_MESSAGE_END", "messageId": "z1"}),
+                json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                    {"id": "s1", "role": "assistant", "content": "x"}
+                ]}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "s1"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "s1"}),
+            ],
+        );
+        // A message of another kind still keeps its id.
+        let start = |id: &str| ev(json!({"type": "TEXT_MESSAGE_START", "messageId": id}));
+        for id in ["t1", "z1"] {
+            let err = v.check(&start(id)).unwrap_err();
+            assert_eq!(err.rule, ProducerRule::DuplicateMessageId, "{id}");
+        }
+        let err = v
+            .check(&ev(
+                json!({"type": "REASONING_MESSAGE_START", "messageId": "m1", "role": "reasoning"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::DuplicateMessageId);
+        // A held message reopens under its own owner and role only.
+        let err = v
+            .check(&ev(
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "user"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        let err = v
+            .check(&ev(
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "subagentRunId": "B"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+
+        // An earlier run's message reopens in a later run.
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r1"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+                json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}),
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r2"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+            ],
+        );
     }
 
     #[test]
