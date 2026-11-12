@@ -1637,6 +1637,7 @@ impl ProducerState {
                 .get(p)
                 .map(|item| item.owner.clone())
                 .or_else(|| self.reasoning.get(p).map(|item| item.owner.clone()))
+                .or_else(|| self.held.get(p).map(|held| held.owner.clone()))
         });
         // A call inherits the attribution of the message holding it (SUB-26,
         // TOOL-02): an untagged call takes its parent message's owner, and only
@@ -2626,6 +2627,47 @@ mod tests {
                 json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r2"}),
                 json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
                 json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
+            ],
+        );
+    }
+
+    /// subagents.mdx: a tool call inherits the attribution of the message
+    /// holding it, a history or snapshot message's included.
+    #[test]
+    fn a_call_on_a_held_message_inherits_its_owner() {
+        use serde_json::json;
+        let history = json!([
+            {"id": "m1", "role": "assistant", "content": "hi", "subagentRunId": "A"}
+        ]);
+        let mut v = ProducerVerifier::for_input(&input(history));
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "SUBAGENT_STARTED", "subagentRunId": "A", "name": "a"}),
+                json!({"type": "SUBAGENT_STARTED", "subagentRunId": "B", "name": "b"}),
+            ],
+        );
+        let err = v
+            .check(&ev(
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x",
+                              "parentMessageId": "m1", "subagentRunId": "B"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x",
+                       "parentMessageId": "m1"}),
+                json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c1", "delta": "{}",
+                       "subagentRunId": "A"}),
+                json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                    {"id": "s1", "role": "assistant", "content": "x", "subagentRunId": "B"}
+                ]}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c2", "toolCallName": "x",
+                       "parentMessageId": "s1"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c2", "subagentRunId": "B"}),
             ],
         );
     }
