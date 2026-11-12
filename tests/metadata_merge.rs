@@ -7,7 +7,7 @@ mod support_reducer;
 
 use agui_sdk::Event;
 use serde_json::json;
-use support_reducer::{event, run_finished, run_started, Harness};
+use support_reducer::{run_finished, run_started, Harness};
 
 /// covers: META-06, META-07, META-08
 #[test]
@@ -198,17 +198,18 @@ fn events_without_a_target_merge_nowhere() {
         json!({"type": "STATE_SNAPSHOT", "snapshot": {}, "metadata": {"k": 4}}),
         json!({"type": "RAW", "event": {}, "metadata": {"k": 5}}),
         json!({"type": "CUSTOM", "name": "acme.x", "value": 1, "metadata": {"k": 6}}),
-        run_meta.clone(),
     ] {
         h.push(e);
     }
+    // The event's own metadata stays on the delivered event for whoever
+    // observes it.
+    let processed = h.push_processed(run_meta);
     assert_eq!(h.history(), before, "no message gained metadata");
-    // The event's own metadata stays on the event for whoever observes it.
-    let Event::RunFinished(f) = event(run_meta) else {
-        panic!()
+    let Event::RunFinished(f) = &*processed.event else {
+        panic!("{:?}", processed.event)
     };
     assert_eq!(
-        serde_json::to_value(f.metadata).unwrap(),
+        serde_json::to_value(&f.metadata).unwrap(),
         json!({"finish": "stop"})
     );
 }

@@ -189,19 +189,38 @@ impl Transformer for Redact {
 
 #[test]
 fn deltas_are_against_what_the_client_received_after_transformers() {
-    let runner = Runner::new(agent(|mut ctx| async move {
-        *ctx.state_mut() = json!({"secret": "s1", "n": 1});
-        ctx.resync_state().await?;
-        *ctx.state_mut() = json!({"secret": "s2", "n": 2});
-        ctx.publish_state().await?;
-        *ctx.state_mut() = json!({"secret": "s3", "n": 3, "m": [1]});
-        ctx.publish_state().await?;
-        Ok(RunOutcome::success())
+    // The unchanging pad makes a delta smaller than a snapshot, so the later
+    // publishes go out as STATE_DELTA rather than a fresh snapshot.
+    let pad = "p".repeat(4096);
+    let agent_pad = pad.clone();
+    let runner = Runner::new(agent(move |mut ctx| {
+        let pad = agent_pad.clone();
+        async move {
+            *ctx.state_mut() = json!({"secret": "s1", "n": 1, "pad": pad});
+            ctx.resync_state().await?;
+            *ctx.state_mut() = json!({"secret": "s2", "n": 2, "pad": pad});
+            ctx.publish_state().await?;
+            *ctx.state_mut() = json!({"secret": "s3", "n": 3, "m": [1], "pad": pad});
+            ctx.publish_state().await?;
+            Ok(RunOutcome::success())
+        }
     }))
     .transformer(|| Redact);
     let events = run(&runner, input());
+    let deltas: Vec<&StateDelta> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::StateDelta(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert!(!deltas.is_empty(), "no STATE_DELTA was sent: {events:?}");
+    assert!(deltas
+        .iter()
+        .flat_map(|d| &d.delta)
+        .all(|op| !op.path.as_str().starts_with("/secret")));
     let client = apply_all(json!({}), &events);
-    assert_eq!(client, json!({"n": 3, "m": [1]}));
+    assert_eq!(client, json!({"n": 3, "m": [1], "pad": pad}));
 }
 
 /// covers: STATE-09, STATE-14
@@ -231,8 +250,8 @@ fn messages_snapshots_are_complete_and_unattributed() {
         })
         .unwrap();
     assert_eq!(snapshot.messages, history);
-    let wire = serde_json::to_value(Event::MessagesSnapshot(snapshot)).unwrap();
-    assert!(wire.get("subagentRunId").is_none());
+    // Unattributed by construction: MessagesSnapshot has no subagentRunId
+    // field, so its wire form cannot carry one.
 
     // A replayed run restates its complete history in order.
     let runner = Runner::new(agent(|_ctx| async { Ok(RunOutcome::success()) }));

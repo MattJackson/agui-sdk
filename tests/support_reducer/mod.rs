@@ -8,6 +8,7 @@ use std::sync::Arc;
 use agui_sdk::diagnostics::{CollectingSink, Diagnostic, Reporter};
 use agui_sdk::message::Message;
 use agui_sdk::pipeline::reduce::{Changes, Reducer};
+use agui_sdk::pipeline::Processed;
 use agui_sdk::Event;
 use serde_json::{json, Value};
 
@@ -48,10 +49,15 @@ impl Harness {
 
     /// Applies one wire event.
     pub fn push(&mut self, v: Value) -> Changes {
+        self.push_processed(v).changes
+    }
+
+    /// Applies one wire event, returning the delivered event as well.
+    pub fn push_processed(&mut self, v: Value) -> Processed {
         let e = event(v);
-        let changes = self.reducer.apply(e, &mut self.reporter).changes;
+        let processed = self.reducer.apply(e, &mut self.reporter);
         self.reporter.end_event(None);
-        changes
+        processed
     }
 
     /// Applies several wire events.

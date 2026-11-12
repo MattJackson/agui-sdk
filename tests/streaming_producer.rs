@@ -15,25 +15,30 @@ use support_producer::{accepts, finished, refuses, refuses_then, started};
 /// covers: STRM-01
 #[test]
 fn an_open_item_cannot_be_opened_again() {
-    for (open, again) in [
+    // The follow-up is the item's own END: it is accepted only if the refused
+    // duplicate left the item open.
+    for (open, again, end) in [
         (
             json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
             json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}),
+            json!({"type": "TEXT_MESSAGE_END", "messageId": "m1"}),
         ),
         (
             json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f"}),
             json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f"}),
+            json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
         ),
         (
             json!({"type": "REASONING_MESSAGE_START", "messageId": "r1", "role": "reasoning"}),
             json!({"type": "REASONING_MESSAGE_START", "messageId": "r1", "role": "reasoning"}),
+            json!({"type": "REASONING_MESSAGE_END", "messageId": "r1"}),
         ),
     ] {
         let message = refuses_then(
             &[started("r1"), open, again],
             2,
             ProducerRule::AlreadyOpen,
-            Some(json!({"type": "CUSTOM", "name": "still-running", "value": 1})),
+            Some(end),
         );
         assert!(message.contains("already open"), "{message}");
     }

@@ -1284,14 +1284,11 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
     );
     for fixture in fixtures {
         let name = fixture["name"].as_str().unwrap_or("?");
+        // Every 0.0.N pin maps the way the client maps it (0.0.45 is the
+        // 0.0.47 era).
         let era = fixture["client"]["maxProtocolVersion"]
             .as_str()
-            .and_then(|pin| match pin {
-                "0.0.39" => Some(LegacyEra::V0_0_39),
-                "0.0.47" => Some(LegacyEra::V0_0_47),
-                "0.0.57" => Some(LegacyEra::V0_0_57),
-                _ => None,
-            });
+            .and_then(LegacyEra::parse);
         let (mut reporter, sink) = collecting();
 
         // Outgoing: the always-on input upgrade, then the era's downgrade.
@@ -1317,6 +1314,8 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
         if era.is_none() {
             assert!(input.get("protocolVersion").is_some(), "{name}: declared");
         }
+
+        let outgoing = sink.take();
 
         // Incoming: the boundary, then the era's upgrade.
         let stream: Vec<Value> = fixture["stream"].as_array().cloned().unwrap_or_default();
@@ -1349,6 +1348,14 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
         let run = drive_with(Processor::new(config), &stream, false);
         run.assert_ok();
         assert_eq!(run.types(), seen, "{name}: shipped path");
+        if let Some(expected) = expect["messages"].as_array() {
+            assert_eq!(
+                run.messages.len(),
+                expected.len(),
+                "{name}: message count {:#?}",
+                run.messages
+            );
+        }
         for (index, wanted) in expect["messages"]
             .as_array()
             .into_iter()
@@ -1361,16 +1368,31 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
             }
         }
 
-        let diagnostics = sink.take();
+        // What the client warns: the fixture's warnings come from the
+        // outgoing and incoming stages together. The shipped processor sees
+        // only the incoming half and must warn exactly as the hand-run
+        // incoming stages did.
+        let incoming = sink.take();
+        let staged: Vec<&Diagnostic> = outgoing.iter().chain(&incoming).collect();
         for wanted in expect["warnings"].as_array().into_iter().flatten() {
             let wanted = wanted.as_str().unwrap_or_default();
             assert!(
-                diagnostics.iter().any(|d| d.message.contains(wanted)),
-                "{name}: no warning containing {wanted:?} in {diagnostics:#?}"
+                staged.iter().any(|d| d.message.contains(wanted)),
+                "{name}: no warning containing {wanted:?} in {staged:#?}"
             );
         }
         if expect["noWarnings"] == json!(true) {
-            assert!(diagnostics.is_empty(), "{name}: {diagnostics:#?}");
+            assert!(staged.is_empty(), "{name}: {staged:#?}");
         }
+        let shipped: Vec<(DiagnosticCode, &str)> = run
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.message.as_str()))
+            .collect();
+        let expected: Vec<(DiagnosticCode, &str)> = incoming
+            .iter()
+            .map(|d| (d.code, d.message.as_str()))
+            .collect();
+        assert_eq!(shipped, expected, "{name}: shipped path warnings");
     }
 }

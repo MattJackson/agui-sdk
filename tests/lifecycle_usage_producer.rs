@@ -193,7 +193,7 @@ fn run_usage_covers_its_subagents() {
     }
 }
 
-/// covers: LIFE-36
+/// covers: LIFE-36, INTR-17
 #[test]
 fn a_resuming_run_reports_only_its_own_calls() {
     let runner = Runner::new(agent(|ctx| async move {
