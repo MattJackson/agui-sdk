@@ -338,3 +338,59 @@ fn tool_calls_dropped_one_by_one() {
     }
     assert_band("tool calls dropped one by one", &frames, 0.9);
 }
+
+/// An array grown by one delta and emptied element by element gives its
+/// memory back: removals shrink a sparse array, so repeating the cycle under
+/// new keys cannot hold memory the node ceiling no longer counts (D14).
+#[test]
+fn arrays_emptied_by_remove_deltas_release_memory() {
+    assert!(alloc::installed());
+    const LEN: usize = 100_000;
+    let mut frames = vec![frame(json!({"type": "STATE_SNAPSHOT", "snapshot": {}}))];
+    for k in 0..8 {
+        frames.push(frame(json!({
+            "type": "STATE_DELTA",
+            "delta": [{"op": "add", "path": format!("/a{k}"), "value": vec![0; LEN]}],
+        })));
+        for chunk in (0..LEN).rev().collect::<Vec<_>>().chunks(10_000) {
+            let removes: Vec<Value> = chunk
+                .iter()
+                .map(|i| json!({"op": "remove", "path": format!("/a{k}/{i}")}))
+                .collect();
+            frames.push(frame(json!({"type": "STATE_DELTA", "delta": removes})));
+        }
+    }
+    let (code, live) = stream(&frames, Limits::default());
+    assert_eq!(code, None, "every delta applies");
+    let live = usize::try_from(live).unwrap();
+    assert!(live < 2 * MIB, "{} KiB stay resident", live / 1024);
+}
+
+/// The same for objects: under `preserve-order` an `IndexMap` keeps its
+/// capacity on removal unless the applier rebuilds it.
+#[test]
+fn objects_emptied_by_remove_deltas_release_memory() {
+    assert!(alloc::installed());
+    const LEN: usize = 4_096;
+    let members: serde_json::Map<String, Value> =
+        (0..LEN).map(|k| (format!("k{k}"), json!(0))).collect();
+    let members = Value::Object(members);
+    let mut frames = vec![frame(json!({"type": "STATE_SNAPSHOT", "snapshot": {}}))];
+    for k in 0..16 {
+        frames.push(frame(json!({
+            "type": "STATE_DELTA",
+            "delta": [{"op": "add", "path": format!("/o{k}"), "value": members}],
+        })));
+        for chunk in (0..LEN).rev().collect::<Vec<_>>().chunks(1_000) {
+            let removes: Vec<Value> = chunk
+                .iter()
+                .map(|i| json!({"op": "remove", "path": format!("/o{k}/k{i}")}))
+                .collect();
+            frames.push(frame(json!({"type": "STATE_DELTA", "delta": removes})));
+        }
+    }
+    let (code, live) = stream(&frames, Limits::default());
+    assert_eq!(code, None, "every delta applies");
+    let live = usize::try_from(live).unwrap();
+    assert!(live < 2 * MIB, "{} KiB stay resident", live / 1024);
+}

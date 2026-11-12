@@ -308,6 +308,37 @@ fn map_remove(m: &mut Map<String, Value>, key: &str) -> Option<(usize, String, V
     Some((0, k, v))
 }
 
+/// Whether removing an element, leaving `len` of `capacity`, shrinks the
+/// array: removals never release a `Vec`'s memory, so without this an array
+/// grown large and emptied element by element would keep memory the node
+/// ceiling no longer counts. A quarter full, it shrinks to half full, so the
+/// copy is amortized O(1) per removal and add/remove cycles cannot thrash.
+fn vec_shrinks(len: usize, capacity: usize) -> bool {
+    capacity > 64 && len < capacity / 4
+}
+
+/// Whether removing a member, leaving `len`, rebuilds the object to release
+/// its memory. An `IndexMap` (`preserve-order`) never shrinks on removal and
+/// `serde_json::Map` does not expose its capacity, so the map is rebuilt
+/// each time it falls to a power of two (from 64 up): an object emptied
+/// member by member then holds at most about twice what it would if built
+/// at its size, and the rebuilds sum to O(members removed). Sorted maps free
+/// each node as it goes.
+#[cfg(feature = "preserve-order")]
+fn map_compacts(len: usize) -> bool {
+    len >= 64 && len.is_power_of_two()
+}
+
+#[cfg(not(feature = "preserve-order"))]
+fn map_compacts(_len: usize) -> bool {
+    false
+}
+
+/// Rebuilds `m` at its current size, keeping member order.
+fn map_compact(m: &mut Map<String, Value>) {
+    *m = mem::take(m).into_iter().collect();
+}
+
 /// Re-inserts a member at its original position (sorted maps place it by key).
 #[cfg(feature = "preserve-order")]
 fn map_restore(m: &mut Map<String, Value>, pos: usize, key: String, v: Value) {
@@ -631,7 +662,14 @@ impl<'p, 'd> Engine<'p, 'd> {
                     return Err(Reason::PathNotFound);
                 }
                 charge_to(&mut self.walked, self.walk_cap, remove_shift(m.len()))?;
+                let compact = map_compacts(m.len() - 1);
+                if compact {
+                    charge_to(&mut self.walked, self.walk_cap, m.len() - 1)?;
+                }
                 let (pos, key, v) = map_remove(m, &name).ok_or(Reason::PathNotFound)?;
+                if compact {
+                    map_compact(m);
+                }
                 if self.measure_copies {
                     // What placing `key` back would charge: the slot it left.
                     let freed = crate::json::member_slot_bytes(m.len(), key.len());
@@ -647,7 +685,14 @@ impl<'p, 'd> Engine<'p, 'd> {
             Value::Array(a) => match pointer::parse_index(raw) {
                 Some(Index::At(i)) if i < a.len() => {
                     charge_to(&mut self.walked, self.walk_cap, shift_cost(a.len() - 1 - i))?;
+                    let shrink = vec_shrinks(a.len() - 1, a.capacity());
+                    if shrink {
+                        charge_to(&mut self.walked, self.walk_cap, shift_cost(a.len() - 1))?;
+                    }
                     let v = a.remove(i);
+                    if shrink {
+                        a.shrink_to(a.len() * 2);
+                    }
                     if self.measure_copies {
                         // What placing an element back would charge.
                         let freed = crate::json::element_slot_bytes(a.len());
