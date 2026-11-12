@@ -1757,7 +1757,20 @@ impl ProducerState {
                     None => Ok(owner),
                 }
             }
-            None => Ok(owner),
+            // A call of the input history reopens under its own name (TOOL-07).
+            None => match (name, self.history_calls.get(id)) {
+                (Some(name), Some(&had)) if fingerprint(name) != had => {
+                    Err(ProducerViolation::new(
+                        ProducerRule::OwnerMismatch,
+                        format!(
+                            "{event_type} reopens tool call '{id}' of the input history with a \
+                             different toolCallName (TOOL-07)",
+                            id = shown(id.as_ref())
+                        ),
+                    ))
+                }
+                _ => Ok(owner),
+            },
         }
     }
 
@@ -2400,6 +2413,26 @@ impl ProducerState {
                     ),
                 );
             }
+            // A frontend call this run made is answered by the client, never
+            // by a fabricated tool message (TOOL-24). One the input history
+            // holds may be restated with the client's answer.
+            if let Message::Tool(tool) = message {
+                if self
+                    .calls
+                    .get(&tool.tool_call_id)
+                    .is_some_and(|call| self.frontend.contains(&call.name))
+                {
+                    return refuse(
+                        ProducerRule::Outcome,
+                        format!(
+                            "MESSAGES_SNAPSHOT restates a tool message answering the frontend \
+                             tool call '{}'; the client answers it in the next run's messages \
+                             (TOOL-24)",
+                            shown(tool.tool_call_id.as_str())
+                        ),
+                    );
+                }
+            }
         }
         self.close_all_lanes();
         for message in messages {
@@ -2985,6 +3018,68 @@ mod tests {
                 json!({"type": "REASONING_MESSAGE_END", "messageId": "m1"}),
                 json!({"type": "TEXT_MESSAGE_START", "messageId": "r1"}),
                 json!({"type": "TEXT_MESSAGE_END", "messageId": "r1"}),
+            ],
+        );
+    }
+
+    /// tool-calls.mdx: no fabricated tool message for a frontend call, a
+    /// snapshot's included (TOOL-24).
+    #[test]
+    fn a_snapshot_may_not_answer_a_frontend_call() {
+        use serde_json::json;
+        let input: RunAgentInput = serde_json::from_value(json!({
+            "threadId": "t", "runId": "r", "messages": [],
+            "tools": [{"name": "ask", "description": "d"}], "context": [],
+            "state": {}, "forwardedProps": {}
+        }))
+        .unwrap();
+        let mut v = ProducerVerifier::for_input(&input);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "ask"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+            ],
+        );
+        let err = v
+            .check(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+                {"id": "a1", "role": "assistant", "content": "x",
+                 "toolCalls": [{"id": "c1", "type": "function",
+                                "function": {"name": "ask", "arguments": "{}"}}]},
+                {"id": "t1", "role": "tool", "content": "fake", "toolCallId": "c1"}
+            ]})))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::Outcome);
+        assert!(v.state.messages.get("a1").is_none(), "a refusal mutated");
+    }
+
+    /// tool-calls.mdx: a reopening start agrees with the call it reopens,
+    /// a call of the input history included (TOOL-07).
+    #[test]
+    fn a_history_call_reopens_only_under_its_name() {
+        use serde_json::json;
+        let history = json!([
+            {"id": "a1", "role": "assistant", "content": "x",
+             "toolCalls": [{"id": "h1", "type": "function",
+                            "function": {"name": "search", "arguments": "{}"}}]}
+        ]);
+        let mut v = ProducerVerifier::for_input(&input(history));
+        feed(
+            &mut v,
+            vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"})],
+        );
+        let err = v
+            .check(&ev(
+                json!({"type": "TOOL_CALL_START", "toolCallId": "h1", "toolCallName": "delete_all"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OwnerMismatch);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TOOL_CALL_START", "toolCallId": "h1", "toolCallName": "search"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "h1"}),
             ],
         );
     }
