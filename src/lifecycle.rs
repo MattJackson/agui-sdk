@@ -2,8 +2,9 @@
 //!
 //! A stream is one or more runs. Each run opens with [`RunStarted`] (or fails
 //! before it begins with [`RunError`]) and closes with exactly one terminal:
-//! [`RunFinished`] or [`RunError`] (LIFE-01..LIFE-05). After the terminal only a
-//! new `RUN_STARTED` or a late `RUN_ERROR` may follow (LIFE-37..LIFE-42).
+//! [`RunFinished`] or [`RunError`] (LIFE-01..LIFE-05). After `RUN_FINISHED` only
+//! a new `RUN_STARTED` or a late `RUN_ERROR` may follow; after `RUN_ERROR` only
+//! a new `RUN_STARTED` (LIFE-37..LIFE-42).
 //! Steps ([`StepStarted`]/[`StepFinished`]) label spans of a run and may overlap.
 //!
 //! The client verifier enforces the consumer side of these rules

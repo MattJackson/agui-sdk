@@ -274,8 +274,12 @@ fn rejected_declaration_falls_back_to_undeclared() {
     let caps = capability::ingest_or_undeclared(json!({"state": {"snapshots": true}}), &quiet);
     assert_eq!(caps.state.and_then(|s| s.snapshots), Some(true));
 
-    let not_json = capability::ingest_slice(b"{not json").expect_err("bytes are not JSON");
-    assert_eq!(not_json.code(), ErrorCode::Json);
+    // Bytes that are not JSON are a peer declaration the consumer cannot
+    // validate (rejected, CAP-16), not an SDK-side JSON failure.
+    for bytes in [&b"{not json"[..], b"<html>"] {
+        let not_json = capability::ingest_slice(bytes).expect_err("bytes are not JSON");
+        assert_eq!(not_json.code(), ErrorCode::CapabilitiesRejected);
+    }
 }
 
 /// covers: CHG-05

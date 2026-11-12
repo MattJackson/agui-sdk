@@ -41,7 +41,7 @@ pub enum EncryptedValueSubtype {
 /// Opens a reasoning span. The span id namespaces nothing (REAS-05, REAS-12).
 ///
 /// Schema: `$defs/ReasoningStartEvent`. Spec rules: REAS-02, REAS-05, REAS-10, REAS-12.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ReasoningStart {
@@ -128,7 +128,7 @@ impl From<ReasoningStart> for crate::event::Event {
 /// Opens a reasoning message.
 ///
 /// Schema: `$defs/ReasoningMessageStartEvent`. Spec rules: REAS-06, REAS-11.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ReasoningMessageStart {
@@ -308,7 +308,7 @@ impl From<ReasoningMessageContent> for crate::event::Event {
 /// Closes an open reasoning message.
 ///
 /// Schema: `$defs/ReasoningMessageEndEvent`. Spec rules: REAS-08, REAS-09.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ReasoningMessageEnd {
@@ -506,7 +506,7 @@ impl From<ReasoningMessageChunk> for crate::event::Event {
 /// Closes a reasoning span.
 ///
 /// Schema: `$defs/ReasoningEndEvent`. Spec rules: REAS-03, REAS-04, REAS-10.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ReasoningEnd {
@@ -702,6 +702,55 @@ impl fmt::Debug for Redacted {
 /// `Some(<redacted>)` or `None`, so `Debug` still shows presence.
 pub(crate) fn redact<T>(value: &Option<T>) -> Option<Redacted> {
     value.as_ref().map(|_| Redacted)
+}
+
+impl fmt::Debug for ReasoningStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReasoningStart")
+            .field("message_id", &self.message_id)
+            .field("timestamp", &self.timestamp)
+            .field("raw_event", &redact(&self.raw_event))
+            .field("metadata", &self.metadata)
+            .field("subagent_run_id", &self.subagent_run_id)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ReasoningMessageStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReasoningMessageStart")
+            .field("message_id", &self.message_id)
+            .field("role", &self.role)
+            .field("timestamp", &self.timestamp)
+            .field("raw_event", &redact(&self.raw_event))
+            .field("metadata", &self.metadata)
+            .field("subagent_run_id", &self.subagent_run_id)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ReasoningMessageEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReasoningMessageEnd")
+            .field("message_id", &self.message_id)
+            .field("timestamp", &self.timestamp)
+            .field("raw_event", &redact(&self.raw_event))
+            .field("metadata", &self.metadata)
+            .field("subagent_run_id", &self.subagent_run_id)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ReasoningEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReasoningEnd")
+            .field("message_id", &self.message_id)
+            .field("timestamp", &self.timestamp)
+            .field("raw_event", &redact(&self.raw_event))
+            .field("metadata", &self.metadata)
+            .field("subagent_run_id", &self.subagent_run_id)
+            .finish()
+    }
 }
 
 impl fmt::Debug for ReasoningMessageContent {

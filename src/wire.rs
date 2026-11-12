@@ -199,7 +199,9 @@ fn admits(accept: &str, media: &str) -> bool {
 /// increment), so the SSE and protobuf decoders hand out frames without
 /// copying. It derefs to `&[u8]`. The backing storage is an implementation
 /// detail and is not part of the API: this crate's public signatures carry
-/// no third-party type other than `serde_json::Value` and the serde traits.
+/// no third-party type other than `serde_json::Value` and the serde traits
+/// (beyond the opt-in `stream` and `axum` feature impls documented at the
+/// crate root).
 ///
 /// Present with any of the `client`, `server` or `proto` features.
 #[cfg(any(feature = "client", feature = "server", feature = "proto"))]

@@ -7,7 +7,10 @@
 //! are fetched is application-defined; this module validates and reads them.
 //!
 //! * [`ingest`] / [`ingest_slice`] validate a received declaration: unknown
-//!   groups and fields are kept or dropped silently (CAP-13, CAP-14), a known
+//!   groups and fields are dropped, not rejected, and each is listed as a
+//!   `strip.unknown_field` diagnostic in [`Ingested::diagnostics`] (CAP-13,
+//!   CAP-14); members of the open objects `identity.metadata` and `custom`
+//!   are kept. A known
 //!   field with a schema-rejected value rejects the declaration (CAP-15), and
 //!   a rejection never prevents a run (CAP-16).
 //! * [`CapabilitiesBuilder`] produces a declaration in the schema's shape (CAP-12).
@@ -113,10 +116,17 @@ pub fn ingest(value: Value) -> Result<Ingested> {
 ///
 /// # Errors
 ///
-/// As [`ingest`], plus [`ErrorCode::Json`] for bytes that are not JSON.
+/// As [`ingest`]; bytes that are not JSON are rejected the same way, with
+/// [`ErrorCode::CapabilitiesRejected`] at the root pointer (a peer
+/// declaration the consumer cannot validate, CAP-16).
 pub fn ingest_slice(bytes: &[u8]) -> Result<Ingested> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| {
-        Error::new(ErrorCode::Json, "capability declaration is not JSON").with_source(error)
+        Error::new(
+            ErrorCode::CapabilitiesRejected,
+            "capability declaration is not JSON",
+        )
+        .with_pointer("")
+        .with_source(error)
     })?;
     ingest(value)
 }

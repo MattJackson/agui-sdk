@@ -618,6 +618,27 @@ fn debug_redacts_encrypted_values_and_reasoning() {
             "{:?}",
             Event::from(ReasoningMessageChunk::new().with_delta(secret))
         ),
+        // A provider-native event on any reasoning event can carry the
+        // summary or signature, so `raw_event` is redacted on all of them.
+        format!(
+            "{:?}",
+            Event::from(ReasoningStart::new("s1").with_raw_event(json!({"text": secret})))
+        ),
+        format!(
+            "{:?}",
+            Event::from(
+                ReasoningMessageStart::new("n1", ReasoningRole::Reasoning)
+                    .with_raw_event(json!({"text": secret}))
+            )
+        ),
+        format!(
+            "{:?}",
+            Event::from(ReasoningMessageEnd::new("n1").with_raw_event(json!({"text": secret})))
+        ),
+        format!(
+            "{:?}",
+            Event::from(ReasoningEnd::new("s1").with_raw_event(json!({"text": secret})))
+        ),
         format!(
             "{:?}",
             parse(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
@@ -714,4 +735,20 @@ fn value_corpus_valid_documents_round_trip() {
     }
     eprintln!("round-tripped {checked} valid documents");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Strict parsing accepts every schema-valid event, including an integer
+/// written with a zero fraction (JSON Schema's `integer` admits `3.0`), and
+/// rejects a fractional one with a pointer.
+#[test]
+fn parse_strict_accepts_integral_floats_for_integers() {
+    let event =
+        Event::parse_strict(br#"{"type":"TEXT_MESSAGE_END","messageId":"m","timestamp":3.0}"#)
+            .unwrap();
+    assert_eq!(event.timestamp(), Some(3));
+    let error =
+        Event::parse_strict(br#"{"type":"TEXT_MESSAGE_END","messageId":"m","timestamp":3.5}"#)
+            .unwrap_err();
+    assert_eq!(error.code(), agui_sdk::ErrorCode::InvalidValue);
+    assert_eq!(error.pointer(), Some("/timestamp"));
 }

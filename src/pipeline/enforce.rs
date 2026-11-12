@@ -266,6 +266,26 @@ pub fn validate_strict(anchor: &str, document: &[u8]) -> Result<()> {
     }
 }
 
+/// [`validate_strict`] against `"Event"`, decoding the typed event through
+/// the same walk, so whatever the strict schema admits (an integral float in
+/// an integer position, say) decodes as it validated.
+pub(crate) fn parse_strict_event(document: &[u8]) -> Result<Event> {
+    let shape = anchor_shape("Event")?;
+    let opts = Options::strict();
+    let mut findings = Findings::new(0);
+    match document_from_bytes::<Event>(document, shape, &opts, &mut findings) {
+        Ok(Some(event)) => Ok(event),
+        // Strict mode rejects unknown material instead of dropping it, so a
+        // dropped root is not expected; report it rather than guess.
+        Ok(None) => Err(Error::new(
+            ErrorCode::InvalidValue,
+            "event passed strict validation but does not fit the typed model",
+        )
+        .with_pointer("")),
+        Err(fault) => Err(fault_error(fault, ErrorCode::InvalidValue)),
+    }
+}
+
 /// Consumer-pipeline treatment of one document against a `$defs` anchor:
 /// strips unknown material (returning the diagnostics) and rejects malformed
 /// values. Used by the value-corpus lane's second gate.
