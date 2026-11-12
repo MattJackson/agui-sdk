@@ -1606,6 +1606,27 @@ fn untagged_call_reopen_under_owned_parent_agrees() {
     assert!(h.codes().is_empty());
 }
 
+/// An untagged call under an owned non-assistant parent sits on a carrier
+/// minted with its own (absent) owner, so it inherits nothing and its
+/// reopen agrees.
+#[test]
+fn untagged_call_reopen_under_owned_reasoning_parent_agrees() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "REASONING_MESSAGE_START", "messageId": "r1", "role": "reasoning",
+        "subagentRunId": "A"}),
+    );
+    h.push(json!({"type": "REASONING_MESSAGE_END", "messageId": "r1", "subagentRunId": "A"}));
+    for _ in 0..2 {
+        h.push(
+            json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+            "parentMessageId": "r1"}),
+        );
+        h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}));
+    }
+    assert!(h.codes().is_empty());
+}
+
 /// The first text for a message a tool call minted under its parent id
 /// warns when its owner disagrees with the minted message's.
 #[test]

@@ -1274,11 +1274,14 @@ impl Reducer {
             .parent
             .is_some_and(|p| self.resolve_parent(opening.id, p) != Some(slot.message));
         // An untagged call inherits its parent message's owner, as the
-        // verifier gives it.
+        // verifier gives it, but only when the call sits in that parent: a
+        // call under a non-assistant parent sits on a carrier minted with the
+        // call's own owner.
         let owner = opening.owner.or_else(|| {
             opening
                 .parent
                 .and_then(|p| self.index.get(p))
+                .filter(|&&i| i == slot.message)
                 .and_then(|&i| message_owner(&self.messages[i]))
         });
         let owner_differs = message_owner(held) != owner;
