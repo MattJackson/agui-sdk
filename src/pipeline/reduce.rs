@@ -62,7 +62,9 @@
 //!   held. Without a parent, it joins the latest message when that is an
 //!   assistant message of the same owner added by the current run; otherwise a
 //!   tool-call-only assistant message is minted under the call's own id
-//!   (renamed if the producer later uses that id, above).
+//!   (renamed if the producer later uses that id, above). An untagged call
+//!   takes its parent message's owner (SUB-26), so a message minted for a
+//!   call whose parent is not an assistant message carries that owner.
 //! * **Reopens.** A reopening `TEXT_MESSAGE_START` that disagrees with the
 //!   message (role, name or owner) keeps the established values and warns
 //!   (TEXT-07). A reopening `TOOL_CALL_START` that disagrees warns; the
@@ -1228,7 +1230,19 @@ impl Reducer {
         if let Some(&slot) = self.calls.get(opening.id) {
             return self.reopen_call(slot, opening, reporter);
         }
-        let message = self.call_parent(opening.id, opening.parent, opening.owner);
+        // An untagged call inherits its parent message's owner, as the
+        // verifier gives it (SUB-26), so a carrier minted for it under a
+        // non-assistant parent carries that owner too.
+        let inherited = match (opening.owner, opening.parent) {
+            (None, Some(p)) => self
+                .index
+                .get(p)
+                .and_then(|&i| message_owner(&self.messages[i]))
+                .cloned(),
+            _ => None,
+        };
+        let owner = opening.owner.or(inherited.as_ref());
+        let message = self.call_parent(opening.id, opening.parent, owner);
         debug_assert!(matches!(self.messages[message], Message::Assistant(_)));
         let call = ToolCall {
             id: opening.id.clone(),
@@ -1274,14 +1288,11 @@ impl Reducer {
             .parent
             .is_some_and(|p| self.resolve_parent(opening.id, p) != Some(slot.message));
         // An untagged call inherits its parent message's owner, as the
-        // verifier gives it, but only when the call sits in that parent: a
-        // call under a non-assistant parent sits on a carrier minted with the
-        // call's own owner.
+        // verifier gives it and as `open_call` minted its carrier with.
         let owner = opening.owner.or_else(|| {
             opening
                 .parent
                 .and_then(|p| self.index.get(p))
-                .filter(|&&i| i == slot.message)
                 .and_then(|&i| message_owner(&self.messages[i]))
         });
         let owner_differs = message_owner(held) != owner;
