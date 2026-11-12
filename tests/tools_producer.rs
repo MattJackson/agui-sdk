@@ -100,21 +100,29 @@ fn a_closed_call_reopens_only_when_it_agrees() {
     assert_eq!(starts(&events).len(), 2);
     assert_eq!(terminal(&events).event_type(), EventType::RunFinished);
 
-    let runner = Runner::new(agent(|ctx| async move {
-        let id = ctx
-            .emitter()
-            .start_tool_call("search", None)
-            .await?
-            .end()
-            .await?;
-        let renamed = ctx.emitter().emit(ToolCallStart::new(id, "other")).await;
-        assert_eq!(
-            renamed.err().map(|e| e.code()),
-            Some(ErrorCode::ProducerViolation)
-        );
-        Ok(RunOutcome::success())
+    // The refusal is carried out of the agent and checked here (see
+    // a_frontend_call_is_never_answered_by_the_agent for why).
+    let refused: Arc<Mutex<Option<Option<ErrorCode>>>> = Arc::default();
+    let seen = Arc::clone(&refused);
+    let runner = Runner::new(agent(move |ctx| {
+        let seen = Arc::clone(&seen);
+        async move {
+            let id = ctx
+                .emitter()
+                .start_tool_call("search", None)
+                .await?
+                .end()
+                .await?;
+            let renamed = ctx.emitter().emit(ToolCallStart::new(id, "other")).await;
+            *seen.lock().unwrap() = Some(renamed.err().map(|e| e.code()));
+            Ok(RunOutcome::success())
+        }
     }));
     let events = run(&runner, input());
+    assert_eq!(
+        *refused.lock().unwrap(),
+        Some(Some(ErrorCode::ProducerViolation))
+    );
     assert_eq!(
         run_error(&events).code.as_deref(),
         Some("server.producer_violation")

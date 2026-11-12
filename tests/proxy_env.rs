@@ -182,6 +182,39 @@ fn the_environment_is_read_only_when_asked() {
     });
 }
 
+/// Under CGI (`REQUEST_METHOD` set) the uppercase `HTTP_PROXY` can come from
+/// a client's `Proxy:` request header ("httpoxy"), so it is ignored; the
+/// lowercase `http_proxy` still applies.
+#[test]
+fn uppercase_http_proxy_is_ignored_under_cgi() {
+    let _env = EnvGuard::lock();
+    block(async {
+        let server = MockServer::always(ok_reply())
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let proxy = MockProxy::start(None)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        std::env::set_var("HTTP_PROXY", proxy.url());
+        std::env::set_var("REQUEST_METHOD", "GET");
+        let cgi = build(HttpTransport::builder(server.url("/")).proxy_from_env(true));
+        let _ = drain(cgi.open(request()).await.unwrap_or_else(|e| panic!("{e}"))).await;
+        assert!(proxy.seen().is_empty(), "HTTP_PROXY ignored under CGI");
+        assert_eq!(server.requests().len(), 1, "the request went direct");
+
+        std::env::set_var("http_proxy", proxy.url());
+        let lower = build(HttpTransport::builder(server.url("/")).proxy_from_env(true));
+        let _ = drain(
+            lower
+                .open(request())
+                .await
+                .unwrap_or_else(|e| panic!("{e}")),
+        )
+        .await;
+        assert_eq!(proxy.seen().len(), 1, "lowercase http_proxy still applies");
+    });
+}
+
 /// An OS store that yields nothing, with a private root added, still builds
 /// (the private PKI works) but says so in `Debug`.
 #[cfg(feature = "rustls-native-roots")]

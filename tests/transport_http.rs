@@ -633,23 +633,32 @@ fn a_retry_past_the_deadline_reports_the_failure() {
         assert_eq!(error.retry_after(), Some(Duration::from_secs(30)));
         assert_eq!(server.requests().len(), 1);
 
-        let addr = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
-            listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
-        };
-        // Windows takes about two seconds to report a refused loopback
-        // connect, so the deadline leaves room for that; the backoff is past
-        // it on every platform.
-        let mut policy = RetryPolicy::exponential(1);
-        policy.initial_backoff = Duration::from_secs(30);
-        policy.jitter = false;
-        let transport = build(
-            HttpTransport::builder(format!("http://{addr}/"))
-                .retry(policy)
-                .total_timeout(Duration::from_secs(4)),
-        );
-        expect_code(transport.open(request()).await, ErrorCode::Connect);
+        // As in refused_connections_are_connect_errors: a released port can
+        // be handed to another test's server, so an attempt that reaches
+        // something other than a refusal is retried on a fresh port.
+        for _ in 0..5 {
+            let addr = {
+                let listener =
+                    std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
+                listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
+            };
+            // Windows takes about two seconds to report a refused loopback
+            // connect, so the deadline leaves room for that; the backoff is
+            // past it on every platform.
+            let mut policy = RetryPolicy::exponential(1);
+            policy.initial_backoff = Duration::from_secs(30);
+            policy.jitter = false;
+            let transport = build(
+                HttpTransport::builder(format!("http://{addr}/"))
+                    .retry(policy)
+                    .total_timeout(Duration::from_secs(4)),
+            );
+            match transport.open(request()).await {
+                Err(e) if e.code() == ErrorCode::Connect => return,
+                _ => continue, // the port was reused
+            }
+        }
+        panic!("no attempt was refused");
     });
 }
 
@@ -1634,11 +1643,13 @@ fn the_client_frame_limit_bounds_both_wires() {
         });
         expect_code(code, ErrorCode::FrameTooLarge);
     }
-    // The transport honours the request's limit directly too.
+    // The transport honours the request's limit directly too, on both wires.
+    let mut replies = vec![Reply::sse(sse(&events))];
     #[cfg(feature = "proto")]
-    {
+    replies.push(Reply::proto(proto(&events)));
+    for reply in replies {
         let (frames, error) = block(async {
-            let server = MockServer::always(Reply::proto(proto(&events)))
+            let server = MockServer::always(reply)
                 .await
                 .unwrap_or_else(|e| panic!("{e}"));
             let transport = build(HttpTransport::builder(server.url("/")));

@@ -106,10 +106,16 @@ fn a_configured_legacy_peer_gets_a_downgraded_stream() {
         panic!()
     };
     assert!(started.protocol_version.is_none());
-    // Stripping attribution is lossless and silent; only drops warn.
-    assert!(diagnostics
-        .iter()
-        .all(|d| d.code == DiagnosticCode::LossyDowngrade));
+    // Stripping attribution is lossless and silent; only drops warn (the
+    // two SUBAGENT_* events and the image part).
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d.code == DiagnosticCode::LossyDowngrade
+                && (d.message.contains("dropping SUBAGENT_")
+                    || d.message.contains("part was dropped"))),
+        "only drops warn: {diagnostics:#?}"
+    );
 }
 
 /// covers: VER-04, VER-05, VER-32
@@ -268,19 +274,23 @@ fn a_media_part_a_0_0_47_peer_cannot_read_is_dropped_with_its_own_warning() {
 /// covers: VER-10, VER-11
 #[test]
 fn downgrade_warnings_are_on_unless_silenced() {
-    // Not silenced by default configuration: the sink sees them.
+    // Nothing in the configuration suppresses them: an installed sink sees
+    // them.
     let sink = Arc::new(CollectingSink::new());
     let runner = Runner::new(rich_agent())
         .config(downgrading())
         .diagnostic_sink(sink.clone());
-    run(&runner, legacy_input());
-    assert!(!sink.take().is_empty());
-    // An explicit NullSink silences them.
+    let reported = run(&runner, legacy_input());
+    assert!(sink
+        .take()
+        .iter()
+        .any(|d| d.code == DiagnosticCode::LossyDowngrade));
+    // An explicit NullSink silences them, and changes nothing on the wire.
     let runner = Runner::new(rich_agent())
         .config(downgrading())
         .diagnostic_sink(NullSink);
-    let events = run(&runner, legacy_input());
-    assert!(!events.is_empty());
+    let silenced = run(&runner, legacy_input());
+    assert_eq!(types(&silenced), types(&reported));
 }
 
 /// covers: VER-18, VER-22, VER-23, VER-25

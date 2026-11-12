@@ -342,7 +342,34 @@ fn tunnel_status(head: &[u8]) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::tunnel_status;
+    use super::{tunnel_status, ProxyConfig, ProxyServer};
+
+    fn exempt(no_proxy: &[&str], target: &str) -> bool {
+        let server = ProxyServer::parse("http://127.0.0.1:3128").unwrap_or_else(|e| panic!("{e}"));
+        let config = ProxyConfig {
+            http: Some(server),
+            https: None,
+            no_proxy: no_proxy.iter().map(|e| e.to_string()).collect(),
+        };
+        let uri = target.parse().unwrap_or_else(|e| panic!("{e}"));
+        config.for_uri(&uri).is_none()
+    }
+
+    /// `NO_PROXY` entries (stored without a leading dot) exempt the host and
+    /// its subdomains on a label boundary, never a host that merely ends in
+    /// the same characters.
+    #[test]
+    fn no_proxy_matches_on_a_label_boundary() {
+        assert!(exempt(&["example.com"], "http://example.com/"));
+        assert!(exempt(&["example.com"], "http://sub.example.com/"));
+        assert!(exempt(&["example.com"], "http://SUB.Example.COM/"));
+        assert!(!exempt(&["example.com"], "http://evilexample.com/"));
+        assert!(!exempt(&["example.com"], "http://example.com.evil/"));
+        assert!(!exempt(&["sub.example.com"], "http://example.com/"));
+        assert!(exempt(&["*"], "http://anything.test/"));
+        assert!(exempt(&["::1"], "http://[::1]:8080/"));
+        assert!(!exempt(&[], "http://example.com/"));
+    }
 
     #[test]
     fn the_status_is_read_from_the_status_line_only() {
