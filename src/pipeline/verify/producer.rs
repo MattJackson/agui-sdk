@@ -106,7 +106,7 @@ use super::consumer::{quote_list, MAX_LISTED_IDS};
 use super::RunPhase;
 
 /// Largest integer JSON carries exactly: 2^53 − 1.
-const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+const MAX_SAFE_INTEGER: i64 = crate::json::MAX_SAFE_INTEGER as i64;
 
 /// Who owns an item: `None` is the parent agent.
 type Owner = Option<SubagentRunId>;
@@ -123,7 +123,9 @@ pub enum ProducerRule {
     NestedRun,
     /// An item opened twice while open (STRM-01, REAS-02, LIFE-49).
     AlreadyOpen,
-    /// Content or end for an item that is not open (STRM-02, REAS-04, LIFE-50).
+    /// Content or end for an item that is not open, or a terminal for a
+    /// subagent invocation that is not active (STRM-02, REAS-04, LIFE-50,
+    /// SUB-10).
     NotOpen,
     /// Something still open at the terminal (STRM-03, REAS-03, LIFE-51, SUB-10, SUB-33).
     OpenAtFinish,
@@ -145,15 +147,20 @@ pub enum ProducerRule {
     /// A value the wire schema rejects: a JSON Patch pointer that is not RFC
     /// 6901, an integer outside ±(2^53−1) (`timestamp`, token counts), an
     /// open-JSON member that is `null` where absence is required (BASIC-09,
-    /// ARCH-04), or, without an input, a `protocolVersion` that differs from
-    /// the one an earlier run on the stream declared (VER-28).
+    /// ARCH-04), an empty `subagentRunId` (SUB-06), token usage whose parts
+    /// exceed their totals (LIFE-26, LIFE-29), an activity delta leaving
+    /// non-object content (ACT-15), or, without an input, a `protocolVersion`
+    /// that differs from the one an earlier run on the stream declared
+    /// (VER-28).
     InvalidValue,
     /// Chunk spelling mixed with explicit events within one item, or a missing
     /// first-chunk field (STRM-09, STRM-11..STRM-14, STRM-17).
     ChunkDiscipline,
     /// Outcome inconsistent with the run: success with open interrupts,
-    /// pending ids not matching unanswered calls, empty interrupt list
-    /// (INTR-02, INTR-23, TOOL-31, LIFE-11).
+    /// pending ids not matching unanswered calls, empty interrupt list, a
+    /// frontend call answered or reported as an interrupt, a cancelled run
+    /// with a result (INTR-02, INTR-23, TOOL-24, TOOL-26, TOOL-31, LIFE-11,
+    /// LIFE-14).
     Outcome,
     /// A delta before any baseline (SNAP-07, ACT-11).
     NoBaseline,
@@ -1933,7 +1940,7 @@ impl ProducerState {
                     kind.id_field(),
                     owner_text(tag),
                     owner_text(&owner),
-                    id = shown(id.as_ref())
+                    id = shown(id)
                 ),
             )),
             other => Ok(other),
@@ -2169,7 +2176,7 @@ impl ProducerState {
                     format!(
                         "STEP_STARTED '{name}' while {} holds that step open (LIFE-49)",
                         owner_text(tag),
-                        name = shown(name.as_ref())
+                        name = shown(name)
                     ),
                 );
             }
@@ -2199,14 +2206,14 @@ impl ProducerState {
                          to {} (SUB-22)",
                         owner_text(tag),
                         owner_text(owner),
-                        name = shown(name.as_ref())
+                        name = shown(name)
                     ),
                 ),
                 None => refuse(
                     ProducerRule::NotOpen,
                     format!(
                         "STEP_FINISHED '{name}' for a step that is not open (LIFE-50)",
-                        name = shown(name.as_ref())
+                        name = shown(name)
                     ),
                 ),
             };

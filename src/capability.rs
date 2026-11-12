@@ -197,7 +197,7 @@ impl CapabilitiesBuilder {
 }
 
 /// Largest integer the schema admits for a count (`2^53 - 1`).
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_SAFE_INTEGER: u64 = crate::json::MAX_SAFE_INTEGER;
 
 /// What a known capability member must hold.
 #[derive(Clone, Copy)]
