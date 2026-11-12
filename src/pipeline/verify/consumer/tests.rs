@@ -472,3 +472,39 @@ fn an_untagged_call_inherits_a_held_parent_owner() {
     v.observe(&call("c1", "m1")).unwrap();
     v.observe(&args("c1", "A")).unwrap();
 }
+
+/// D25: a run-scoped table's charge is credited when the run ends, so the
+/// table itself does not outlive the run at a capacity beyond the floor.
+#[test]
+fn a_large_run_leaves_no_uncharged_table_behind() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    for i in 0..100_000 {
+        let id = format!("s{i}");
+        v.observe(&ev(json!({"type": "REASONING_START", "messageId": id})))
+            .unwrap();
+        v.observe(&ev(json!({"type": "REASONING_END", "messageId": id})))
+            .unwrap();
+    }
+    for i in 0..5_000 {
+        let owner = format!("o{i}");
+        v.observe(&ev(
+            json!({"type": "STEP_STARTED", "stepName": "s", "subagentRunId": owner}),
+        ))
+        .unwrap();
+        v.observe(&ev(
+            json!({"type": "STEP_FINISHED", "stepName": "s", "subagentRunId": owner}),
+        ))
+        .unwrap();
+    }
+    v.observe(&ev(
+        json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}),
+    ))
+    .unwrap();
+    assert_eq!(v.retained(), v.state.step_name_bytes);
+    let spans = v.state.spans.items.capacity();
+    assert!(spans <= floor, "spans {spans}");
+    let owners = v.state.steps.get("s").map_or(0, HashSet::capacity);
+    assert!(owners <= floor, "step owners {owners}");
+}

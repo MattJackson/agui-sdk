@@ -42,10 +42,11 @@
 //! # Cost
 //!
 //! Every check is a hash lookup keyed by an id (an `Arc<str>` newtype, so
-//! inserting one is a reference-count increment). Maps are cleared, not
-//! dropped, between runs, so their capacity is reused, unless a table is far
-//! larger than the run that just used it (clearing costs O(capacity)). Content events
-//! allocate nothing.
+//! inserting one is a reference-count increment). Run-scoped maps are
+//! cleared, not dropped, between runs, so their capacity is reused, unless a
+//! table has grown beyond a small floor: its charge is credited when the run
+//! ends (D25), so it is dropped rather than kept resident uncharged. Content
+//! events allocate nothing.
 //!
 //! The verifier keeps one entry per id the stream names: each open step,
 //! each item and subagent invocation of the run, and every message id the
@@ -240,7 +241,7 @@ enum Refusal {
 
 impl<K: Hash + Eq + Clone + AsRef<str>> Tracker<K> {
     fn reset(&mut self) {
-        crate::pipeline::reset_map(&mut self.items);
+        end_run_map(&mut self.items);
         self.open = 0;
         self.bytes = 0;
         self.hot = None;
@@ -384,6 +385,26 @@ fn adopt(entry: &mut Entry, owner: &Owner, extra: usize) -> usize {
     let new = owner_heap(owner.as_ref()) + if owner.is_some() { extra } else { 0 };
     entry.owner = owner.clone();
     new.saturating_sub(old)
+}
+
+/// Empties a run-scoped `map` when its run ends. Its entries' charge is
+/// credited then (D25), so a table above the retain floor is dropped rather
+/// than kept resident and uncharged into the next run.
+fn end_run_map<K, V>(map: &mut HashMap<K, V>) {
+    if map.capacity() > crate::pipeline::RETAIN_FLOOR {
+        *map = HashMap::new();
+    } else {
+        map.clear();
+    }
+}
+
+/// [`end_run_map`] for sets.
+fn end_run_set<T>(set: &mut HashSet<T>) {
+    if set.capacity() > crate::pipeline::RETAIN_FLOOR {
+        *set = HashSet::new();
+    } else {
+        set.clear();
+    }
 }
 
 /// Most ids quoted by [`quote_list`]; the rest are counted.
@@ -654,13 +675,13 @@ impl VerifierState {
             self.steps = HashMap::new();
             self.step_name_bytes = 0;
         } else {
-            self.steps.values_mut().for_each(crate::pipeline::reset_set);
+            self.steps.values_mut().for_each(end_run_set);
         }
         self.open_steps = 0;
-        crate::pipeline::reset_map(&mut self.activity);
-        crate::pipeline::reset_map(&mut self.restated);
-        crate::pipeline::reset_set(&mut self.subagents_active);
-        crate::pipeline::reset_set(&mut self.subagents_announced);
+        end_run_map(&mut self.activity);
+        end_run_map(&mut self.restated);
+        end_run_set(&mut self.subagents_active);
+        end_run_set(&mut self.subagents_announced);
         // Step owners, activity and restated owners and subagent sets are all
         // gone.
         self.run_bytes = 0;
