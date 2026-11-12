@@ -390,6 +390,16 @@ enum Sub {
     Ended,
 }
 
+/// An item opened in the run, in [`ProducerState::open_order`].
+#[derive(Debug)]
+enum Opened {
+    Text(MessageId),
+    Reasoning(MessageId),
+    Span(MessageId),
+    Call(ToolCallId),
+    Subagent(SubagentRunId),
+}
+
 /// The kinds of chunk stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -476,6 +486,11 @@ struct ProducerState {
     open_owned: HashMap<SubagentRunId, usize>,
     /// Step name → (owner, seq) of each open step of that name.
     steps: HashMap<String, Vec<(Owner, u64)>>,
+    /// Text, reasoning, spans, calls and invocations opened in the run, by
+    /// `seq`. It may also hold ones since closed (the maps above keep ended
+    /// items for the id rules); those are pruned before it grows, so
+    /// [`closers`](Self::closers) costs O(open items), not O(items opened).
+    open_order: Vec<(u64, Opened)>,
     /// Activity message → owner.
     activity: HashMap<MessageId, Owner>,
     subagents: HashMap<SubagentRunId, Sub>,
@@ -497,6 +512,9 @@ struct ProducerState {
     /// Lane probes made by `assembling` (test instrumentation).
     #[cfg(test)]
     lane_probes: std::sync::atomic::AtomicUsize,
+    /// Entries `closers` examined (test instrumentation).
+    #[cfg(test)]
+    closer_probes: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for ProducerState {
@@ -521,6 +539,7 @@ impl Default for ProducerState {
             open_explicit: 0,
             open_owned: HashMap::new(),
             steps: HashMap::new(),
+            open_order: Vec::new(),
             activity: HashMap::new(),
             subagents: HashMap::new(),
             active_subagents: 0,
@@ -533,6 +552,8 @@ impl Default for ProducerState {
             answered: HashSet::new(),
             #[cfg(test)]
             lane_probes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            closer_probes: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -792,6 +813,37 @@ impl ProducerState {
     fn next_seq(&mut self) -> u64 {
         self.seq += 1;
         self.seq
+    }
+
+    /// The `seq` of a newly opened item, recorded in `open_order`.
+    fn opened(&mut self, item: Opened) -> u64 {
+        let seq = self.next_seq();
+        if self.open_order.len() == self.open_order.capacity() {
+            let mut order = std::mem::take(&mut self.open_order);
+            order.retain(|(seq, item)| self.still_open(*seq, item));
+            // Room for at least as many again before the next pruning, so
+            // pruning is amortized O(1) per opened item.
+            order.reserve(order.len().max(4));
+            self.open_order = order;
+        }
+        self.open_order.push((seq, item));
+        seq
+    }
+
+    /// Whether the `open_order` entry `(seq, item)` is still open.
+    fn still_open(&self, seq: u64, item: &Opened) -> bool {
+        match item {
+            Opened::Text(id) => self.text.get(id).is_some_and(|i| i.open && i.seq == seq),
+            Opened::Reasoning(id) => self
+                .reasoning
+                .get(id)
+                .is_some_and(|i| i.open && i.seq == seq),
+            Opened::Span(id) => self.spans.get(id).is_some_and(|i| i.open && i.seq == seq),
+            Opened::Call(id) => self.calls.get(id).is_some_and(|c| c.open && c.seq == seq),
+            Opened::Subagent(id) => {
+                matches!(self.subagents.get(id), Some(Sub::Active { seq: s }) if *s == seq)
+            }
+        }
     }
 
     fn register_history(&mut self, messages: &[Message]) {
@@ -1137,6 +1189,12 @@ impl ProducerState {
         self.open_explicit = 0;
         reset_map(&mut self.open_owned);
         reset_map(&mut self.steps);
+        let order = self.open_order.capacity();
+        if order > RETAIN_FLOOR && order / 4 > self.open_order.len() {
+            self.open_order = Vec::new();
+        } else {
+            self.open_order.clear();
+        }
         reset_map(&mut self.subagents);
         self.active_subagents = 0;
         self.suspended = false;
@@ -1394,7 +1452,7 @@ impl ProducerState {
         self.check_text_opener(&e.message_id, tag, Some(role), name, "TEXT_MESSAGE_START")?;
         self.attribute(tag);
         self.close_lane(tag);
-        let seq = self.next_seq();
+        let seq = self.opened(Opened::Text(e.message_id.clone()));
         self.text.insert(
             e.message_id.clone(),
             Item {
@@ -1540,7 +1598,7 @@ impl ProducerState {
     }
 
     fn open_reasoning(&mut self, id: &MessageId, owner: &Owner, chunk: bool) {
-        let seq = self.next_seq();
+        let seq = self.opened(Opened::Reasoning(id.clone()));
         self.reasoning.insert(
             id.clone(),
             Item {
@@ -1569,7 +1627,7 @@ impl ProducerState {
         }
         self.attribute(tag);
         self.close_lane(tag);
-        let seq = self.next_seq();
+        let seq = self.opened(Opened::Span(id.clone()));
         self.spans.insert(
             id.clone(),
             Item {
@@ -1770,7 +1828,7 @@ impl ProducerState {
         owner: &Owner,
         chunk: bool,
     ) {
-        let seq = self.next_seq();
+        let seq = self.opened(Opened::Call(id.clone()));
         let previous = self.calls.insert(
             id.clone(),
             Call {
@@ -1963,7 +2021,7 @@ impl ProducerState {
                     self.check_text_opener(id, tag, Some(role), name, "TEXT_MESSAGE_CHUNK")?;
                     self.attribute(tag);
                     self.close_lane(tag);
-                    let seq = self.next_seq();
+                    let seq = self.opened(Opened::Text(id.clone()));
                     self.text.insert(
                         id.clone(),
                         Item {
@@ -2266,7 +2324,7 @@ impl ProducerState {
                 );
             }
         }
-        let seq = self.next_seq();
+        let seq = self.opened(Opened::Subagent(id.clone()));
         self.subagents.insert(id.clone(), Sub::Active { seq });
         self.active_subagents += 1;
         Ok(())
@@ -2434,33 +2492,67 @@ impl ProducerState {
 
     fn closers(&self, keep: &mut dyn FnMut(Holder<'_>) -> bool, out: &mut Vec<Event>) {
         let mut open: Vec<(u64, Event)> = Vec::new();
-        for (id, item) in &self.text {
-            if item.open && !item.chunk && keep(Holder::Owned(item.owner.as_ref())) {
-                let mut end = TextMessageEnd::new(id.clone());
-                end.subagent_run_id = item.owner.clone();
-                open.push((item.seq, end.into()));
-            }
-        }
-        for (id, item) in &self.reasoning {
-            if item.open && !item.chunk && keep(Holder::Owned(item.owner.as_ref())) {
-                let mut end = ReasoningMessageEnd::new(id.clone());
-                end.subagent_run_id = item.owner.clone();
-                open.push((item.seq, end.into()));
-            }
-        }
-        for (id, item) in &self.spans {
-            if item.open && keep(Holder::Owned(item.owner.as_ref())) {
-                let mut end = ReasoningEnd::new(id.clone());
-                end.subagent_run_id = item.owner.clone();
-                open.push((item.seq, end.into()));
-            }
-        }
-        for (id, call) in &self.calls {
-            if call.open && !call.chunk && keep(Holder::Owned(call.owner.as_ref())) {
-                let mut end = ToolCallEnd::new(id.clone());
-                end.subagent_run_id = call.owner.clone();
-                open.push((call.seq, end.into()));
-            }
+        for (seq, opened) in &self.open_order {
+            #[cfg(test)]
+            self.closer_probes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let seq = *seq;
+            let closer = match opened {
+                Opened::Text(id) => match self.text.get(id) {
+                    Some(item) if item.open && item.seq == seq && !item.chunk => {
+                        if !keep(Holder::Owned(item.owner.as_ref())) {
+                            continue;
+                        }
+                        let mut end = TextMessageEnd::new(id.clone());
+                        end.subagent_run_id = item.owner.clone();
+                        end.into()
+                    }
+                    _ => continue,
+                },
+                Opened::Reasoning(id) => match self.reasoning.get(id) {
+                    Some(item) if item.open && item.seq == seq && !item.chunk => {
+                        if !keep(Holder::Owned(item.owner.as_ref())) {
+                            continue;
+                        }
+                        let mut end = ReasoningMessageEnd::new(id.clone());
+                        end.subagent_run_id = item.owner.clone();
+                        end.into()
+                    }
+                    _ => continue,
+                },
+                Opened::Span(id) => match self.spans.get(id) {
+                    Some(item) if item.open && item.seq == seq => {
+                        if !keep(Holder::Owned(item.owner.as_ref())) {
+                            continue;
+                        }
+                        let mut end = ReasoningEnd::new(id.clone());
+                        end.subagent_run_id = item.owner.clone();
+                        end.into()
+                    }
+                    _ => continue,
+                },
+                Opened::Call(id) => match self.calls.get(id) {
+                    Some(call) if call.open && call.seq == seq && !call.chunk => {
+                        if !keep(Holder::Owned(call.owner.as_ref())) {
+                            continue;
+                        }
+                        let mut end = ToolCallEnd::new(id.clone());
+                        end.subagent_run_id = call.owner.clone();
+                        end.into()
+                    }
+                    _ => continue,
+                },
+                Opened::Subagent(id) => match self.subagents.get(id) {
+                    Some(Sub::Active { seq: s }) if *s == seq => {
+                        if !keep(Holder::Invocation(id)) {
+                            continue;
+                        }
+                        SubagentFinished::new(id.clone()).into()
+                    }
+                    _ => continue,
+                },
+            };
+            open.push((seq, closer));
         }
         for (name, holders) in &self.steps {
             for (owner, seq) in holders {
@@ -2470,14 +2562,6 @@ impl ProducerState {
                 let mut finished = StepFinished::new(name.clone());
                 finished.subagent_run_id = owner.clone();
                 open.push((*seq, finished.into()));
-            }
-        }
-        for (id, sub) in &self.subagents {
-            if let Sub::Active { seq } = sub {
-                if !keep(Holder::Invocation(id)) {
-                    continue;
-                }
-                open.push((*seq, SubagentFinished::new(id.clone()).into()));
             }
         }
         open.sort_unstable_by_key(|(seq, _)| std::cmp::Reverse(*seq));
@@ -2586,6 +2670,44 @@ mod tests {
             assert!(v.check(&chunk("m-5", None)).is_ok());
         }
         probes
+    }
+
+    /// Entries `closers` examines for the one open message after `n`
+    /// messages were opened and ended in the run.
+    fn closer_probes(n: usize) -> usize {
+        use serde_json::json;
+        use std::sync::atomic::Ordering;
+        let mut v = ProducerVerifier::new();
+        v.check(&ev(
+            json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+        ))
+        .unwrap();
+        for i in 0..n {
+            let id = format!("m-{i}");
+            v.check(&ev(
+                json!({"type": "TEXT_MESSAGE_START", "messageId": id, "role": "assistant"}),
+            ))
+            .unwrap();
+            v.check(&ev(json!({"type": "TEXT_MESSAGE_END", "messageId": id})))
+                .unwrap();
+        }
+        v.check(&ev(
+            json!({"type": "TEXT_MESSAGE_START", "messageId": "open", "role": "assistant"}),
+        ))
+        .unwrap();
+        v.state.closer_probes.store(0, Ordering::Relaxed);
+        let mut out = Vec::new();
+        v.closers(&mut out);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0], Event::TextMessageEnd(e) if e.message_id.as_str() == "open"));
+        v.state.closer_probes.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn closers_do_not_scan_items_already_ended() {
+        let (small, large) = (closer_probes(16), closer_probes(1024));
+        assert!(small <= 4, "16 ended messages cost {small} probes");
+        assert!(large <= 4, "probes grew with the ended items: {large}");
     }
 
     #[test]
