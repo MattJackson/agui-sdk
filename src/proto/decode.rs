@@ -61,7 +61,8 @@ pub enum DecodedJson {
 /// `{"id":"","role":""}` per 2 bytes), so a value can hold up to about 350 times
 /// its frame's size in memory (an 8 MB frame, about 2.8 GB). To feed an
 /// untrusted peer into a pipeline, use [`decode_event_json`] with
-/// `Processor::push_json`, which budgets while parsing.
+/// `Processor::push_json`, which budgets the text while parsing (the
+/// decoder's transient scratch, linear in the frame, is not budgeted).
 ///
 /// # Errors
 ///
@@ -98,14 +99,20 @@ pub(crate) fn decode_event_within(payload: &[u8], max_entries: usize) -> Result<
 /// Decodes one frame's payload straight to JSON text appended to `out`,
 /// without building a tree: the path for feeding a JSON pipeline (for example
 /// `Processor::push_json`) from the binary wire. Member order is wire order.
-/// A warm decoder makes no allocations beyond growth of `out`.
+/// A warm decoder makes no allocations beyond growth of `out` for an event
+/// whose open JSON (`Struct` entries and merged occurrences) stays within a
+/// few thousand wire entries; the scratch a larger event grows is released
+/// when its decode ends, so decoding it again regrows it.
 ///
 /// On error `out` is left as it was.
 ///
 /// Like [`decode_event`], not bounded by `Limits`: the text appended is up to
 /// about 16 times the payload's size (31 bytes of
 /// `{"interruptId":"","status":""},` per 2-byte empty resume entry), which
-/// `Processor::push_json` then budgets as it parses.
+/// `Processor::push_json` then budgets as it parses. The decoder's own
+/// scratch is not budgeted either: up to about 20 bytes per `Struct` wire
+/// entry (about 10 times the payload, as an entry can be 2 bytes) is held
+/// while the event decodes, even where duplicates collapse to one member.
 ///
 /// # Errors
 ///
