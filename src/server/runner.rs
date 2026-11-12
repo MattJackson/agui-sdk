@@ -548,10 +548,14 @@ impl<A: Agent> Drive for Driver<A> {
 impl<A: Agent> Driver<A> {
     /// Replays, opens the run, starts the agent.
     fn start(&mut self) {
-        for diagnostic in std::mem::take(&mut self.admission) {
-            self.reporter.report(|| diagnostic);
+        // Admission already capped its list and summarised what it dropped;
+        // capping it again would hide that summary and what follows it.
+        let admission = std::mem::take(&mut self.admission);
+        if !admission.is_empty() && self.sink.enabled() {
+            for diagnostic in &admission {
+                self.sink.report(diagnostic);
+            }
         }
-        self.reporter.end_event(None);
         if self.sink.panicked() && self.startup_failure.is_none() {
             self.startup_failure = Some(sink_panicked());
         }
