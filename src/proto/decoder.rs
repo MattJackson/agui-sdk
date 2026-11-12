@@ -6,7 +6,8 @@
 //! a JSON text writer that never materialises a tree.
 
 use super::codec_error::{Error, Result};
-use super::json::array_index;
+use super::encoder::SCRATCH_KEEP_ENTRIES;
+use super::json::{array_index, needs_attention};
 use super::schema::{
     Arm, Body, ContentKind, Field, Json, Label, MsgDesc, Ty, BASE_EVENT, EVENT, MAX_FIELDS,
 };
@@ -291,27 +292,14 @@ fn needs_escaping(text: &[u8]) -> bool {
     for chunk in &mut words {
         let mut word = [0; 8];
         word.copy_from_slice(chunk);
-        if escapes_any(u64::from_le_bytes(word)) {
+        if needs_attention(u64::from_le_bytes(word)) {
             return true;
         }
     }
     let tail = words.remainder();
     let mut word = [b' '; 8];
     word[..tail.len()].copy_from_slice(tail);
-    escapes_any(u64::from_le_bytes(word))
-}
-
-/// Whether any byte of `word` is one [`TextOut::quoted`] escapes: a control
-/// character, `"` or `\\` (exact, by the usual bytewise-zero tests).
-#[inline]
-fn escapes_any(word: u64) -> bool {
-    const ONES: u64 = 0x0101_0101_0101_0101;
-    const HIGH: u64 = 0x8080_8080_8080_8080;
-    let zero_in = |x: u64| x.wrapping_sub(ONES) & !x & HIGH != 0;
-    let below_space = word.wrapping_sub(ONES * 0x20) & !word & HIGH != 0;
-    below_space
-        || zero_in(word ^ (ONES * u64::from(b'"')))
-        || zero_in(word ^ (ONES * u64::from(b'\\')))
+    needs_attention(u64::from_le_bytes(word))
 }
 
 impl Out for TextOut<'_> {
@@ -1693,9 +1681,9 @@ fn positions_fit(len: usize) -> bool {
 /// instead of pairwise comparison.
 const SORTED_DUP_CHECK_ABOVE: usize = 32;
 
-/// Scratch vector capacity (in entries) kept between decodes; anything a
-/// larger event grew beyond this is released when the decode ends.
-const SCRATCH_KEEP_ENTRIES: usize = 4096;
+// Scratch vector capacity (in entries) kept between decodes is the
+// encoder's bound, `SCRATCH_KEEP_ENTRIES`; anything a larger event grew
+// beyond it is released when the decode ends.
 
 thread_local! {
     static DEC: std::cell::RefCell<Dec> = std::cell::RefCell::new(Dec::new());

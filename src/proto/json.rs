@@ -1276,9 +1276,11 @@ impl serde::Serializer for KeyBuilder<'_, '_> {
     }
 }
 
-/// True if any byte of `v` is `"`, `\` or a control character (< 0x20).
+/// True if any byte of `v` is `"`, `\` or a control character (< 0x20):
+/// what the JSON reader stops at and what the decoder's `TextOut` escapes
+/// (exact, by the usual bytewise-zero tests).
 #[inline]
-fn needs_attention(v: u64) -> bool {
+pub(super) fn needs_attention(v: u64) -> bool {
     const ONES: u64 = 0x0101_0101_0101_0101;
     const HIGH: u64 = 0x8080_8080_8080_8080;
     #[inline]

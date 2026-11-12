@@ -23,8 +23,8 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::event::Event;
 
 /// Capacity (bytes) kept in the per-thread text and string buffers between
-/// encodes.
-const KEEP_BYTES: usize = 256 * 1024;
+/// encodes: the encoder scratch's bound.
+const KEEP_BYTES: usize = super::encoder::SCRATCH_KEEP_BYTES;
 
 thread_local! {
     static ENCODER: RefCell<Encoder> = RefCell::new(Encoder::new());
