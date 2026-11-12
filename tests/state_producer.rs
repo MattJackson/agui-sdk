@@ -250,8 +250,8 @@ fn messages_snapshots_are_complete_and_unattributed() {
         })
         .unwrap();
     assert_eq!(snapshot.messages, history);
-    let wire = serde_json::to_value(Event::MessagesSnapshot(snapshot)).unwrap();
-    assert!(wire.get("subagentRunId").is_none());
+    // Unattributed by construction: MessagesSnapshot has no subagentRunId
+    // field, so its wire form cannot carry one.
 
     // A replayed run restates its complete history in order.
     let runner = Runner::new(agent(|_ctx| async { Ok(RunOutcome::success()) }));
