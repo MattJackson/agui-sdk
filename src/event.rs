@@ -490,9 +490,23 @@ impl EventType {
 // serde_json's default map; 320-336 with `preserve_order` (the IndexMap
 // layout varies by version, and another crate can switch the feature on
 // through unification), so the hard cap is 384, the pre-revision size, and
-// the 200-byte target is checked by the size bench. Large, rare payloads
-// (`RunStarted.input`) are boxed.
+// the 200-byte target is checked by the `size_budget` test below with the
+// default map. Large, rare payloads (`RunStarted.input`) are boxed.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Event>() <= 384);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<crate::error::Error>() == 8);
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod size_budget {
+    use super::Event;
+
+    #[test]
+    fn event_keeps_its_200_byte_target_with_the_default_map() {
+        type JsonMap = serde_json::Map<String, serde_json::Value>;
+        type BTree = std::collections::BTreeMap<String, serde_json::Value>;
+        if std::mem::size_of::<JsonMap>() == std::mem::size_of::<BTree>() {
+            assert!(std::mem::size_of::<Event>() <= 200);
+        }
+    }
+}
