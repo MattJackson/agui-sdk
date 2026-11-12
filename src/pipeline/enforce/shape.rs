@@ -205,24 +205,38 @@ impl Obj {
 
     /// The member named `key`, with its index in the member list.
     pub(crate) fn find(&self, key: &str) -> Option<(usize, Field)> {
-        self.members
-            .binary_search_by(|f| f.name.cmp(key))
-            .ok()
-            .map(|i| (i, Field::new(&self.members[i])))
+        self.find_bytes(key.as_bytes())
     }
 
-    /// [`find`](Self::find) by the name's bytes (byte order is `str` order).
+    /// [`find`](Self::find) by the name's bytes.
     pub(crate) fn find_bytes(&self, key: &[u8]) -> Option<(usize, Field)> {
-        self.members
-            .binary_search_by(|f| f.name.as_bytes().cmp(key))
-            .ok()
-            .map(|i| (i, Field::new(&self.members[i])))
+        position(self.members, |f| f.name, key).map(|i| (i, Field::new(&self.members[i])))
     }
 
     /// The members, sorted by name.
     pub(crate) fn fields(&self) -> impl Iterator<Item = Field> {
         self.members.iter().map(Field::new)
     }
+}
+
+/// Where `key` is among the names of `items` (distinct, none empty).
+///
+/// A scan that compares lengths and first bytes before any text: the names
+/// are few (at most 64 members, about 30 event types) and short, and they
+/// share long prefixes (`TEXT_MESSAGE_`, `TOOL_CALL_`), so a binary search
+/// pays an out-of-line comparison of the common prefix at every step, where
+/// this compares text about once, for the match.
+#[inline]
+fn position<T>(
+    items: &'static [T],
+    name: impl Fn(&T) -> &'static str,
+    key: &[u8],
+) -> Option<usize> {
+    let first = key.first()?;
+    items.iter().position(|item| {
+        let n = name(item).as_bytes();
+        n.len() == key.len() && n.first() == Some(first) && n == key
+    })
 }
 
 /// An array and its minimum length.
@@ -299,11 +313,7 @@ impl Union {
 
     /// The variant whose discriminator is `value`.
     pub(crate) fn variant(&self, value: &str) -> Option<(&'static str, Obj)> {
-        let arm = self
-            .arms
-            .binary_search_by(|a| a.value.cmp(value))
-            .ok()
-            .map(|i| &self.arms[i])?;
+        let arm = &self.arms[position(self.arms, |a| a.value, value.as_bytes())?];
         match arm.def.def().kind {
             DefKind::Object(ref o) => Some((arm.value, Obj::new(arm.def, o))),
             _ => None,

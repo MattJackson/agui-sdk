@@ -1528,3 +1528,78 @@ fn muted_findings_deliver_what_built_ones_do() {
         }
     }
 }
+
+/// The name scans behind `Obj::find` and `Union::variant` find exactly
+/// what a search of the sorted table finds: every member and arm name, and
+/// nothing for a near miss (one byte off, one byte short or long, empty).
+#[test]
+fn name_scans_agree_with_the_sorted_tables() {
+    use crate::pipeline::shapes::{DefId, DefKind, DEFS};
+    let misses = |name: &str| -> Vec<String> {
+        let mut out = vec![
+            String::new(),
+            format!("{name}x"),
+            name[..name.len() - 1].to_owned(),
+        ];
+        let mut flipped = name.as_bytes().to_vec();
+        if let Some(last) = flipped.last_mut() {
+            *last ^= 0x20;
+        }
+        out.push(String::from_utf8_lossy(&flipped).into_owned());
+        let mut first = name.as_bytes().to_vec();
+        first[0] ^= 0x01;
+        out.push(String::from_utf8_lossy(&first).into_owned());
+        out
+    };
+    for (i, def) in DEFS.iter().enumerate() {
+        let Ok(i) = u16::try_from(i) else {
+            panic!("more than u16::MAX definitions")
+        };
+        let id = DefId(i);
+        match Shape::of_def(id, true) {
+            Shape::Object(obj) => {
+                let DefKind::Object(o) = def.kind else {
+                    unreachable!()
+                };
+                for (at, f) in o.fields.iter().enumerate() {
+                    assert!(!f.name.is_empty());
+                    assert_eq!(
+                        obj.find(f.name).map(|x| x.0),
+                        Some(at),
+                        "{}.{}",
+                        def.name,
+                        f.name
+                    );
+                    for miss in misses(f.name) {
+                        let expected = o.fields.binary_search_by(|g| g.name.cmp(&miss)).ok();
+                        assert_eq!(
+                            obj.find(&miss).map(|x| x.0),
+                            expected,
+                            "{}: {miss:?}",
+                            def.name
+                        );
+                    }
+                }
+            }
+            Shape::Union(union) => {
+                let DefKind::Union(u) = def.kind else {
+                    unreachable!()
+                };
+                for arm in u.arms {
+                    assert!(!arm.value.is_empty());
+                    assert_eq!(union.variant(arm.value).map(|v| v.0), Some(arm.value));
+                    for miss in misses(arm.value) {
+                        let known = u.arms.binary_search_by(|a| a.value.cmp(&miss)).is_ok();
+                        assert_eq!(
+                            union.variant(&miss).is_some(),
+                            known,
+                            "{}: {miss:?}",
+                            def.name
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
