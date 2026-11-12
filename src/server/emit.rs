@@ -681,9 +681,19 @@ impl Emitter {
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::ProducerViolation`]
-    /// (the event is not sent), [`ErrorCode::Cancelled`]
-    /// or [`ErrorCode::Disconnected`].
+    /// - [`ErrorCode::ProducerViolation`]: the event (or one a transformer
+    ///   made from it) breaks a producer rule.
+    /// - [`ErrorCode::QueueOverflow`]: the transformers expanded this one
+    ///   send into more events than the queue can hold.
+    /// - [`ErrorCode::AgentPanicked`]: a transformer or the diagnostic sink
+    ///   panicked.
+    ///
+    /// Any of these ends the run: later sends fail with the same error and
+    /// the run closes with `RUN_ERROR`. When a transformer expanded the
+    /// event, the expanded events before the refused one are still sent.
+    ///
+    /// [`ErrorCode::Cancelled`] or [`ErrorCode::Disconnected`]: the run was
+    /// cancelled or its stream is gone; nothing more is sent.
     pub async fn emit(&self, event: impl Into<Event>) -> Result<()> {
         self.send(event.into()).await
     }

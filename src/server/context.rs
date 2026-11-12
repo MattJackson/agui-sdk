@@ -151,7 +151,7 @@ impl<S: serde::Serialize> RunContext<S> {
     /// Sends the state change since the last publication: a `STATE_DELTA`
     /// against the baseline the client holds (the input's state until the
     /// first snapshot, RUNIN-25, SNAP-07), or a snapshot when a delta would
-    /// not be smaller. No event when nothing changed.
+    /// be larger. No event when nothing changed.
     ///
     /// # Errors
     ///

@@ -24,7 +24,8 @@
 //! * The agent ([`Agent`]) emits content through its [`RunContext`] and
 //!   returns a [`RunOutcome`]. It never emits lifecycle events.
 //! * The [`Runner`] emits `RUN_STARTED` (with its own `protocolVersion`,
-//!   VER-18) and exactly one terminal; closes anything left open before any
+//!   VER-18, unless `legacy_peer` downgrades an undeclared client) and
+//!   exactly one terminal; closes anything left open before any
 //!   `RUN_FINISHED` (LIFE-12); derives `pendingToolCallIds` (TOOL-31); turns
 //!   agent errors, panics, verifier refusals and queue overflow into
 //!   `RUN_ERROR` (LIFE-13); and runs every event through the

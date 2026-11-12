@@ -198,7 +198,7 @@ impl std::fmt::Debug for HttpResponse {
 
 /// The encoded response body. Each poll encodes every event that is ready
 /// into one [`Chunk`] (coalesced), carved from a reused buffer without a
-/// per-event allocation (§8: encode is 0 amortized). Consume with
+/// per-event allocation once the buffer has grown. Consume with
 /// [`next`](Self::next) / [`poll_next`](Self::poll_next), or as a
 /// `futures_core::Stream` with feature `stream`. Dropping it cancels the run
 /// (a disconnected client).

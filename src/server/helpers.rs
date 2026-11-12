@@ -1,5 +1,5 @@
 //! Producer-side helpers for rules the agent author owns but the SDK can
-//! check (sdk-assistable rows).
+//! check.
 //!
 //! * [`PartFilter`]: skip content parts the model cannot take, without
 //!   failing the run, with a warning, and answer a tool call with `""` when
