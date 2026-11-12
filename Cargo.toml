@@ -152,69 +152,89 @@ axum = { version = "0.8", default-features = false, features = ["tokio", "http1"
 [[bench]]
 name = "protocol_types"
 harness = false
+
 [[bench]]
 name = "sse_decode"
 harness = false
+
 [[bench]]
 name = "proto_decode"
 harness = false
+
 [[bench]]
 name = "proto_codec"
 harness = false
 required-features = ["proto"]
+
 [[bench]]
 name = "pipeline_push_json"
 harness = false
+
 [[bench]]
 name = "pipeline_push_value"
 harness = false
+
 [[bench]]
 name = "reducer_deltas"
 harness = false
+
 [[bench]]
 name = "messages_snapshot"
 harness = false
+
 [[bench]]
 name = "patch_apply"
 harness = false
+
 [[bench]]
 name = "server_emit_encode"
 harness = false
+
 [[bench]]
 name = "server_runner"
 harness = false
 required-features = ["server"]
+
 [[bench]]
 name = "pipeline_linearity"
 harness = false
+
 [[bench]]
 name = "http_transport"
 harness = false
 required-features = ["client"]
+
 [[test]]
 name = "transport_http"
 required-features = ["client"]
+
 [[test]]
 name = "proxy_env"
 required-features = ["client"]
+
 [[test]]
 name = "transport_sse"
 required-features = ["client"]
+
 [[test]]
 name = "transport_contract"
 required-features = ["client", "axum"]
+
 [[test]]
 name = "transport_sse_server"
 required-features = ["axum"]
+
 # Opt-in (AGUI_INTEROP=1) interop with the TypeScript reference; its Node half
 # is interop/ts/. Neither is packaged.
 [[test]]
 name = "interop_ts"
 required-features = ["client", "axum"]
+
 [[bench]]
 name = "client_run"
 harness = false
 required-features = ["client"]
+
 # Readable stacks for flamegraph/samply without full debug info.
 [profile.bench]
 debug = "line-tables-only"

@@ -1,8 +1,9 @@
 //! Peer-controlled sizes must not make client-side bookkeeping quadratic:
 //! resume validation over many interrupts, answering many pending tool
 //! calls, and listing the messages a run added. Each test compares the time
-//! for n and 4n items (the pattern of `hostile_peers.rs`): linear code takes
-//! about 4x, quadratic code about 16x, and the bound is 8x.
+//! for n and 16n items (the pattern of `hostile_peers.rs`): linear code takes
+//! about 16x, quadratic code about 256x, and the bound is 64x, a factor of 4
+//! from each so stalls on a shared debug-build runner cannot fake a failure.
 //!
 //! Timing tests share a lock so they do not disturb one another.
 
@@ -45,8 +46,8 @@ fn best<S>(setup: impl Fn() -> S, f: impl Fn(S)) -> Duration {
 
 fn assert_linear(what: &str, small: Duration, large: Duration) {
     assert!(
-        large < small * 8,
-        "{what}: 4x the items took {:.1}x the time ({small:?} -> {large:?})",
+        large < small * 64,
+        "{what}: 16x the items took {:.1}x the time ({small:?} -> {large:?})",
         large.as_secs_f64() / small.as_secs_f64()
     );
 }
@@ -78,7 +79,7 @@ fn validate_resume_is_linear_in_the_interrupts_and_entries() {
             |(thread, entries)| thread.validate_resume(&entries).unwrap(),
         )
     };
-    assert_linear("validate_resume", time(3_000), time(12_000));
+    assert_linear("validate_resume", time(3_000), time(48_000));
 }
 
 fn pending(n: usize) -> Vec<PendingToolCall> {
@@ -115,7 +116,7 @@ fn answering_pending_calls_is_linear() {
             },
         )
     };
-    assert_linear("decline", time(2_500), time(10_000));
+    assert_linear("decline", time(2_500), time(40_000));
 }
 
 #[test]
@@ -134,7 +135,7 @@ fn checking_that_every_pending_call_is_answered_is_linear() {
             },
         )
     };
-    assert_linear("run", time(2_500), time(10_000));
+    assert_linear("run", time(2_500), time(40_000));
 }
 
 #[test]
@@ -164,5 +165,5 @@ fn new_messages_is_linear_in_the_history() {
             },
         )
     };
-    assert_linear("new_messages", time(3_000), time(12_000));
+    assert_linear("new_messages", time(3_000), time(48_000));
 }

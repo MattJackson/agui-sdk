@@ -38,6 +38,9 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Manual fallback: run it on the tag itself (`gh workflow run release.yml
+  # --ref vX.Y.Z`), so `github.ref_name` is the tag exactly as on a push.
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}

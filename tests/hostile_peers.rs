@@ -657,11 +657,11 @@ fn m2_step_owner_tracking_is_linear() {
             .min()
             .unwrap()
     };
-    let (small, large) = (events(5_000), events(20_000));
+    let (small, large) = (events(5_000), events(80_000));
     let (t_small, t_large) = (time(&small), time(&large));
     assert!(
-        t_large < t_small * LINEAR_4X,
-        "4x the events took {:.1}x the time ({t_small:?} -> {t_large:?})",
+        t_large < t_small * LINEAR_16X,
+        "16x the events took {:.1}x the time ({t_small:?} -> {t_large:?})",
         t_large.as_secs_f64() / t_small.as_secs_f64()
     );
 }
@@ -695,11 +695,11 @@ fn resume_unrecognised_reporting_is_linear() {
             .min()
             .unwrap()
     };
-    let (small, large) = (entries(5_000), entries(20_000));
+    let (small, large) = (entries(5_000), entries(80_000));
     let (t_small, t_large) = (time(&small), time(&large));
     assert!(
-        t_large < t_small * LINEAR_4X,
-        "4x the entries took {:.1}x the time ({t_small:?} -> {t_large:?})",
+        t_large < t_small * LINEAR_16X,
+        "16x the entries took {:.1}x the time ({t_small:?} -> {t_large:?})",
         t_large.as_secs_f64() / t_small.as_secs_f64()
     );
 }
@@ -769,10 +769,10 @@ fn boundary_legacy_mirror_check_is_linear() {
             assert_eq!(f["content"].as_array().unwrap().len(), 2 * n);
         })
     };
-    let (t_small, t_large) = (time(1_000), time(4_000));
+    let (t_small, t_large) = (time(1_000), time(16_000));
     assert!(
-        t_large < t_small * LINEAR_4X,
-        "4x the parts took {:.1}x the time ({t_small:?} -> {t_large:?})",
+        t_large < t_small * LINEAR_16X,
+        "16x the parts took {:.1}x the time ({t_small:?} -> {t_large:?})",
         t_large.as_secs_f64() / t_small.as_secs_f64()
     );
 }
@@ -805,10 +805,10 @@ fn boundary_legacy_mirror_check_with_object_filenames_is_linear() {
             assert_eq!(f["content"].as_array().unwrap().len(), 2 * n);
         })
     };
-    let (t_small, t_large) = (time(1_000), time(4_000));
+    let (t_small, t_large) = (time(1_000), time(16_000));
     assert!(
-        t_large < t_small * LINEAR_4X,
-        "4x the parts took {:.1}x the time ({t_small:?} -> {t_large:?})",
+        t_large < t_small * LINEAR_16X,
+        "16x the parts took {:.1}x the time ({t_small:?} -> {t_large:?})",
         t_large.as_secs_f64() / t_small.as_secs_f64()
     );
 }
@@ -836,10 +836,10 @@ fn thinking_span_tracking_is_linear() {
             }
         })
     };
-    let (t_small, t_large) = (time(10_000), time(40_000));
+    let (t_small, t_large) = (time(10_000), time(160_000));
     assert!(
-        t_large < t_small * LINEAR_4X,
-        "4x the spans took {:.1}x the time ({t_small:?} -> {t_large:?})",
+        t_large < t_small * LINEAR_16X,
+        "16x the spans took {:.1}x the time ({t_small:?} -> {t_large:?})",
         t_large.as_secs_f64() / t_small.as_secs_f64()
     );
 }
@@ -937,17 +937,18 @@ fn time_frames(frames: &[Vec<u8>]) -> Duration {
         .unwrap()
 }
 
-/// Time bound for 4x the input in the wall-clock linearity checks below: 3x
-/// slack over linear (12x). A quadratic path takes 16x, so it still fails,
-/// and a stall on a shared debug-build runner (these run in every test lane)
-/// needs to cost 3x, not 2x, to fake a failure.
-const LINEAR_4X: u32 = 12;
+/// Time bound for 16x the input in the wall-clock linearity checks below:
+/// 4x slack over linear (64x), while a quadratic path takes 256x. At 4x the
+/// input linear and quadratic were only 4x vs 16x apart, and stalls on shared
+/// debug-build runners (these run in every test lane) crossed any threshold
+/// between them; 16x leaves a factor of 4 on both sides.
+const LINEAR_16X: u32 = 64;
 
 fn assert_linear(small: &[Vec<u8>], large: &[Vec<u8>]) {
     let (t_small, t_large) = (time_frames(small), time_frames(large));
     assert!(
-        t_large < t_small * LINEAR_4X,
-        "4x the events took {:.1}x the time ({t_small:?} -> {t_large:?})",
+        t_large < t_small * LINEAR_16X,
+        "16x the events took {:.1}x the time ({t_small:?} -> {t_large:?})",
         t_large.as_secs_f64() / t_small.as_secs_f64()
     );
 }
@@ -970,7 +971,7 @@ fn reopen_with_new_parent_is_linear() {
         }
         frames(&v)
     };
-    assert_linear(&events(3_000), &events(12_000));
+    assert_linear(&events(3_000), &events(48_000));
 }
 
 fn activity_snapshots(n: usize) -> Vec<Value> {
@@ -1020,7 +1021,7 @@ fn messages_snapshot_against_held_activity_is_linear() {
         v.extend((0..n).map(|_| empty()));
         frames(&v)
     };
-    assert_linear(&events(2_500), &events(10_000));
+    assert_linear(&events(2_500), &events(40_000));
 
     // Drop one message and append one, again and again.
     let churn = |n: usize| -> Vec<Vec<u8>> {
@@ -1032,7 +1033,7 @@ fn messages_snapshot_against_held_activity_is_linear() {
         }));
         frames(&v)
     };
-    assert_linear(&churn(2_500), &churn(10_000));
+    assert_linear(&churn(2_500), &churn(40_000));
 
     // A reducer-minted carrier clashing with a retained message must not
     // leave the snapshots expecting a drop that never comes.
@@ -1048,7 +1049,7 @@ fn messages_snapshot_against_held_activity_is_linear() {
         v.extend((0..n).map(|_| empty()));
         frames(&v)
     };
-    assert_linear(&clash(2_500), &clash(10_000));
+    assert_linear(&clash(2_500), &clash(40_000));
 }
 
 /// A snapshot that drops nothing keeps the activity budgets: retained
@@ -1778,7 +1779,9 @@ fn non_applying_moves_credit_measuring_is_linear() {
                 "patch": moves}),
         ])
     };
-    assert_linear(&events(5_000), &events(20_000));
+    // 32k operations (4 container entries each) stay under the default
+    // 150,000-entry frame budget.
+    assert_linear(&events(2_000), &events(32_000));
 }
 
 /// Adding and removing a value made of many small objects nets (close to)
