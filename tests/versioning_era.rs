@@ -1297,6 +1297,8 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
             assert!(input.get("protocolVersion").is_some(), "{name}: declared");
         }
 
+        let outgoing = sink.take();
+
         // Incoming: the boundary, then the era's upgrade.
         let stream: Vec<Value> = fixture["stream"].as_array().cloned().unwrap_or_default();
         let out = match era {
@@ -1348,16 +1350,31 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
             }
         }
 
-        let diagnostics = sink.take();
+        // What the client warns: the fixture's warnings come from the
+        // outgoing and incoming stages together. The shipped processor sees
+        // only the incoming half and must warn exactly as the hand-run
+        // incoming stages did.
+        let incoming = sink.take();
+        let staged: Vec<&Diagnostic> = outgoing.iter().chain(&incoming).collect();
         for wanted in expect["warnings"].as_array().into_iter().flatten() {
             let wanted = wanted.as_str().unwrap_or_default();
             assert!(
-                diagnostics.iter().any(|d| d.message.contains(wanted)),
-                "{name}: no warning containing {wanted:?} in {diagnostics:#?}"
+                staged.iter().any(|d| d.message.contains(wanted)),
+                "{name}: no warning containing {wanted:?} in {staged:#?}"
             );
         }
         if expect["noWarnings"] == json!(true) {
-            assert!(diagnostics.is_empty(), "{name}: {diagnostics:#?}");
+            assert!(staged.is_empty(), "{name}: {staged:#?}");
         }
+        let shipped: Vec<(DiagnosticCode, &str)> = run
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.message.as_str()))
+            .collect();
+        let expected: Vec<(DiagnosticCode, &str)> = incoming
+            .iter()
+            .map(|d| (d.code, d.message.as_str()))
+            .collect();
+        assert_eq!(shipped, expected, "{name}: shipped path warnings");
     }
 }
