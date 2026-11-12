@@ -184,3 +184,51 @@ fn dropping_run_and_absorb_mid_run_leaves_the_thread_usable() {
     let next = thread.run(RunRequest::new().run_id("r2").user("again"));
     assert!(next.is_ok(), "{:?}", next.err());
 }
+
+/// Serves `frames`, then, on the next read, cancels the run's token and
+/// fails with `Cancelled` as a transport that watches the token does
+/// (a cancel racing the read).
+struct CancelsAfterFrames(Vec<serde_json::Value>);
+
+impl Transport for CancelsAfterFrames {
+    async fn open(&self, request: TransportRequest) -> agui_sdk::Result<FrameStream> {
+        let cancel = request.cancel.clone();
+        let mut frames = self
+            .0
+            .iter()
+            .map(|f| {
+                agui_sdk::client::Frame::from_json(agui_sdk::wire::Chunk::from(
+                    serde_json::to_vec(f).unwrap(),
+                ))
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        Ok(FrameStream::from_poll_fn(move |_cx| {
+            std::task::Poll::Ready(Some(match frames.next() {
+                Some(frame) => Ok(frame),
+                None => {
+                    cancel.cancel();
+                    Err(Error::new(ErrorCode::Cancelled, "the run was cancelled"))
+                }
+            }))
+        }))
+    }
+}
+
+#[test]
+fn a_cancel_racing_the_read_after_the_terminal_does_not_override_it() {
+    for with_middleware in [false, true] {
+        let transport = CancelsAfterFrames(vec![run_started("t1", "r1"), run_finished("t1", "r1")]);
+        let mut builder = AgentClient::with_transport(transport).diagnostic_sink(NullSink);
+        if with_middleware {
+            builder = builder.middleware(|r: MiddlewareRequest, n: Next| n.run(r));
+        }
+        let client = builder.build().unwrap();
+        let report = block_on(client.run(request()).into_future())
+            .unwrap_or_else(|e| panic!("with_middleware={with_middleware}: {e}"));
+        assert!(
+            report.status.is_success(),
+            "with_middleware={with_middleware}"
+        );
+    }
+}

@@ -379,6 +379,18 @@ impl RunDriver {
                         {
                             return Poll::Ready(self.end_of_stream().map(Err));
                         }
+                        // The transport saw the run's token first: the
+                        // cancel is judged as one seen here would be, so a
+                        // received terminal still wins.
+                        Poll::Ready(Some(Err(err)))
+                            if !panicked
+                                && err.code() == ErrorCode::Cancelled
+                                && self.cancel.is_cancelled() =>
+                        {
+                            if let Some(ended) = self.cancelled_now() {
+                                return Poll::Ready(ended);
+                            }
+                        }
                         Poll::Ready(Some(Err(err))) => {
                             return Poll::Ready(Some(Err(self.conclude_err(err))))
                         }
