@@ -129,18 +129,18 @@ pub(super) struct Thinking {
     bytes: usize,
 }
 
-/// What a frame's `messageId` member holds.
-enum Id {
+/// What a frame's `messageId` member holds, borrowed from the frame.
+enum Id<'a> {
     Absent,
-    Named(String),
+    Named(&'a str),
     /// Present but not a string: malformed, left for enforcement.
     Malformed,
 }
 
-fn message_id(map: &Map<String, Value>) -> Id {
+fn message_id(map: &Map<String, Value>) -> Id<'_> {
     match map.get("messageId") {
         None => Id::Absent,
-        Some(Value::String(id)) => Id::Named(id.clone()),
+        Some(Value::String(id)) => Id::Named(id),
         Some(_) => Id::Malformed,
     }
 }
@@ -244,7 +244,7 @@ impl Thinking {
             Step::Start => {
                 self.drop_title(map, notes);
                 match message_id(map) {
-                    Id::Named(id) => self.open_span(&id),
+                    Id::Named(id) => self.open_span(id),
                     Id::Absent => {
                         let id = self.name();
                         self.open_span(&id);
@@ -255,7 +255,7 @@ impl Thinking {
             }
             Step::End => match message_id(map) {
                 Id::Named(id) => {
-                    self.close_named(&id);
+                    self.close_named(id);
                 }
                 Id::Absent => {
                     if let Some(id) = self.close_latest() {
@@ -267,7 +267,7 @@ impl Thinking {
             Step::MessageStart => {
                 match message_id(map) {
                     Id::Named(id) => {
-                        self.set_message(Some(id));
+                        self.set_message(Some(id.to_owned()));
                     }
                     Id::Absent => {
                         let id = self.name();
@@ -287,7 +287,7 @@ impl Thinking {
             }
             Step::MessageEnd => match message_id(map) {
                 Id::Named(id) => {
-                    if self.message.as_deref() == Some(id.as_str()) {
+                    if self.message.as_deref() == Some(id) {
                         self.set_message(None);
                     }
                 }
