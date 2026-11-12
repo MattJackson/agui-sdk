@@ -534,6 +534,24 @@ fn legacy_parts_in_results_and_echoed_input_are_upgraded_and_losses_warn() {
     assert!(!lossy[0].message.contains("https://x"), "no payload values");
 }
 
+/// covers: VER-13
+#[test]
+fn a_legacy_filename_beside_null_metadata_is_kept() {
+    let (mut reporter, sink) = collecting();
+    let frame = json!({"type": "TOOL_CALL_RESULT", "messageId": "m", "toolCallId": "c",
+                       "content": [{"type": "binary", "mimeType": "image/png", "data": "AAAA",
+                                    "filename": "a.png", "metadata": null}]});
+    let out = through_boundary(vec![frame], &mut reporter);
+    assert_eq!(out[0]["content"][0]["metadata"]["filename"], "a.png");
+    let diagnostics = sink.take();
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| !d.message.contains("filename dropped")),
+        "{diagnostics:#?}"
+    );
+}
+
 /// covers: VER-05, VER-34
 #[test]
 fn malformed_legacy_parts_are_left_for_enforcement() {

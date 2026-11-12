@@ -127,3 +127,69 @@ fn chunk_errors_quote_a_bounded_preview_of_peer_ids() {
         assert!(message.contains(wording), "case {i}: {message}");
     }
 }
+
+/// A run that opened many subagent lanes does not leave peak-sized tables
+/// behind for the rest of the stream: the run boundary releases them.
+#[test]
+fn a_run_boundary_releases_peak_sized_lane_tables() {
+    let mut x = ChunkExpander::new();
+    let mut out = Vec::new();
+    let lanes = crate::pipeline::RETAIN_FLOOR * 4 + 1;
+    for n in 0..lanes {
+        x.push(
+            ev(json!({
+                "type": "TEXT_MESSAGE_CHUNK",
+                "messageId": format!("m{n}"),
+                "subagentRunId": format!("s{n}"),
+                "delta": "x",
+            })),
+            &mut out,
+        )
+        .unwrap();
+    }
+    x.push(
+        ev(json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r"})),
+        &mut out,
+    )
+    .unwrap();
+    assert!(x.is_idle());
+    assert!(x.subagents.capacity() <= crate::pipeline::RETAIN_FLOOR);
+    assert!(x
+        .by_item
+        .iter()
+        .all(|t| t.capacity() <= crate::pipeline::RETAIN_FLOOR));
+    assert!(x.closing.capacity() <= crate::pipeline::RETAIN_FLOOR);
+
+    // Lanes all closed by their own ends leave the tables empty but large;
+    // the next boundary still releases them.
+    let mut x = ChunkExpander::new();
+    for n in 0..lanes {
+        let id = format!("s{n}");
+        x.push(
+            ev(json!({
+                "type": "TEXT_MESSAGE_CHUNK",
+                "messageId": format!("m{n}"),
+                "subagentRunId": id,
+                "delta": "x",
+            })),
+            &mut out,
+        )
+        .unwrap();
+        x.push(
+            ev(json!({"type": "SUBAGENT_FINISHED", "subagentRunId": id})),
+            &mut out,
+        )
+        .unwrap();
+    }
+    assert!(x.is_idle());
+    x.push(
+        ev(json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r"})),
+        &mut out,
+    )
+    .unwrap();
+    assert!(x.subagents.capacity() <= crate::pipeline::RETAIN_FLOOR);
+    assert!(x
+        .by_item
+        .iter()
+        .all(|t| t.capacity() <= crate::pipeline::RETAIN_FLOOR));
+}

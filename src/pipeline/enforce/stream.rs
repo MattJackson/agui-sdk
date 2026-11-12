@@ -5,7 +5,9 @@
 //! shape of the position it stands on. The target type's own `Deserialize`
 //! drives it, and sees only enforced material: undescribed members are
 //! skipped before their key reaches the visitor, a `null` in an optional
-//! position is skipped when the compatibility shim is on, an unrecognised
+//! position the optional-null registry lists is skipped when the
+//! compatibility shim is on (any other optional `null` is a type mismatch),
+//! an unrecognised
 //! closed-set value or union member in an optional position or list is
 //! skipped, and a malformed known value stops the parse with a [`Fault`].
 //! Strings without escapes are lent to the visitor straight from the frame.
@@ -1273,11 +1275,7 @@ impl<'a, 'de, 'o> MapAccess<'de> for ObjAccess<'a, 'de, 'o> {
                     || self.st.opts.strict
                     || !self.obj.null_reads_absent(field.name)
                 {
-                    return Err(DeErr::Fault(Fault::mismatch(
-                        &here,
-                        &expected_name(field.shape),
-                        Kind::Null,
-                    )));
+                    return Err(DeErr::Fault(null_mismatch(&here, field.shape)));
                 }
                 self.st.literal(b"null")?;
                 self.st
@@ -1326,6 +1324,17 @@ impl<'a, 'de, 'o> MapAccess<'de> for ObjAccess<'a, 'de, 'o> {
             Pending::Tag(value) => seed.deserialize(BorrowedStrDeserializer::<DeErr>::new(value)),
             Pending::None => Err(DeErr::Custom("value requested before its key".to_owned())),
         }
+    }
+}
+
+/// A `null` where `shape` belongs, named as the value walk names it: a
+/// fixed string by its literal, anything else by its JSON type.
+fn null_mismatch(path: &Path<'_>, shape: Shape) -> Fault {
+    match shape {
+        Shape::Const(literal) | Shape::Pinned { value: literal, .. } => {
+            Fault::mismatch(path, &Quoted(literal), Kind::Null)
+        }
+        shape => Fault::mismatch(path, &expected_name(shape), Kind::Null),
     }
 }
 

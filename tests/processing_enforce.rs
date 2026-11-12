@@ -403,3 +403,42 @@ fn enforce_event_json_refuses_an_oversized_frame_as_frame_too_large() {
         .map_err(|e| e.code());
     assert_eq!(code, Err(ErrorCode::FrameTooLarge));
 }
+
+/// A truncated frame is a JSON syntax fault, named the same whichever path
+/// reads it: a member `null` (which routes the frame through the
+/// compatibility boundary) does not change the message.
+#[test]
+fn a_truncated_frame_reads_the_same_with_or_without_a_null() {
+    use agui_sdk::diagnostics::NullSink;
+    use agui_sdk::pipeline::{PipelineConfig, Processor};
+    let message = |frame: &[u8]| {
+        let mut processor = Processor::new(PipelineConfig::default());
+        let mut reporter = Reporter::new(Arc::new(NullSink), 16);
+        let Err(err) = processor.push_json(frame, &mut reporter, &mut Vec::new()) else {
+            panic!("a truncated frame was accepted")
+        };
+        assert_eq!(err.code(), ErrorCode::MalformedEvent);
+        err.to_string()
+    };
+    let with_null = message(br#"{"type":"RUN_STARTED","extra":null,"threadId":"t"#);
+    let without = message(br#"{"type":"RUN_STARTED","extra":1234,"threadId":"t"#);
+    assert_eq!(with_null, without);
+}
+
+/// A `null` where a fixed string belongs is named the same on both paths:
+/// the expected literal, not just "string".
+#[test]
+fn a_null_in_a_pinned_member_names_the_literal_on_both_paths() {
+    let frame = json!({"type": "REASONING_MESSAGE_START", "messageId": "m", "role": null});
+    let sink = Arc::new(CollectingSink::new());
+    let mut reporter = Reporter::new(sink, 256);
+    let enforcer = Enforcer::new(Limits::default());
+    let bytes = serde_json::to_vec(&frame).unwrap_or_default();
+    let message = |r: agui_sdk::Result<Option<agui_sdk::Event>>| match r {
+        Err(e) => e.message().to_owned(),
+        Ok(_) => panic!("{frame} was not fatal"),
+    };
+    let from_bytes = message(enforcer.enforce_event_json(&bytes, &mut reporter));
+    let from_value = message(enforcer.enforce_event_value(frame.clone(), &mut reporter));
+    assert_eq!(from_bytes, from_value);
+}

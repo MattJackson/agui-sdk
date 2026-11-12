@@ -105,12 +105,12 @@ impl Enforcer {
     /// a frame over them fails before its tree is built, never after.
     pub(crate) fn parse_frame(&self, frame: &[u8]) -> Result<Value> {
         self.check_frame_size(frame)?;
+        // Any JSON value parses here, so a fault is a syntax fault (or a
+        // budget), reported as the direct path reports it; a frame that is
+        // not an object is judged by enforcement afterwards.
         parse_value(frame, &self.options()).map_err(|fault| match fault.kind {
             FaultKind::Limit => fault_error(fault, ErrorCode::LimitExceeded),
-            _ => Error::new(
-                ErrorCode::MalformedEvent,
-                format!("frame is not a JSON object: {}", fault.message),
-            ),
+            _ => Error::new(ErrorCode::MalformedEvent, fault.message),
         })
     }
 
@@ -255,6 +255,9 @@ impl Enforcer {
 /// # Errors
 ///
 /// [`ErrorCode::InvalidValue`] with a pointer;
+/// [`ErrorCode::MalformedEvent`] (no pointer) for bytes that are not JSON;
+/// [`ErrorCode::LimitExceeded`] for a document over the entry or depth
+/// budget;
 /// [`ErrorCode::InvalidConfig`] for an unknown anchor.
 pub fn validate_strict(anchor: &str, document: &[u8]) -> Result<()> {
     let shape = anchor_shape(anchor)?;
@@ -298,7 +301,9 @@ pub(crate) fn parse_strict_event(document: &[u8]) -> Result<Event> {
 ///
 /// # Errors
 ///
-/// As [`validate_strict`] for malformed known values.
+/// [`ErrorCode::InvalidValue`] with a pointer for a malformed known value;
+/// [`ErrorCode::LimitExceeded`] for a document over the entry or depth
+/// budget; [`ErrorCode::InvalidConfig`] for an unknown anchor.
 pub fn enforce_document(anchor: &str, document: Value, reporter: &mut Reporter) -> Result<Value> {
     let shape = anchor_shape(anchor)?;
     let opts = Options::lenient(false);

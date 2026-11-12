@@ -522,3 +522,30 @@ fn a_processor_expecting_a_run_accepts_replayed_history_first() {
         Some(ErrorCode::Identity)
     );
 }
+
+/// A processor that rejected an event is spent: its end-of-stream verdict
+/// is the same error, not a complete stream.
+#[test]
+fn finish_checked_after_a_rejected_event_fails_with_the_same_code() {
+    use agui_sdk::diagnostics::{NullSink, Reporter};
+    use agui_sdk::pipeline::{PipelineConfig, Processor};
+    let mut processor = Processor::new(PipelineConfig::default());
+    let mut reporter = Reporter::new(std::sync::Arc::new(NullSink), 16);
+    let mut out = Vec::new();
+    for frame in [started("r1"), finished("r1")] {
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        processor
+            .push_json(&bytes, &mut reporter, &mut out)
+            .unwrap();
+    }
+    let late = serde_json::to_vec(
+        &json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "x"}),
+    )
+    .unwrap();
+    let code = processor
+        .push_json(&late, &mut reporter, &mut out)
+        .unwrap_err()
+        .code();
+    let verdict = processor.finish_checked();
+    assert_eq!(verdict.map_err(|e| e.code()), Err(code));
+}

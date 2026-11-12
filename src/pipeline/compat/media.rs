@@ -287,7 +287,8 @@ fn keep_filename(
     notes: &mut Notes<'_, '_>,
 ) {
     match map.get_mut("metadata") {
-        None => {
+        // A null metadata is absent (D9): the slot is free.
+        None | Some(Value::Null) => {
             let mut metadata = Map::new();
             metadata.insert("filename".to_owned(), filename);
             map.insert("metadata".to_owned(), Value::Object(metadata));
@@ -356,8 +357,8 @@ pub(super) fn downgrade_parts(
             _ => continue,
         };
         let at = path.index(index);
-        let mime = match source.get("mimeType") {
-            Some(Value::String(mime)) => mime.clone(),
+        match source.get("mimeType") {
+            Some(Value::String(_)) => {}
             None => {
                 notes.lossy(DiagnosticCode::LossyDowngrade, &at, || {
                     format!(
@@ -371,7 +372,7 @@ pub(super) fn downgrade_parts(
                 continue;
             }
             Some(_) => continue,
-        };
+        }
         let filename = match map.get("metadata") {
             None => None,
             Some(Value::Object(metadata)) if metadata.is_empty() => None,
@@ -404,10 +405,18 @@ pub(super) fn downgrade_parts(
                 },
             );
         }
-        let value = source.get("value").cloned().unwrap_or_default();
+        // The part is replaced below: move its source's members out instead
+        // of copying them (both were checked above).
+        let (mime, value) = match map.get_mut("source") {
+            Some(Value::Object(source)) => (
+                source.remove("mimeType").unwrap_or_default(),
+                source.remove("value").unwrap_or_default(),
+            ),
+            _ => (Value::Null, Value::Null),
+        };
         let mut legacy = Map::new();
         legacy.insert("type".to_owned(), Value::String("binary".to_owned()));
-        legacy.insert("mimeType".to_owned(), Value::String(mime));
+        legacy.insert("mimeType".to_owned(), mime);
         legacy.insert(member.to_owned(), value);
         if let Some(filename) = filename {
             legacy.insert("filename".to_owned(), filename);

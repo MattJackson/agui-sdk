@@ -1083,6 +1083,7 @@ fn value_corpus() -> Option<Vec<ValueDoc>> {
             continue;
         };
         let path = root.join(line);
+        assert!(path.is_file(), "manifest lists missing {}", path.display());
         let expect = read_json(&path.with_extension("expect.json"));
         docs.push(ValueDoc {
             anchor: anchor.to_owned(),
@@ -1102,7 +1103,8 @@ fn value_corpus_gate_a_strict() {
     let Some(docs) = value_corpus() else { return };
     assert!(docs.len() > 200, "{}", docs.len());
     for doc in &docs {
-        let bytes = std::fs::read(&doc.path).unwrap_or_default();
+        let bytes = std::fs::read(&doc.path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", doc.path.display()));
         let shape = shape::anchor(&doc.anchor);
         assert!(shape.is_some(), "{}", doc.anchor);
         let shape = shape.unwrap_or(Shape::Any);
@@ -1142,7 +1144,8 @@ fn value_corpus_gate_b_consumer() {
         let mut walked = value.clone();
         let verdict = Tree::new(&opts, &mut findings).root(shape, &mut walked);
         // The byte path must reach the same verdict.
-        let bytes = std::fs::read(&doc.path).unwrap_or_default();
+        let bytes = std::fs::read(&doc.path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", doc.path.display()));
         let mut f2 = Findings::new(32);
         let streamed = document_from_bytes::<Value>(&bytes, shape, &opts, &mut f2);
         if doc.valid {
@@ -1225,7 +1228,10 @@ fn stream_corpus_enforcement_verdicts() {
         let mut fault = None;
         let mut findings: Vec<Finding> = Vec::new();
         let mut delivered = Vec::new();
-        for event in fixture["stream"].as_array().into_iter().flatten() {
+        let stream = fixture["stream"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name}: no stream array"));
+        for event in stream {
             let (out, f) = enforce(event.clone());
             findings.extend(f);
             match out {
@@ -1245,7 +1251,9 @@ fn stream_corpus_enforcement_verdicts() {
             let Some(fault) = fault else {
                 panic!("{name}: expected an enforcement fault")
             };
-            let needle = expect["errorContains"].as_str().unwrap_or("");
+            let needle = expect["errorContains"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name}: no expect.errorContains"));
             assert!(
                 fault.message.contains(needle),
                 "{name}: {:?} lacks {needle:?}",

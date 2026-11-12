@@ -278,7 +278,9 @@ impl Default for Limits {
     /// 128 MiB of history and id bookkeeping growth as estimated. Not
     /// included: the event being
     /// parsed (at most 150,000 entries, about 103 MiB in the worst shape, plus
-    /// its text), the one event that crosses the history limit, and history
+    /// its text; a chunk that opens an item holds its metadata twice while it
+    /// is expanded, on the synthesized start and first content, so up to
+    /// about twice that), the one event that crosses the history limit, and history
     /// restored with [`Processor::with_history`] or kept by a
     /// [`Thread`][crate::client::Thread] across runs, which is the host's to
     /// trim.
@@ -346,7 +348,10 @@ pub enum Termination {
 /// expansion turns shorthand into start/content/end, verification judges
 /// the expanded events, and only then does the reducer apply them. An event
 /// the verifier refuses never reaches the reducer, so history holds exactly
-/// what was delivered before the failure (LIFE-19).
+/// what was delivered before the failure (LIFE-19). The one exception is
+/// the history limit ([`Limits::max_history_bytes`]): the reducer judges it
+/// after applying an event, so when it ends the stream, history also holds
+/// the effect of the event that crossed it, which was not delivered.
 ///
 /// After an `Err` the processor is spent: every later call fails with the
 /// same code, so a host cannot continue a stream the pipeline rejected.
@@ -801,6 +806,12 @@ impl Processor {
     /// A stream that ended inside a run, or before any run began, is
     /// [`Termination::Truncated`]. Nothing is synthesized for it: open chunk
     /// streams stay open and no `RUN_FINISHED` is invented (TRN-09, LIFE-20).
+    ///
+    /// This reports only where the run lifecycle stands. It does not say
+    /// whether an earlier push was rejected: a stream refused after its
+    /// `RUN_FINISHED` still reads `Complete` here. Use
+    /// [`finish_checked`](Self::finish_checked) for the verdict of a
+    /// processor that may be spent.
     pub fn finish(&mut self) -> Termination {
         match self.verifier.phase() {
             verify::RunPhase::Finished | verify::RunPhase::Failed => Termination::Complete,
@@ -817,7 +828,9 @@ impl Processor {
     /// # Errors
     ///
     /// `verify.identity`, as above. The processor is spent afterwards.
+    /// A processor already spent by a rejected push fails with that code.
     pub fn finish_checked(&mut self) -> Result<Termination> {
+        self.check_live()?;
         let termination = self.finish();
         if termination == Termination::Complete {
             if let Err(err) = self.verifier.finish() {
