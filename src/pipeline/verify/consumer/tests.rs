@@ -509,6 +509,43 @@ fn a_large_run_leaves_no_uncharged_table_behind() {
     assert!(owners <= floor, "step owners {owners}");
 }
 
+/// A run that fails while thousands of step owners, activity messages and
+/// subagents are still open drops those tables at RUN_ERROR rather than
+/// keeping them resident uncharged: the old reset kept any table at least a
+/// quarter full, whatever its size.
+#[test]
+fn a_failed_run_drops_its_large_open_tables() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    for i in 0..5_000 {
+        let owner = format!("o{i}");
+        v.observe(&ev(
+            json!({"type": "STEP_STARTED", "stepName": "s", "subagentRunId": owner}),
+        ))
+        .unwrap();
+        v.observe(&ev(
+            json!({"type": "ACTIVITY_SNAPSHOT", "messageId": format!("a{i}"),
+            "activityType": "x", "content": {}}),
+        ))
+        .unwrap();
+        v.observe(&ev(
+            json!({"type": "SUBAGENT_STARTED", "subagentRunId": format!("g{i}"), "name": "n"}),
+        ))
+        .unwrap();
+    }
+    v.observe(&ev(json!({"type": "RUN_ERROR", "message": "boom"})))
+        .unwrap();
+    let owners = v.state.steps.get("s").map_or(0, HashSet::capacity);
+    assert!(owners <= floor, "step owners {owners}");
+    let activity = v.state.activity.capacity();
+    assert!(activity <= floor, "activity {activity}");
+    let active = v.state.subagents_active.capacity();
+    assert!(active <= floor, "subagents active {active}");
+    let announced = v.state.subagents_announced.capacity();
+    assert!(announced <= floor, "subagents announced {announced}");
+}
+
 /// A snapshot restating a message as one that carries no owner (here a tool
 /// message) forgets the owner an earlier snapshot gave it, as the producer
 /// verifier does, and credits its charge: before, the stale owner stayed and
