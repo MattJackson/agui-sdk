@@ -608,7 +608,14 @@ impl<A: Agent> Driver<A> {
     /// Verifies a runner-made event and queues it for output.
     /// The refusal is the verifier's message (ids, no payloads).
     fn push_verified(&mut self, event: Event) -> Result<(), String> {
-        let verdict = self.shared.lock().verifier.check(&event);
+        let mut st = self.shared.lock();
+        let verdict = st.verifier.check(&event);
+        if verdict.is_ok() {
+            // A replayed snapshot is what the client holds next: it is the
+            // baseline for the run's first delta (RUNIN-25, SNAP-07).
+            st.publisher.observe(&event);
+        }
+        drop(st);
         match verdict {
             Ok(()) => {
                 self.tail.push_back(event);
