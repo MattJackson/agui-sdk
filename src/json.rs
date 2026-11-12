@@ -405,6 +405,32 @@ pub(crate) fn wire_bytes<T: Serialize + ?Sized>(value: &T) -> usize {
     count.0
 }
 
+/// [`wire_bytes`], counted only up to `limit`: the exact size when it is at
+/// most `limit`, else some count above `limit` (serialization stops there).
+pub(crate) fn wire_bytes_upto<T: Serialize + ?Sized>(value: &T, limit: usize) -> usize {
+    struct Count {
+        n: usize,
+        limit: usize,
+    }
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.n = self.n.saturating_add(buf.len());
+            if self.n > self.limit {
+                // Enough: stop the serializer.
+                return Err(std::io::ErrorKind::Other.into());
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count { n: 0, limit };
+    // An error is only ever the stop above.
+    let _ = serde_json::to_writer(&mut count, value);
+    count.n
+}
+
 /// Estimated heap bytes `value` owns once held as this build's types (64-bit,
 /// the `serde_json` [`Value`] layout compiled in), counted without building
 /// anything: the unit of [`Limits::max_history_bytes`].

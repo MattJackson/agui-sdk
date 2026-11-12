@@ -88,7 +88,7 @@ use crate::diagnostics::{Diagnostic, DiagnosticCode, Reporter, Scope};
 use crate::event::{Event, EventType};
 use crate::ids::{MessageId, SubagentRunId, ToolCallId};
 use crate::interrupt::Interrupt;
-use crate::json::{map_bytes, resident_bytes, seq_bytes, text_bytes, wire_bytes};
+use crate::json::{map_bytes, resident_bytes, seq_bytes, text_bytes, wire_bytes_upto};
 use crate::lifecycle::RunFinishedOutcome;
 use crate::message::{
     ActivityMessage, AssistantMessage, DeveloperMessage, Message, ReasoningMessage, SystemMessage,
@@ -1828,11 +1828,18 @@ impl Reducer {
         let (credit, spent, credited) = if self.max_history_bytes == usize::MAX {
             (0, 0, std::collections::HashSet::new())
         } else {
-            let size = wire_bytes(&e.patch);
-            self.credit_bank = self
-                .credit_bank
-                .saturating_add(size.saturating_mul(8))
-                .min(CREDIT_BANK);
+            // The refill is 8 units per byte of the patch, up to the bank's
+            // size: the patch is measured only as far as the bank has room
+            // for (not at all when it is full, as it stays while patches
+            // apply), never serialized whole.
+            let room = CREDIT_BANK.saturating_sub(self.credit_bank);
+            if room > 0 {
+                let size = wire_bytes_upto(&e.patch, room.div_ceil(8));
+                self.credit_bank = self
+                    .credit_bank
+                    .saturating_add(size.saturating_mul(8))
+                    .min(CREDIT_BANK);
+            }
             patch_credit(&content, &e.patch, self.credit_bank)
         };
         let budgets = &mut self.activity_budgets;
@@ -2053,20 +2060,25 @@ fn merge_into(target: &mut Option<Metadata>, newer: &Option<Metadata>) -> i64 {
             // A key already held keeps its entry: the value changes. A new
             // key adds its heap and an entry to the held map. `newer`'s own
             // map is dropped.
+            // One lookup per key, and only the values (and new keys) are
+            // copied, not `newer`'s whole map.
             let mut net: i64 = 0;
-            let mut new_keys = 0;
+            let before = held.len();
             for (key, value) in newer.iter() {
                 let added = signed(resident_bytes(value));
-                net = net.saturating_add(match held.get(key) {
-                    Some(old) => added.saturating_sub(signed(resident_bytes(old))),
+                net = net.saturating_add(match held.get_mut(key) {
+                    Some(old) => {
+                        let was = signed(resident_bytes(old));
+                        *old = value.clone();
+                        added.saturating_sub(was)
+                    }
                     None => {
-                        new_keys += 1;
+                        held.insert(key, value.clone());
                         added.saturating_add(signed(text_bytes(key.len())))
                     }
                 });
             }
-            let grown = map_bytes(held.len() + new_keys).saturating_sub(map_bytes(held.len()));
-            held.merge_from(newer.clone());
+            let grown = map_bytes(held.len()).saturating_sub(map_bytes(before));
             net.saturating_add(signed(grown))
         }
         None => {
@@ -2319,7 +2331,7 @@ const RECONCILE_REFILL: usize = 8;
 /// The work and the credit of measuring what dropping `value` frees, or
 /// `None` once the work passes `cap`.
 ///
-/// The work is a lower bound of [`wire_bytes`] (a string counts `len + 2`,
+/// The work is a lower bound of [`wire_bytes`](crate::json::wire_bytes) (a string counts `len + 2`,
 /// as escaping only adds bytes): the walk visits at most `cap` nodes (every
 /// node is at least one byte) and never scans a string. The credit is a
 /// lower bound of what the value was charged, whether it arrived whole

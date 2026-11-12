@@ -1377,3 +1377,67 @@ fn ends_release_text_and_argument_slack() {
     assert_eq!(r.content.capacity(), r.content.len());
     assert!(h.codes().is_empty());
 }
+
+/// The bounded count behind the activity credit refill is the full count
+/// whenever that fits under the bound, and above the bound otherwise, so
+/// `min(bank + 8 * size, CREDIT_BANK)` comes out the same either way.
+#[test]
+fn bounded_wire_count_refills_the_bank_as_the_full_count_does() {
+    use crate::json::{wire_bytes, wire_bytes_upto};
+    let patch: Vec<PatchOperation> = serde_json::from_value(json!([
+        {"op": "add", "path": "/rows/-", "value": {"id": 1, "name": "row \"one\"", "done": false}},
+        {"op": "replace", "path": "/n", "value": 12345.5},
+        {"op": "remove", "path": "/old"},
+    ]))
+    .unwrap();
+    let full = wire_bytes(&patch);
+    for limit in 0..full + 4 {
+        let n = wire_bytes_upto(&patch, limit);
+        if full <= limit {
+            assert_eq!(n, full, "limit {limit}");
+        } else {
+            assert!(n > limit, "limit {limit}: {n}");
+        }
+        for bank in [
+            0,
+            CREDIT_BANK / 2,
+            CREDIT_BANK - 8 * limit,
+            CREDIT_BANK - 1,
+            CREDIT_BANK,
+        ] {
+            let room = CREDIT_BANK - bank;
+            let bounded = bank
+                .saturating_add(wire_bytes_upto(&patch, room.div_ceil(8)).saturating_mul(8))
+                .min(CREDIT_BANK);
+            let whole = bank.saturating_add(full * 8).min(CREDIT_BANK);
+            assert_eq!(bounded, whole, "bank {bank}");
+        }
+    }
+}
+
+/// Metadata merged key by key is charged exactly what the merged map is
+/// estimated to hold: new keys, overwritten values of other sizes and
+/// repeats included.
+#[test]
+fn metadata_merges_charge_what_the_merged_map_holds() {
+    let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m", "metadata": {"x.a": 1}}));
+    let merges = [
+        json!({"x.a": "a longer string value than before", "x.b": [1, 2, 3]}),
+        json!({"x.b": null, "x.c": {"k": "v"}}),
+        json!({"x.a": 2}),
+        json!({"x.d": "d", "x.e": "e", "x.f": "f", "x.g": "g", "x.h": "h", "x.i": "i",
+               "x.j": "j", "x.k": "k", "x.l": "l", "x.m": "m", "x.n": "n"}),
+        json!({"x.c": {"k": "v", "k2": [true]}}),
+    ];
+    let empty = message_bytes(&h.r.messages()[0]);
+    assert_eq!(h.r.charged[0], empty);
+    for metadata in merges {
+        h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "m", "metadata": metadata}));
+        assert_eq!(h.r.charged[0], message_bytes(&h.r.messages()[0]));
+    }
+    let held = h.history();
+    assert_eq!(held[0]["metadata"]["x.a"], 2);
+    assert_eq!(held[0]["metadata"]["x.b"], Value::Null);
+    assert_eq!(held[0]["metadata"]["x.c"]["k2"][0], true);
+}
