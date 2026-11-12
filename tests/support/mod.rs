@@ -38,13 +38,17 @@ fn pinned_commit() -> String {
         .expect("spec.lock names a commit")
 }
 
+/// The `$AGUI_SPEC_DIR` override: unset and empty both mean "no override".
+fn spec_dir_override(var: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    var.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 /// Root of the upstream tree, or `None` (after printing why) when absent.
+/// A `.commit` stamp, wherever the tree is, must name the pinned commit.
 pub fn root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("AGUI_SPEC_DIR") {
-        return Some(PathBuf::from(dir));
-    }
     let commit = pinned_commit();
-    let cache = workspace().join(".spec-cache").join(&commit);
+    let cache = spec_dir_override(std::env::var_os("AGUI_SPEC_DIR"))
+        .unwrap_or_else(|| workspace().join(".spec-cache").join(&commit));
     if cache.is_dir() {
         if let Ok(stamp) = fs::read_to_string(cache.join(".commit")) {
             assert_eq!(
@@ -120,4 +124,14 @@ pub fn value_documents(valid: bool) -> Option<Vec<ValueDocument>> {
         wanted.trim_matches('/')
     );
     Some(documents)
+}
+
+#[test]
+fn empty_spec_dir_is_no_override() {
+    assert_eq!(spec_dir_override(None), None);
+    assert_eq!(spec_dir_override(Some("".into())), None);
+    assert_eq!(
+        spec_dir_override(Some("/x".into())),
+        Some(PathBuf::from("/x"))
+    );
 }
