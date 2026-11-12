@@ -74,7 +74,9 @@ fn atomic(
 /// # Errors
 ///
 /// [`ErrorCode::Encode`] if a value cannot be
-/// represented on the protobuf wire (e.g. a number outside `f64`).
+/// represented on the protobuf wire (e.g. a number outside `f64`);
+/// [`ErrorCode::LimitExceeded`] when open JSON nests deeper than 512 levels
+/// (the event object counted as 1).
 pub fn encode_event(event: &Event, out: &mut Vec<u8>) -> Result<()> {
     let typed = STRINGS.with(|t| {
         let mut text = t.try_borrow_mut().ok()?;
