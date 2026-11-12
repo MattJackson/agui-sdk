@@ -157,6 +157,7 @@ fn an_untagged_continuation_continues_what_the_opener_owns() {
     ]));
     r.assert_ok();
     assert_eq!(r.message("m1")["content"], "untagged tagged");
+    assert_eq!(r.message("m1")["subagentRunId"], "s1");
 }
 
 /// covers: SUB-21, SUB-24

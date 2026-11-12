@@ -107,6 +107,8 @@ fn untagged_reasoning_and_activity_continuations_keep_their_owner() {
     r.assert_ok();
     assert_eq!(r.message("r1")["content"], "hm");
     assert_eq!(r.message("a1")["content"], json!({"n": 2}));
+    assert_eq!(r.message("r1")["subagentRunId"], "s1");
+    assert_eq!(r.message("a1")["subagentRunId"], "s1");
 }
 
 /// covers: PROC-24
