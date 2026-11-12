@@ -644,11 +644,14 @@ impl<A: Agent> Driver<A> {
 
     /// The run is decided: stop the agent and refuse further sends.
     fn decide(&mut self, ending: Ending) {
+        // Closed first, as in `Drop`: a send blocked on a full queue is
+        // failed and woken before agent destructors run (one may wait for
+        // the task making that send).
+        self.shared.close();
         // Dropping the future may run agent destructors; a panic there must
         // not escape the stream either.
         let future = self.future.take();
         let _ = catch_unwind(AssertUnwindSafe(move || drop(future)));
-        self.shared.close();
         self.phase = Phase::Finishing(ending);
     }
 
