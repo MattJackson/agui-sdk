@@ -664,7 +664,11 @@ impl<A: Agent> Driver<A> {
     fn decide(&mut self, ending: Ending) {
         // Closed first, as in `Drop`: a send blocked on a full queue is
         // failed and woken before agent destructors run (one may wait for
-        // the task making that send).
+        // the task making that send). The queue is empty when this is
+        // reached, so such a send exists only if another thread's emitter
+        // filled the queue and parked between the empty `poll_pop` and the
+        // cancellation check; no pop wakes it then. That window cannot be
+        // hit deterministically, so no test pins this order.
         self.shared.close();
         // Dropping the future may run agent destructors; a panic there must
         // not escape the stream either.
