@@ -1,7 +1,8 @@
 //! RAW and CUSTOM (`events/passthrough.mdx`).
 //!
-//! Both are standalone: they open and close nothing and may appear anywhere in
-//! an open run (PASS-01). Their payloads are untrusted; this SDK never derives
+//! Both are standalone: they open and close no items of their own and may
+//! appear anywhere in an open run (PASS-01); CUSTOM, unlike RAW, ends an open
+//! chunk stream in its lane. Their payloads are untrusted; this SDK never derives
 //! protocol behaviour from them (PASS-03, PASS-09).
 
 use serde::{Deserialize, Serialize};

@@ -6,9 +6,10 @@
 //! * **Merging.** Metadata on the events that build one item (a text message,
 //!   a tool call, a reasoning message, an activity message) merges into that
 //!   item key by key, last write wins, never recursively (META-06..META-13).
-//!   The reducer does this with [`JsonObject::merge_from`]; events without a
-//!   merge target (run lifecycle, steps, snapshots, RAW, CUSTOM) merge nowhere
-//!   (META-14). Stored metadata is plain data afterwards (META-16).
+//!   The reducer applies the same rule as [`JsonObject::merge_from`];
+//!   events without a merge target (run lifecycle, steps, snapshots, RAW,
+//!   CUSTOM) merge nowhere (META-14). Stored metadata is plain data
+//!   afterwards (META-16).
 //! * **Keys.** `ag-ui` is reserved for the protocol (META-04) and invented
 //!   keys should carry a vendor prefix (META-05). [`MetadataBuilder`] applies
 //!   the prefix and refuses the reserved key: silently through `insert`, with

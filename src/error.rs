@@ -24,8 +24,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Any error, boxed. What [`server::Agent::run`][crate::server::Agent::run]
 /// returns, so `?` works on application errors. The runner downcasts to
-/// [`Error`] to honour its code and [`Error::public`] message; anything else
-/// becomes `agent.failed` with a generic message (LIFE-21).
+/// [`Error`]: one marked [`Error::public`] reaches `RUN_ERROR` with its code
+/// and message; anything else, an unmarked [`Error`] included, becomes
+/// `agent.failed` with a generic message (LIFE-21).
 #[cfg_attr(
     not(feature = "server"),
     doc = "",
@@ -174,7 +175,9 @@ error_codes! {
     Encode = "server.encode", Server;
     /// The client disconnected.
     Disconnected = "server.disconnected", Server;
-    /// SDK-side JSON (de)serialization failed (typed views such as `state_as`).
+    /// SDK-side JSON (de)serialization failed (typed views such as `state_as`,
+    /// when the peer's state does not fit the requested type). Not a bug in
+    /// this crate.
     Json = "internal.json", Internal;
     /// A bug in this crate. Please report it.
     Internal = "internal.bug", Internal;
@@ -226,7 +229,10 @@ pub enum ErrorKind {
     Extension,
     /// Server-side failure.
     Server,
-    /// A bug in this crate.
+    /// SDK-side failure: a bug in this crate (`internal.bug`), or a
+    /// (de)serialization the SDK performs for the caller that failed
+    /// (`internal.json`, for example state that does not fit the requested
+    /// type).
     Internal,
 }
 
@@ -365,7 +371,8 @@ impl Error {
 
     /// Marks the message as safe to show to the client. A server agent's
     /// error marked public reaches `RUN_ERROR.message` (with its code)
-    /// verbatim; an unmarked one is replaced by a generic message (LIFE-21).
+    /// verbatim; an unmarked one is replaced by `agent.failed` and a generic
+    /// message (LIFE-21).
     #[must_use]
     pub fn public(mut self) -> Self {
         self.inner.public = true;

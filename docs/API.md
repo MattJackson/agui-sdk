@@ -363,7 +363,7 @@ stream is linear in the input, which the limits above already bound, and a
 per-stream sink cap would hide later problems (DECISIONS.md D21).
 
 Type sizes (64-bit): `Event` is 200 B with serde_json's default map (target,
-checked by the size bench) and 320–336 B when `preserve_order` is unified
+checked by a unit test in `src/event.rs`) and 320–336 B when `preserve_order` is unified
 into the build; a compile-time assertion in `src/event.rs` caps it at 384 B.
 `Error` is 8 B (asserted). `RunStarted.input`
 is boxed so the rare echo does not size every event.

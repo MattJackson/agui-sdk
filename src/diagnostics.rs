@@ -347,7 +347,7 @@ fn needs_escape(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{200E}' | '\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
         )
 }
 
@@ -440,15 +440,20 @@ impl<S: DiagnosticSink + ?Sized> DiagnosticSink for Arc<S> {
 #[cfg(feature = "server")]
 pub(crate) struct GuardedSink {
     inner: Arc<dyn DiagnosticSink>,
+    /// The inner sink's [`DiagnosticSink::enabled`], asked once here so that
+    /// a panic in it is caught like one in `report`.
+    enabled: bool,
     panicked: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "server")]
 impl GuardedSink {
     pub(crate) fn new(inner: Arc<dyn DiagnosticSink>) -> Self {
+        let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.enabled()));
         GuardedSink {
             inner,
-            panicked: std::sync::atomic::AtomicBool::new(false),
+            panicked: std::sync::atomic::AtomicBool::new(asked.is_err()),
+            enabled: asked.unwrap_or(false),
         }
     }
 
@@ -475,7 +480,7 @@ impl DiagnosticSink for GuardedSink {
     }
 
     fn enabled(&self) -> bool {
-        self.inner.enabled()
+        self.enabled && !self.panicked()
     }
 }
 
@@ -838,6 +843,16 @@ mod tests {
             assert!(!text.contains(c), "{text:?}");
         }
         assert!(text.contains("/a\\u{2028}b\\u{2029}c\\u{202e}d"), "{text}");
+        // The Arabic letter mark is a bidi control too (Bidi_Control).
+        let alm = Diagnostic::new(
+            DiagnosticCode::UnknownField,
+            Scope::Event,
+            "/a\u{061C}b",
+            "x",
+        );
+        let text = alm.to_string();
+        assert!(!text.contains('\u{061C}'), "{text:?}");
+        assert!(text.contains("/a\\u{61c}b"), "{text}");
         // Ordinary non-ASCII text is left alone.
         let plain = Diagnostic::new(DiagnosticCode::UnknownField, Scope::Event, "/é✓", "x");
         assert!(plain.to_string().contains("/é✓"));

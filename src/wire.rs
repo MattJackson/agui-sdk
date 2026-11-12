@@ -107,6 +107,47 @@ fn is_ows(c: char) -> bool {
     c == ' ' || c == '\t'
 }
 
+/// The byte offset of the first `delim` in `text` outside an HTTP
+/// quoted-string (RFC 9110 §5.6.4), whose `\` escapes the next character.
+fn find_unquoted(text: &str, delim: char) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (at, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted {
+            match c {
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            quoted = true;
+        } else if c == delim {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// `text` split at each `delim` outside a quoted-string.
+fn split_unquoted(text: &str, delim: char) -> impl Iterator<Item = &str> {
+    let mut rest = Some(text);
+    std::iter::from_fn(move || {
+        let current = rest?;
+        match find_unquoted(current, delim) {
+            Some(at) => {
+                rest = Some(&current[at + delim.len_utf8()..]);
+                Some(&current[..at])
+            }
+            None => {
+                rest = None;
+                Some(current)
+            }
+        }
+    })
+}
+
 /// The `type/subtype` of a media type or range, without parameters.
 pub(crate) fn essence(text: &str) -> &str {
     let end = text.find(';').unwrap_or(text.len());
@@ -135,7 +176,7 @@ fn specificity(range: &str, media: &str) -> u8 {
 /// The `q` parameter of one `Accept` element, in thousandths. `Some(1000)`
 /// when absent; `None` when present but not a valid HTTP qvalue.
 fn quality(params: &str) -> Option<u16> {
-    for param in params.split(';') {
+    for param in split_unquoted(params, ';') {
         let Some((name, value)) = param.split_once('=') else {
             continue;
         };
@@ -173,9 +214,9 @@ fn qvalue(text: &str) -> Option<u16> {
 /// ones).
 fn admits(accept: &str, media: &str) -> bool {
     let mut best: (u8, u16) = (0, 0);
-    for element in accept.split(',') {
-        let (range, params) = match element.split_once(';') {
-            Some((range, params)) => (range, params),
+    for element in split_unquoted(accept, ',') {
+        let (range, params) = match find_unquoted(element, ';') {
+            Some(at) => (&element[..at], &element[at + 1..]),
             None => (element, ""),
         };
         let rank = specificity(range.trim_matches(is_ows), media);
@@ -405,6 +446,23 @@ mod tests {
         ] {
             assert_eq!(proto(accept), WireFormat::Protobuf, "{accept:?}");
         }
+    }
+
+    #[test]
+    fn quoted_parameter_values_do_not_split_elements_or_parameters() {
+        let negotiate = |accept| WireFormat::negotiate(Some(accept), true);
+        // RFC 9110 quoted-string values may hold `,` and `;`.
+        for accept in [
+            r#"application/vnd.ag-ui.event+proto;foo="a,b";q=0, */*"#,
+            r#"application/vnd.ag-ui.event+proto;foo="a;q=1";q=0, */*"#,
+            r#"application/vnd.ag-ui.event+proto;foo="a\",b";q=0, */*"#,
+        ] {
+            assert_eq!(negotiate(accept), WireFormat::Sse, "{accept:?}");
+        }
+        assert_eq!(
+            negotiate(r#"application/vnd.ag-ui.event+proto;foo="q=0,x";q=1"#),
+            WireFormat::Protobuf
+        );
     }
 
     /// covers: PB-03

@@ -131,6 +131,49 @@ fn long_key_and_string_content() {
     assert_band("63-byte keys and strings", &frames, 0.9);
 }
 
+/// Member names in a wire order that leaves `std`'s B-tree leaves at their
+/// minimum fill: each time the last leaf is full, the next key lands just
+/// right of its middle, so the split leaves five entries behind that later
+/// keys never reach.
+fn sparse_fill_keys(count: usize) -> Vec<u64> {
+    let mut keys = Vec::with_capacity(count);
+    let mut leaf: Vec<u64> = Vec::new();
+    let mut next = 0u64;
+    while keys.len() < count {
+        let key = if leaf.len() == 11 {
+            let middle = (leaf[5] + leaf[6]) / 2;
+            leaf.drain(..6);
+            leaf.insert(0, middle);
+            middle
+        } else {
+            next += 1 << 20;
+            leaf.push(next);
+            next
+        };
+        keys.push(key);
+    }
+    keys
+}
+
+#[test]
+fn object_members_in_adversarial_order() {
+    // Built by hand: a `serde_json::Map` would serialize in sorted order.
+    let members: Vec<String> = sparse_fill_keys(20_000)
+        .iter()
+        .map(|k| format!("\"{k:016}\":0"))
+        .collect();
+    let content = format!("{{{}}}", members.join(","));
+    let frames: Vec<_> = (0..4)
+        .map(|i| {
+            format!(
+                r#"{{"type":"ACTIVITY_SNAPSHOT","messageId":"a{i}","activityType":"t","content":{content}}}"#
+            )
+            .into_bytes()
+        })
+        .collect();
+    assert_band("adversarial member order", &frames, 0.9);
+}
+
 /// `{"a":{"a":…{"a":0}}}`, `depth` objects deep.
 fn chain(depth: usize) -> Value {
     (0..depth).fold(json!(0), |inner, _| json!({ "a": inner }))

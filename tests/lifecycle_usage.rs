@@ -320,3 +320,17 @@ fn a_resuming_run_reports_only_its_own_calls() {
         .sum();
     assert_eq!(thread_total, 155);
 }
+
+#[test]
+fn sums_saturate_at_the_largest_count_json_carries_exactly() {
+    const MAX_SAFE: u64 = (1 << 53) - 1;
+    let usage = TokenUsageBuilder::new("anthropic", "claude-x")
+        .input(MAX_SAFE, false)
+        .cached_input(5)
+        .output(MAX_SAFE, false)
+        .output(1, false)
+        .build();
+    assert_eq!(usage.input_tokens, Some(MAX_SAFE));
+    assert_eq!(usage.output_tokens, Some(MAX_SAFE));
+    assert_eq!(usage.total_tokens, Some(MAX_SAFE));
+}
