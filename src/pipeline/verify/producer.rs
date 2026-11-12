@@ -512,24 +512,10 @@ fn role_text(role: TextMessageRole) -> &'static str {
     }
 }
 
-/// Whether `text` is an RFC 6901 pointer (`^(/([^/~]|~[01])*)*$`).
+/// Whether `text` is an RFC 6901 pointer (`^(/([^/~]|~[01])*)*$`): the
+/// patch engine's own check, so the two never disagree.
 fn is_pointer(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    if bytes.first().is_some_and(|b| *b != b'/') {
-        return false;
-    }
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'~' {
-            match bytes.get(i + 1) {
-                Some(b'0') | Some(b'1') => i += 2,
-                _ => return false,
-            }
-        } else {
-            i += 1;
-        }
-    }
-    true
+    crate::patch::is_valid_pointer(text)
 }
 
 /// Shape checks every event gets: values the types admit and the schema does

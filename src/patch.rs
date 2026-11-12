@@ -92,7 +92,7 @@ use crate::json::JsonObject;
 
 mod engine;
 mod pointer;
-pub(crate) use pointer::push_token;
+pub(crate) use pointer::{is_valid as is_valid_pointer, push_token};
 mod walk;
 
 #[cfg(test)]

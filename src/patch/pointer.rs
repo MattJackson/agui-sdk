@@ -6,7 +6,7 @@ use std::borrow::Cow;
 
 /// Whether `text` is RFC 6901 syntax: empty, or `/`-prefixed tokens in which
 /// every `~` is followed by `0` or `1`.
-pub(super) fn is_valid(text: &str) -> bool {
+pub(crate) fn is_valid(text: &str) -> bool {
     let bytes = text.as_bytes();
     if bytes.is_empty() {
         return true;
