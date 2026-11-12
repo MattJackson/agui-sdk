@@ -311,7 +311,11 @@ impl SseDecoder {
             self.pending.clear();
             return Ok(false);
         }
-        if std::str::from_utf8(line).is_err() {
+        // Most lines are ASCII, which the word-at-a-time `is_ascii` settles
+        // faster than full validation. This is the only full check of the
+        // data's UTF-8: enforcement validates the strings it keeps, but
+        // passes over stripped members unread.
+        if !line.is_ascii() && std::str::from_utf8(line).is_err() {
             return Err((
                 ErrorCode::SseFraming,
                 "SSE line is not valid UTF-8".to_owned(),
@@ -469,6 +473,34 @@ mod tests {
         assert_eq!((e, err, partial), (vec!["{}".to_owned()], None, false));
         split_invariant(input, DEFAULT_MAX_EVENT_BYTES);
         assert_eq!(one(b"data: \xFF\n\n").1, Some(ErrorCode::SseFraming));
+    }
+
+    /// Data lines are held to UTF-8 wherever the first non-ASCII byte falls:
+    /// valid multi-byte text passes, an invalid or truncated sequence after
+    /// any ASCII prefix is refused.
+    #[test]
+    fn data_lines_are_utf8_after_any_ascii_prefix() {
+        for prefix in 0..40 {
+            let ascii = "a".repeat(prefix);
+            let good = format!("data: {ascii}\u{e9}\u{20ac}\u{1f600}\n\n");
+            assert_eq!(one(good.as_bytes()).1, None, "{prefix}");
+            for bad in [
+                &b"\xFF"[..],
+                b"\xC3",
+                b"\xE2\x82",
+                b"\xED\xA0\x80",
+                b"\xC0\xAF",
+            ] {
+                let mut line = format!("data: {ascii}").into_bytes();
+                line.extend_from_slice(bad);
+                line.extend_from_slice(b"z\n\n");
+                assert_eq!(
+                    one(&line).1,
+                    Some(ErrorCode::SseFraming),
+                    "{prefix} {bad:?}"
+                );
+            }
+        }
     }
 
     /// Only data lines spend the event budget: a long comment after a data
