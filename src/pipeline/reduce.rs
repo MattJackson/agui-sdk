@@ -319,6 +319,17 @@ impl RunCalls {
     }
 }
 
+/// What [`Reducer::into_report_parts`] hands over.
+#[cfg(feature = "client")]
+pub(crate) struct ReportParts {
+    pub(crate) messages: Vec<Message>,
+    pub(crate) state: Value,
+    pub(crate) usage: Vec<TokenUsage>,
+    pub(crate) interrupts: Vec<Interrupt>,
+    pub(crate) pending: Vec<PendingToolCall>,
+    pub(crate) run_ids: Vec<MessageId>,
+}
+
 /// Message history and state for one thread.
 #[derive(Debug, Clone)]
 pub struct Reducer {
@@ -889,6 +900,19 @@ impl Reducer {
     #[must_use]
     pub fn into_parts(self) -> (Vec<Message>, Value) {
         (self.messages, self.state.into_value())
+    }
+
+    /// Takes everything a run report carries, by move.
+    #[cfg(feature = "client")]
+    pub(crate) fn into_report_parts(self) -> ReportParts {
+        ReportParts {
+            messages: self.messages,
+            state: self.state.into_value(),
+            usage: self.usage,
+            interrupts: self.interrupts,
+            pending: self.pending,
+            run_ids: self.run_ids,
+        }
     }
 
     // ----- run lifecycle -----

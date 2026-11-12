@@ -724,13 +724,15 @@ impl RunDriver {
         let (mut messages, mut state, usage, interrupts, pending, new_ids) =
             match self.processor.take() {
                 Some(processor) => {
-                    let reducer = processor.into_reducer();
-                    let usage = reducer.usage().to_vec();
-                    let interrupts = reducer.open_interrupts().to_vec();
-                    let pending = reducer.pending_tool_calls().to_vec();
-                    let new_ids = reducer.run_message_ids().to_vec();
-                    let (messages, state) = reducer.into_parts();
-                    (messages, state, usage, interrupts, pending, new_ids)
+                    let parts = processor.into_reducer().into_report_parts();
+                    (
+                        parts.messages,
+                        parts.state,
+                        parts.usage,
+                        parts.interrupts,
+                        parts.pending,
+                        parts.run_ids,
+                    )
                 }
                 None => (
                     Vec::new(),
