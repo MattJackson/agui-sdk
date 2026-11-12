@@ -39,9 +39,11 @@ pub enum DecidedBy {
     },
 }
 
-/// A pending frontend call that was explicitly approved. The only way to get
-/// a call's arguments for execution (IDX-05, TOOL-39). Carries the tool as
-/// advertised on the thread at approval time, if it was.
+/// A pending frontend call that was explicitly approved. The intended way to
+/// take a call's arguments for execution: approval records who decided
+/// (IDX-05, TOOL-39). The pending call's arguments are readable, but
+/// executing from them skips that record. Carries the tool as advertised on
+/// the thread at approval time, if it was.
 #[derive(Debug, Clone)]
 pub struct ApprovedToolCall {
     call: PendingToolCall,
