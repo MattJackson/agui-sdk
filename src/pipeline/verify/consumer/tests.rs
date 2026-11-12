@@ -570,3 +570,93 @@ fn a_snapshot_restating_a_message_without_an_owner_forgets_its_owner() {
         "toolCallName": "x", "parentMessageId": "m1", "subagentRunId": "B"})))
         .unwrap();
 }
+
+/// An owner set emptied within a run gives back its peak table: its
+/// owners' charge is credited at STEP_FINISHED, so a large table kept
+/// resident would be uncharged (D25), and 64 retained names could each
+/// hold one.
+#[test]
+fn an_emptied_large_step_owner_set_is_dropped_within_the_run() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    let step = |kind: &str, owner: &str| {
+        ev(json!({"type": kind, "stepName": "s", "subagentRunId": owner}))
+    };
+    for i in 0..4 * floor {
+        v.observe(&step("STEP_STARTED", &format!("o{i}"))).unwrap();
+    }
+    assert!(v.state.steps["s"].capacity() > floor);
+    for i in 0..4 * floor {
+        v.observe(&step("STEP_FINISHED", &format!("o{i}"))).unwrap();
+    }
+    let kept = v.state.steps.get("s").map_or(0, HashSet::capacity);
+    assert!(kept <= floor, "an emptied owner set kept capacity {kept}");
+    // The name still starts and finishes.
+    v.observe(&step("STEP_STARTED", "o0")).unwrap();
+    v.observe(&step("STEP_FINISHED", "o0")).unwrap();
+    assert!(v.observe(&step("STEP_FINISHED", "o0")).is_err());
+}
+
+/// A large owner set that shrinks within a run but still holds an owner
+/// gives back its peak table too: only the remaining owners are charged,
+/// so 64 names each holding one owner in a peak-sized table would be
+/// resident uncharged (D25, D14).
+#[test]
+fn a_large_step_owner_set_shrunk_to_one_owner_is_shrunk_within_the_run() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    let step = |kind: &str, owner: &str| {
+        ev(json!({"type": kind, "stepName": "s", "subagentRunId": owner}))
+    };
+    for i in 0..4 * floor {
+        v.observe(&step("STEP_STARTED", &format!("o{i}"))).unwrap();
+    }
+    assert!(v.state.steps["s"].capacity() > floor);
+    for i in 1..4 * floor {
+        v.observe(&step("STEP_FINISHED", &format!("o{i}"))).unwrap();
+    }
+    let kept = v.state.steps["s"].capacity();
+    assert!(kept <= floor, "a one-owner set kept capacity {kept}");
+    // The remaining owner is still open; the others are not.
+    assert!(v.observe(&step("STEP_STARTED", "o0")).is_err());
+    assert!(v.observe(&step("STEP_FINISHED", "o1")).is_err());
+    v.observe(&step("STEP_FINISHED", "o0")).unwrap();
+}
+
+/// A MESSAGES_SNAPSHOT restating an activity message gives it the
+/// snapshot's owner, as the producer verifier and the reducer do: a delta
+/// under the new owner is accepted, one under the old owner refused.
+#[test]
+fn a_snapshot_restating_an_activity_takes_its_owner() {
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    let base = v.state.run_bytes;
+    v.observe(&ev(json!({"type": "ACTIVITY_SNAPSHOT", "messageId": "a1",
+        "activityType": "x", "content": {}, "subagentRunId": "S"})))
+        .unwrap();
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "a1", "role": "activity", "activityType": "x", "content": {},
+         "subagentRunId": "T"}
+    ]})))
+    .unwrap();
+    let delta = |owner: &str| {
+        ev(
+            json!({"type": "ACTIVITY_DELTA", "messageId": "a1", "activityType": "x",
+            "patch": [{"op": "add", "path": "/k", "value": 1}], "subagentRunId": owner}),
+        )
+    };
+    v.observe(&delta("T")).unwrap();
+    assert!(v.observe(&delta("S")).is_err());
+    // The owner was replaced, its charge with it.
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "a1", "role": "activity", "activityType": "x", "content": {}}
+    ]})))
+    .unwrap();
+    assert_eq!(
+        v.state.run_bytes,
+        base + ACTIVITY_SLOT,
+        "an untagged activity is charged its slot only"
+    );
+}
