@@ -357,6 +357,8 @@ fn oversized_run_call_sets_are_dropped_after_a_small_run() {
     ] {
         assert!(set.capacity() <= floor, "capacity {}", set.capacity());
     }
+    let started = h.r.run_calls.started.capacity();
+    assert!(started <= floor, "started capacity {started}");
 }
 
 /// A result whose message id equals a parentless call's id (the id its
@@ -1544,4 +1546,20 @@ fn snapshot_dropping_most_history_releases_tables() {
     ] {
         assert!(capacity <= floor, "{name} capacity {capacity}");
     }
+}
+
+/// A run's pending-call buffer is released when the next run starts.
+#[test]
+fn pending_buffer_is_released_at_the_next_run() {
+    let mut h = H::new();
+    h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r1"}));
+    for i in 0..2000 {
+        let c = format!("c{i}");
+        h.push(json!({"type": "TOOL_CALL_START", "toolCallId": c, "toolCallName": "f"}));
+        h.push(json!({"type": "TOOL_CALL_END", "toolCallId": c}));
+    }
+    h.push(json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}));
+    assert_eq!(h.r.pending.len(), 2000);
+    h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r2"}));
+    assert_eq!(h.r.pending.capacity(), 0);
 }

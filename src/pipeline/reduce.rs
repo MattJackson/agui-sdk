@@ -269,7 +269,11 @@ impl RunCalls {
     /// Empties the bookkeeping for the next run, keeping the capacity unless
     /// a table is far larger than the run that just used it.
     fn clear(&mut self) {
-        self.started.clear();
+        if super::oversized(self.started.capacity(), self.started.len()) {
+            self.started = Vec::new();
+        } else {
+            self.started.clear();
+        }
         super::reset_set(&mut self.started_set);
         super::reset_set(&mut self.ended);
         super::reset_set(&mut self.answered);
@@ -887,7 +891,8 @@ impl Reducer {
         self.history_growth = self
             .history_growth
             .saturating_sub(signed(std::mem::take(&mut self.pending_bytes)));
-        self.pending.clear();
+        // `finish_run` builds a fresh list, so this one's buffer is not reused.
+        self.pending = Vec::new();
         self.interrupts.clear();
         self.usage.clear();
     }
