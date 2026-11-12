@@ -101,10 +101,12 @@ time_scales = [0.125, 1]
 # Time: ×1 to ×8 is 10k to 80k messages, and 80k outgrow the caches, so the
 # time per message rises ~1.4–1.75× there (and keeps wobbling above, flat
 # below) though the work is linear: 8 × 1.5 flaked at ×12.8–14. That range
-# is held to 8 × 3 = ×24 instead, and 1.25k to 10k (×0.125 to ×1, in cache,
+# is held to 8 × 4 = ×32 instead (CI read up to ×26 on unchanged code), and 1.25k to 10k (×0.125 to ×1, in cache,
 # measured ×7.9–9.5 locally, ×12.15 once on CI) to the in-cache
 # 8 × 2 = ×16 (`[gate] time_scales_linearity`). A real O(n²) is ×64 at ×8
-# input in either range. docs/PERFORMANCE.md, "Time linearity and the cache".
+# input in either range; smaller quadratic terms are caught by the 16x
+# `messages_snapshot_*_is_linear` tests in tests/hostile_peers.rs.
+# docs/PERFORMANCE.md, "Time linearity and the cache".
 [case."messages_snapshot/reconcile"]
 allocs_per_event = 1
 min_mb_per_s = 0

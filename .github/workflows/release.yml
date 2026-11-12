@@ -111,8 +111,16 @@ jobs:
       # job builds from a clean checkout instead.
 
       - name: the tag, the manifest and main agree
+        env:
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
+          # A manual dispatch must name the tag itself, never a branch that
+          # merely shares the tag's name.
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::release runs on a tag ref, got a $REF_TYPE ($TAG)" >&2
+            exit 1
+          fi
           if [ -z "${VERSION:-}" ]; then
             echo "::error::qa.yml returned no version; refusing to release an unnamed thing" >&2
             exit 1

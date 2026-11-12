@@ -89,13 +89,18 @@ checks (`time_linearity` and `time_scales` on the case in
   x12.15, so the in-cache pair has its own tolerance rather than the
   `time_linearity` bound of 8 x 1.5 = x12, which flaked.
 - **Out of cache, loose.** From 10k to 80k (the usual x1 to x8) the bound is
-  8 x 3 = x24, which covers the cache step (measured up to x18.6 under load).
+  8 x 4 = x32, which covers the cache step (measured up to x18.6 under load
+  locally, and x18.3 to x26.0 on shared CI runners on unchanged code).
 
 A real O(n²) costs x64 for x8 input, so it fails both checks, the in-cache
 one by 4x. A quadratic term too small to show at 10k still shows at
 80k: with an extra `n²/200` loop injected into the bench, the in-cache ratio
-was x10.6 (passing) and the out-of-cache one x29 (failing). That is why the
-wide check stays rather than being replaced by the in-cache one. Allocation
+was x10.6 (passing) and the out-of-cache one x29. With the CI-safe x32
+bound that term passes the bench too, so the bench is the guard for gross
+quadratics only. Smaller quadratic terms in reconcile are the job of the
+wall-clock tests in `tests/hostile_peers.rs` (`messages_snapshot_*_is_linear`):
+16x the input against a 64x bound, where linear is about 16x and quadratic
+about 256x. The wide check stays as the bench's own guard. Allocation
 linearity and the exact allocation budget are unaffected: they still use
 10k and 80k, because allocation counts do not depend on the cache.
 
