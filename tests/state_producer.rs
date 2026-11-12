@@ -335,3 +335,14 @@ fn a_replayed_state_is_the_baseline_for_the_first_delta() {
     let events = run(json!({}), json!({ "doc": doc }));
     assert_eq!(apply_all(Value::Null, &events), wanted);
 }
+
+/// A default publisher is one over an absent input state: baseline `{}`.
+#[test]
+fn a_default_publisher_has_the_empty_object_baseline() {
+    let mut publisher = StatePublisher::default();
+    assert!(publisher.publish(&json!({})).is_none());
+    assert_eq!(
+        publisher.publish(&json!({"a": 1})),
+        StatePublisher::new(Value::Null).publish(&json!({"a": 1}))
+    );
+}

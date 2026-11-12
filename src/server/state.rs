@@ -14,7 +14,7 @@ use crate::patch::{self, PatchBudget, PatchLimits};
 use crate::state::{StateDelta, StateSnapshot};
 
 /// Tracks the client's state baseline.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct StatePublisher {
     baseline: Value,
     /// Incremental node budget for applying observed deltas.
@@ -22,6 +22,13 @@ pub struct StatePublisher {
     /// Set when an observed delta did not apply: the client's copy can no
     /// longer be vouched for, so the next publication is a snapshot (SNAP-04).
     diverged: bool,
+}
+
+/// As [`StatePublisher::new`] over an absent input state: baseline `{}`.
+impl Default for StatePublisher {
+    fn default() -> Self {
+        Self::new(Value::Null)
+    }
 }
 
 impl StatePublisher {
