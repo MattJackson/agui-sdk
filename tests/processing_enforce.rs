@@ -414,9 +414,9 @@ fn a_truncated_frame_reads_the_same_with_or_without_a_null() {
     let message = |frame: &[u8]| {
         let mut processor = Processor::new(PipelineConfig::default());
         let mut reporter = Reporter::new(Arc::new(NullSink), 16);
-        let err = processor
-            .push_json(frame, &mut reporter, &mut Vec::new())
-            .unwrap_err();
+        let Err(err) = processor.push_json(frame, &mut reporter, &mut Vec::new()) else {
+            panic!("a truncated frame was accepted")
+        };
         assert_eq!(err.code(), ErrorCode::MalformedEvent);
         err.to_string()
     };
