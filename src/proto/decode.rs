@@ -27,8 +27,8 @@ pub enum Decoded {
     /// documented protobuf exception (PROC-09).
     Event(Value),
     /// The envelope arm is newer than this build: drop with a warning
-    /// (PROC-08, PB-17). An envelope with no arm at all is reported the same
-    /// way with `field_number` 0, which no real arm can have.
+    /// (PROC-08, PB-17). An envelope with no arm at all maps to no event and
+    /// is an error instead (PB-18).
     UnknownArm {
         /// The arm's field number.
         field_number: u32,
@@ -43,7 +43,7 @@ pub enum DecodedJson {
     Event(&'static str),
     /// As [`Decoded::UnknownArm`]; nothing was written.
     UnknownArm {
-        /// The arm's field number (0 for an envelope with no arm).
+        /// The arm's field number.
         field_number: u32,
     },
 }
@@ -61,12 +61,13 @@ pub enum DecodedJson {
 /// `{"id":"","role":""}` per 2 bytes), so a value can hold up to about 350 times
 /// its frame's size in memory (an 8 MB frame, about 2.8 GB). To feed an
 /// untrusted peer into a pipeline, use [`decode_event_json`] with
-/// `Processor::push_json`, which budgets while parsing.
+/// `Processor::push_json`, which budgets the text while parsing (the
+/// decoder's transient scratch, linear in the frame, is not budgeted).
 ///
 /// # Errors
 ///
 /// [`ErrorCode::ProtoFraming`] when the bytes
-/// do not decode as a message (PB-18);
+/// do not decode as a message, or the envelope carries no arm at all (PB-18);
 /// [`ErrorCode::LimitExceeded`] when open
 /// JSON nests deeper than 128 levels (the event object counted as 1);
 /// [`ErrorCode::FrameTooLarge`] for a payload of `u32::MAX` bytes or more.
@@ -91,21 +92,27 @@ pub(crate) fn decode_event_within(payload: &[u8], max_entries: usize) -> Result<
             }
         },
         Transcoded::UnknownEvent { field_number } => Decoded::UnknownArm { field_number },
-        Transcoded::Empty => Decoded::UnknownArm { field_number: 0 },
+        Transcoded::Empty => return Err(no_arm()),
     })
 }
 
 /// Decodes one frame's payload straight to JSON text appended to `out`,
 /// without building a tree: the path for feeding a JSON pipeline (for example
 /// `Processor::push_json`) from the binary wire. Member order is wire order.
-/// A warm decoder makes no allocations beyond growth of `out`.
+/// A warm decoder makes no allocations beyond growth of `out` for an event
+/// whose open JSON (`Struct` entries and merged occurrences) stays within a
+/// few thousand wire entries; the scratch a larger event grows is released
+/// when its decode ends, so decoding it again regrows it.
 ///
 /// On error `out` is left as it was.
 ///
 /// Like [`decode_event`], not bounded by `Limits`: the text appended is up to
 /// about 16 times the payload's size (31 bytes of
 /// `{"interruptId":"","status":""},` per 2-byte empty resume entry), which
-/// `Processor::push_json` then budgets as it parses.
+/// `Processor::push_json` then budgets as it parses. The decoder's own
+/// scratch is not budgeted either: up to about 20 bytes per `Struct` wire
+/// entry (about 10 times the payload, as an entry can be 2 bytes) is held
+/// while the event decodes, even where duplicates collapse to one member.
 ///
 /// # Errors
 ///
@@ -121,12 +128,24 @@ pub fn decode_event_json(payload: &[u8], out: &mut String) -> Result<DecodedJson
         Ok(Transcoded::UnknownEvent { field_number }) => {
             Ok(DecodedJson::UnknownArm { field_number })
         }
-        Ok(Transcoded::Empty) => Ok(DecodedJson::UnknownArm { field_number: 0 }),
+        Ok(Transcoded::Empty) => {
+            out.truncate(at);
+            Err(no_arm())
+        }
         Err(e) => {
             out.truncate(at);
             Err(e.into())
         }
     }
+}
+
+/// An envelope with no arm maps to no event at all: a decode failure, as
+/// `{}` is on the JSON wire (PB-18). A newer arm still carries its tag.
+fn no_arm() -> Error {
+    Error::new(
+        ErrorCode::ProtoFraming,
+        "protobuf envelope carries no event",
+    )
 }
 
 #[cfg(test)]

@@ -18,7 +18,9 @@ use super::wire::{put_varint, varint_len, I64, LEN, VARINT};
 trait Sink {
     fn byte(&mut self, b: u8);
     fn varint(&mut self, v: u64);
-    fn fixed64(&mut self, v: u64);
+    /// Writes a fixed 64-bit value; `v` runs only when bytes are written,
+    /// so the measure pass does not compute it.
+    fn fixed64(&mut self, v: impl FnOnce() -> u64);
     fn string(&mut self, s: JStr<'_>);
     /// Opens a length-delimited submessage (the tag is already out).
     fn begin(&mut self) -> (usize, usize);
@@ -45,7 +47,7 @@ impl Sink for Measure<'_> {
         self.n += varint_len(v);
     }
     #[inline]
-    fn fixed64(&mut self, _: u64) {
+    fn fixed64(&mut self, _: impl FnOnce() -> u64) {
         self.n += 8;
     }
     #[inline]
@@ -86,8 +88,8 @@ impl Sink for Write<'_> {
         put_varint(self.out, v);
     }
     #[inline]
-    fn fixed64(&mut self, v: u64) {
-        self.out.extend_from_slice(&v.to_le_bytes());
+    fn fixed64(&mut self, v: impl FnOnce() -> u64) {
+        self.out.extend_from_slice(&v().to_le_bytes());
     }
     #[inline]
     fn string(&mut self, s: JStr<'_>) {
@@ -134,8 +136,8 @@ pub(super) const SCRATCH_KEEP_ENTRIES: usize = 4096;
 /// encodes: the same bound as the per-thread text and string buffers
 /// (`encode::KEEP_BYTES`). Below it a warm encoder reuses its buffers, so
 /// repeating an event of that size allocates nothing; above it the capacity
-/// one huge event grew the buffers to is released when the encode ends
-/// (proto-17), and every buffer goes back to [`SCRATCH_KEEP_ENTRIES`].
+/// one huge event grew the buffers to is released when the encode ends,
+/// and every buffer goes back to [`SCRATCH_KEEP_ENTRIES`].
 pub(super) const SCRATCH_KEEP_BYTES: usize = 256 * 1024;
 
 impl Encoder {
@@ -607,7 +609,7 @@ fn value<'a, N: JNode<'a>, S: Sink>(
         }
         Kind::Num => {
             s.tag(2, I64);
-            s.fixed64(v.as_f64().to_bits());
+            s.fixed64(|| v.as_f64().to_bits());
         }
         Kind::Str => {
             s.tag(3, LEN);
