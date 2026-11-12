@@ -101,3 +101,28 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::known_flags;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn known_flags_accepts_each_command_s_own_flags() {
+        assert!(known_flags("gate", &args(&[])));
+        assert!(known_flags("gate", &args(&["--no-pending"])));
+        assert!(known_flags("progress", &args(&["--check"])));
+        assert!(known_flags("progress", &args(&["--out", "F", "--check"])));
+    }
+
+    #[test]
+    fn known_flags_refuses_unknown_misspelt_or_incomplete_flags() {
+        assert!(!known_flags("gate", &args(&["--no-pendng"])));
+        assert!(!known_flags("gate", &args(&["--check"])));
+        assert!(!known_flags("progress", &args(&["--no-pending"])));
+        assert!(!known_flags("progress", &args(&["--out"])));
+    }
+}
