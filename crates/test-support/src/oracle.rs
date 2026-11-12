@@ -265,11 +265,17 @@ pub fn observe(fixture: &StreamFixture, way: Way) -> Observed {
     observed
 }
 
-/// A `client.maxProtocolVersion` that names neither a pre-versioning era nor
-/// a protocol version: the fixture cannot be run as written, so the lanes
-/// report a harness error instead of running it against the current peer.
+/// A `client.maxProtocolVersion` that is not a string, or names neither a
+/// pre-versioning era nor a protocol version: the fixture cannot be run as
+/// written, so the lanes report a harness error instead of running it against
+/// the current peer.
 fn unrecognised_pin(fixture: &StreamFixture) -> Option<String> {
-    let v = fixture.max_protocol_version()?;
+    let raw = fixture.document.pointer("/client/maxProtocolVersion")?;
+    let Some(v) = raw.as_str() else {
+        return Some(format!(
+            "harness: client.maxProtocolVersion {raw} is not a string"
+        ));
+    };
     if LegacyEra::parse(v).is_some() || agui_sdk::version::ProtocolVersion::parse(v).is_some() {
         None
     } else {
@@ -767,6 +773,35 @@ mod tests {
             "{:?}",
             observed.outcome
         );
+    }
+
+    #[test]
+    fn a_non_string_peer_pin_is_a_harness_error() {
+        for pin in [json!(0.1), json!(null), json!({"v": "0.1"})] {
+            let fixture = StreamFixture {
+                name: "non-string-pin".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({
+                    "client": {"maxProtocolVersion": pin},
+                    "stream": [],
+                    "expect": {"outcome": "completed"}
+                }),
+            };
+            for way in [Way::Json, Way::Value] {
+                let observed = observe(&fixture, way);
+                assert!(
+                    matches!(&observed.outcome, Outcome::Harness(e) if e.contains("not a string")),
+                    "{pin}: {:?}",
+                    observed.outcome
+                );
+            }
+            let observed = observe_client_blocking(&fixture, Delivery::Frames);
+            assert!(
+                matches!(&observed.outcome, Outcome::Harness(e) if e.contains("not a string")),
+                "{pin}: {:?}",
+                observed.outcome
+            );
+        }
     }
 
     #[test]
