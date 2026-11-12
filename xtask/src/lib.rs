@@ -86,24 +86,24 @@ fn msrv_lock_with(root: &Path, cargo: &str) -> Result<(), String> {
     }
     let lock_path = root.join("Cargo.lock");
     let original = std::fs::read(&lock_path).ok();
-    let result = update_lock(root, cargo, &lock_path);
-    if result.is_err() {
-        // A refused or half-written lockfile must not be left behind.
-        let restored = match &original {
-            Some(bytes) => std::fs::write(&lock_path, bytes),
-            None => std::fs::remove_file(&lock_path).or_else(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            }),
-        };
-        if let Err(e) = restored {
-            return result.map_err(|err| format!("{err}; restoring Cargo.lock failed: {e}"));
-        }
+    let Err(err) = update_lock(root, cargo, &lock_path) else {
+        return Ok(());
+    };
+    // A refused or half-written lockfile must not be left behind.
+    let restored = match &original {
+        Some(bytes) => std::fs::write(&lock_path, bytes),
+        None => std::fs::remove_file(&lock_path).or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }),
+    };
+    match restored {
+        Ok(()) => Err(format!("{err}; Cargo.lock left unchanged")),
+        Err(e) => Err(format!("{err}; restoring Cargo.lock failed: {e}")),
     }
-    result
 }
 
 fn update_lock(root: &Path, cargo: &str, lock_path: &Path) -> Result<(), String> {
@@ -114,9 +114,7 @@ fn update_lock(root: &Path, cargo: &str, lock_path: &Path) -> Result<(), String>
         .status()
         .map_err(|e| format!("cannot run {cargo}: {e}"))?;
     if !status.success() {
-        return Err(format!(
-            "cargo update failed ({status}); Cargo.lock left unchanged"
-        ));
+        return Err(format!("cargo update failed ({status})"));
     }
     let lock = std::fs::read_to_string(lock_path).map_err(|e| e.to_string())?;
     if lock.lines().any(|l| l.trim() == "version = 3") {
@@ -124,7 +122,7 @@ fn update_lock(root: &Path, cargo: &str, lock_path: &Path) -> Result<(), String>
     } else {
         Err(
             "cargo update wrote a Cargo.lock that is not lockfile version 3, which cargo 1.75 \
-             cannot read; Cargo.lock left unchanged"
+             cannot read"
                 .to_owned(),
         )
     }
@@ -174,7 +172,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let err = result.err().unwrap_or_default();
         assert!(err.contains("lockfile version 3"), "{err}");
+        assert!(err.ends_with("; Cargo.lock left unchanged"), "{err}");
         assert_eq!(after, original, "the refused Cargo.lock was left in place");
+        Ok(())
+    }
+
+    /// A stand-in cargo that replaces `Cargo.lock` with a directory and fails,
+    /// so restoring the original cannot succeed.
+    const FAKE_CARGO_DIR: &str = "#!/bin/sh\n\
+        if [ \"$1\" = --version ]; then echo 'cargo 1.90.0 (x 2025-01-01)'; exit 0; fi\n\
+        rm -f Cargo.lock; mkdir Cargo.lock; exit 1\n";
+
+    #[test]
+    fn failed_restore_does_not_claim_lockfile_unchanged() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = std::env::temp_dir().join(format!("xtask-msrv-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+        let cargo = tmp.join("fake-cargo");
+        std::fs::write(&cargo, FAKE_CARGO_DIR).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        std::fs::write(tmp.join("Cargo.lock"), "version = 3\n").map_err(|e| e.to_string())?;
+
+        let result = msrv_lock_with(&tmp, &cargo.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&tmp);
+        let err = result.err().unwrap_or_default();
+        assert!(err.contains("restoring Cargo.lock failed"), "{err}");
+        assert!(!err.contains("left unchanged"), "{err}");
         Ok(())
     }
 }
