@@ -599,8 +599,9 @@ fn relative(root: &Path, path: &Path) -> String {
 }
 
 /// Every `covers` tag in the `.rs` files under `dirs`, with paths relative
-/// to `root`. Malformed tags are returned as problems, as are tags in `src/`
-/// that are not on a test function.
+/// to `root`. Malformed tags are returned as problems, as are tags that are
+/// not on a `#[test]` function that runs (not `#[ignore]`d, not under an
+/// unvouched `#[cfg]`).
 pub fn scan_tags(root: &Path, dirs: &[&Path]) -> (Vec<Tag>, Vec<String>) {
     let mut files = Vec::new();
     for dir in dirs {

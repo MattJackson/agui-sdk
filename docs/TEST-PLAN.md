@@ -269,8 +269,8 @@ it never affects the library.
 | `pipeline_push_value` | same through the middleware path | as above + 0 extra |
 | `reducer_deltas` | 100k `TEXT_MESSAGE_CONTENT` into one message, updates dropped (`one_message`) or held (`one_message_held`) | O(1) amortized: allocs ≤ log2(total bytes) when dropped (the `Arc` is recycled); + one `Arc<Event>` per event when held |
 | `messages_snapshot` | reconcile 10k messages | O(n) time |
-| `patch_apply` | 1k-op patches on 1 MB state; failing patches | undo-log bytes ≤ ops' size; no document clone |
-| `server_emit_encode` | runner + verifier + SSE / proto encode | 0 allocs/event in the encoder |
+| `patch_apply` | 1k-op patches on 1 MB state; failing patches | allocated bytes ≤ 8 × ops' size + 4 KiB (no document clone); exact allocation count in `budgets.toml` |
+| `server_emit_encode` | producer verifier + SSE / proto encode over pre-built events (the runner is `server_runner`) | 0 allocs/event in the encoder |
 
 ### 9.2 Linearity gates
 
@@ -286,7 +286,8 @@ time linearity included.
 
 ### 9.3 Profiling each hot path
 
-For every bench target:
+For every bench built on `benches/support` (the ones that call
+`Bench::finish`):
 
 1. `cargo bench --bench <name> --no-run` and note the binary path;
 2. Linux: `cargo flamegraph --bench <name> -- --profile-time 10`, or
@@ -294,6 +295,11 @@ For every bench target:
 3. macOS and Linux: `samply record target/release/deps/<name>-*
    --profile-time 10` and inspect in the Firefox Profiler;
 4. record the top three frames per bench in the PR when a budget changes.
+
+The self-harnessed benches (`pipeline_linearity`, `protocol_types`,
+`proto_codec`, `server_runner`, `http_transport`) do not take
+`--profile-time`: profile them by running the bench binary with `--bench`
+under `perf record -g` or `samply record` directly.
 
 `[profile.bench]` keeps `debug = "line-tables-only"` so the stacks are
 readable.

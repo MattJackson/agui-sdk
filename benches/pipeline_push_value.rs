@@ -1,6 +1,7 @@
 //! `Processor::push_value`, the middleware path, over the same stream as
-//! `pipeline_push_json`. Budget: the JSON path's count plus 0 (the values
-//! are built outside the measured region).
+//! `pipeline_push_json`. Budget: the JSON path's count minus the strings the
+//! JSON parse allocates (the values are built outside the measured region
+//! and moved in); see `benches/budgets.toml`.
 
 mod support;
 

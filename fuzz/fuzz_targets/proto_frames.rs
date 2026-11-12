@@ -1,6 +1,7 @@
-//! FrameDecoder over arbitrary bytes and chunking. Invariants: no panic; an
-//! oversize frame is rejected (before buffering it); the same frames
-//! regardless of chunking.
+//! FrameDecoder over arbitrary bytes and chunking. Invariants: no panic; no
+//! frame over the limit is returned; the same frames regardless of chunking.
+//! That an oversize frame is rejected before it is buffered is covered by
+//! the unit and hostile-peer tests, not here.
 #![no_main]
 
 use agui_sdk::proto::framing::FrameDecoder;

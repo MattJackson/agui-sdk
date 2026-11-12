@@ -126,7 +126,8 @@ pub fn installed() -> bool {
 }
 
 /// Runs `f` and returns its result with the allocations it made on this
-/// thread. Nested calls are counted by the outermost one only.
+/// thread. Calls may nest: each returns the allocations made during its own
+/// closure, and an outer call includes those of the calls nested in it.
 pub fn measure<R>(f: impl FnOnce() -> R) -> (R, AllocStats) {
     let was_active = ACTIVE.with(|a| a.replace(true));
     let before = read();
