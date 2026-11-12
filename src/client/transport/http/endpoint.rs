@@ -134,9 +134,10 @@ pub(crate) fn redact_url(text: &str) -> String {
     out
 }
 
-/// Resolves a `Location` header against `base` (RFC 3986 §5.2, without
-/// dot-segment removal: only the origin is judged here). `None` when the
-/// value is not a usable reference.
+/// Resolves a `Location` header against `base` (RFC 3986 §5.2, with the
+/// dot segments of the merged path removed, §5.2.4). `None` when the value
+/// is not a usable reference, including an absolute URI whose scheme is not
+/// `http` or `https`.
 pub(crate) fn resolve_location(base: &Uri, location: &str) -> Option<Uri> {
     let location = location.trim();
     let location = location.split('#').next().unwrap_or(location);
@@ -146,6 +147,10 @@ pub(crate) fn resolve_location(base: &Uri, location: &str) -> Option<Uri> {
     let lower = location.get(..8).unwrap_or(location).to_ascii_lowercase();
     let absolute = if lower.starts_with("http://") || lower.starts_with("https://") {
         location.to_owned()
+    } else if has_scheme(location) {
+        // `ftp://…`, `mailto:…` or `http:x` (no authority): not a target to
+        // merge with the base path (RFC 3986 §4.3).
+        return None;
     } else {
         let scheme = base.scheme_str()?;
         let authority = base.authority()?.as_str();
@@ -162,10 +167,77 @@ pub(crate) fn resolve_location(base: &Uri, location: &str) -> Option<Uri> {
             format!("{scheme}://{authority}{dir}{location}")
         }
     };
+    let absolute = without_dot_segments(&absolute);
     Endpoint::parse(&absolute, ErrorCode::HttpStatus, "the redirect target")
         .ok()
         .filter(|e| e.userinfo.is_none())
         .map(|e| e.uri)
+}
+
+/// Whether a reference starts with `scheme ":"` (RFC 3986 §3.1: ALPHA
+/// followed by ALPHA, DIGIT, `+`, `-` or `.`), before any `/`, `?` or `#`.
+fn has_scheme(reference: &str) -> bool {
+    let Some(colon) = reference.find([':', '/', '?', '#']) else {
+        return false;
+    };
+    let scheme = reference.as_bytes();
+    scheme[colon] == b':'
+        && colon > 0
+        && scheme[0].is_ascii_alphabetic()
+        && scheme[1..colon]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
+/// `scheme://authority/path?query` with `remove_dot_segments` (RFC 3986
+/// §5.2.4) applied to the path; the query is kept as it is.
+fn without_dot_segments(uri: &str) -> String {
+    let Some(start) = uri.find("://").map(|i| i + 3) else {
+        return uri.to_owned();
+    };
+    let Some(path_start) = uri[start..].find(['/', '?']).map(|i| start + i) else {
+        return uri.to_owned();
+    };
+    let path_end = uri[path_start..]
+        .find('?')
+        .map_or(uri.len(), |i| path_start + i);
+    let path = &uri[path_start..path_end];
+    if !path.contains('.') {
+        return uri.to_owned();
+    }
+    let mut out = String::with_capacity(uri.len());
+    out.push_str(&uri[..path_start]);
+    out.push_str(&remove_dot_segments(path));
+    out.push_str(&uri[path_end..]);
+    out
+}
+
+/// RFC 3986 §5.2.4 `remove_dot_segments`.
+fn remove_dot_segments(path: &str) -> String {
+    let mut input = path;
+    let mut output = String::with_capacity(path.len());
+    while !input.is_empty() {
+        if let Some(rest) = input.strip_prefix("../") {
+            input = rest;
+        } else if let Some(rest) = input.strip_prefix("./") {
+            input = rest;
+        } else if input.starts_with("/./") {
+            input = &input[2..];
+        } else if input == "/." {
+            input = "/";
+        } else if input.starts_with("/../") || input == "/.." {
+            input = if input == "/.." { "/" } else { &input[3..] };
+            output.truncate(output.rfind('/').unwrap_or(0));
+        } else if input == "." || input == ".." {
+            input = "";
+        } else {
+            let skip = usize::from(input.starts_with('/'));
+            let end = input[skip..].find('/').map_or(input.len(), |i| skip + i);
+            output.push_str(&input[..end]);
+            input = &input[end..];
+        }
+    }
+    output
 }
 
 /// Decodes `%XX` escapes to the octets they name (not necessarily UTF-8);
@@ -438,6 +510,36 @@ mod tests {
         assert_eq!(r("https://o/y#f").as_deref(), Some("https://o/y"));
         assert_eq!(r("http://u:p@o/"), None);
         assert_eq!(r(""), None);
+    }
+
+    /// Dot segments are removed from the merged path (RFC 3986 §5.2.2,
+    /// §5.2.4): the result is the next request target.
+    #[test]
+    fn locations_remove_dot_segments() {
+        let base: Uri = "https://agent/api/v1/run".parse().unwrap_or_default();
+        let r = |l: &str| resolve_location(&base, l).map(|u| u.to_string());
+        assert_eq!(r("../v2/run").as_deref(), Some("https://agent/api/v2/run"));
+        assert_eq!(r("./x").as_deref(), Some("https://agent/api/v1/x"));
+        assert_eq!(r("/a/./b/../c").as_deref(), Some("https://agent/a/c"));
+        assert_eq!(
+            r("../../../../x?a/../b").as_deref(),
+            Some("https://agent/x?a/../b")
+        );
+        assert_eq!(r("https://o/a/../b").as_deref(), Some("https://o/b"));
+        assert_eq!(r("..").as_deref(), Some("https://agent/api/"));
+    }
+
+    /// A reference with a scheme other than http/https is an absolute URI
+    /// (RFC 3986 §4.3), not a relative path to merge.
+    #[test]
+    fn locations_with_other_schemes_are_refused() {
+        let base: Uri = "https://agent/api/run".parse().unwrap_or_default();
+        let r = |l: &str| resolve_location(&base, l).map(|u| u.to_string());
+        assert_eq!(r("ftp://other/x"), None);
+        assert_eq!(r("mailto:a@b"), None);
+        assert_eq!(r("javascript:x"), None);
+        assert_eq!(r("./a:b").as_deref(), Some("https://agent/api/a:b"));
+        assert_eq!(r("x/a:b").as_deref(), Some("https://agent/api/x/a:b"));
     }
 
     #[test]
