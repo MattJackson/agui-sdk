@@ -202,13 +202,21 @@ emit. The producer lane uses this repository's own fixtures in
 ## 7. Other test kinds
 
 - **Property tests** (`proptest`, dev-dependency):
-  - chunk expansion: any interleaving of chunk and explicit events either
-    expands to a stream the verifier accepts, or fails with a `verify.chunk`
-    code;
-  - patch: `apply` either succeeds or leaves the document bit-identical;
-    the budget's node count equals a full recount;
-  - `JsonObject::merge_from` is last-write-wins and shallow;
-  - SSE and protobuf decoding are invariant under re-chunking.
+  - protobuf (`tests/proto_properties.rs`): arbitrary and mutated bytes never
+    panic the decoder, deframing is invariant under re-chunking, and open
+    JSON payloads round-trip through encode and decode;
+  - producer (`tests/lifecycle_producer.rs`): every run ends with exactly one
+    valid terminal, whatever fault the agent injects;
+  - pipeline (`src/pipeline/mod.rs`): `needs_boundary` agrees with its
+    oracle on random and adversarial frames;
+  - strategies (`crates/test-support/src/strategies.rs`): every generated
+    conformant stream is accepted by the pipeline.
+
+  Chunk expansion (`tests/streaming_chunks.rs`) and `JsonObject::merge_from`
+  (`tests/metadata_merge.rs`) are covered by example tests, not properties;
+  patch atomicity and SSE re-chunking invariance are fuzz invariants
+  (section 8). The `chunk_stream` and `patch_case` strategies exist, but no
+  property test uses them yet.
 - **Snapshot tests** for error and diagnostic messages, checked as plain
   expected strings in the test (no snapshot crate).
 - **Compile-fail doc-tests** for the no-bypass guarantees: no public path
