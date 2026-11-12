@@ -413,3 +413,62 @@ fn a_remembered_delta_target_is_forgotten_when_its_item_changes() {
     v.observe(&started("r2")).unwrap();
     assert!(v.observe(&content(None)).is_err(), "new run: refused");
 }
+
+/// subagents.mdx: a tool call inherits the attribution of the message
+/// holding it, so a continuation tagged with that owner agrees, whether the
+/// message was restated by a snapshot, held by the history or streamed by an
+/// earlier run.
+#[test]
+fn an_untagged_call_inherits_a_held_parent_owner() {
+    let call = |id: &str, parent: &str| {
+        ev(
+            json!({"type": "TOOL_CALL_START", "toolCallId": id, "toolCallName": "x",
+                  "parentMessageId": parent}),
+        )
+    };
+    let args = |id: &str, sub: &str| {
+        ev(
+            json!({"type": "TOOL_CALL_ARGS", "toolCallId": id, "delta": "{}",
+                  "subagentRunId": sub}),
+        )
+    };
+
+    // Restated by a snapshot of this run: the owner is known.
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    v.observe(&ev(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m1", "role": "assistant", "content": "x", "subagentRunId": "A"}
+    ]})))
+    .unwrap();
+    v.observe(&call("c1", "m1")).unwrap();
+    let err = v.observe(&args("c1", "B")).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Ownership);
+    v.observe(&args("c1", "A")).unwrap();
+
+    // Held by the history: the first tagged continuation names the owner.
+    let mut v = ConsumerVerifier::new().with_known_messages([MessageId::from("h1")]);
+    v.observe(&started("r1")).unwrap();
+    v.observe(&call("c1", "h1")).unwrap();
+    v.observe(&args("c1", "A")).unwrap();
+    let err = v.observe(&args("c1", "B")).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Ownership);
+
+    // Streamed by an earlier run.
+    let mut v = ConsumerVerifier::new();
+    v.observe(&started("r1")).unwrap();
+    v.observe(&ev(
+        json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "subagentRunId": "A"}),
+    ))
+    .unwrap();
+    v.observe(&ev(
+        json!({"type": "TEXT_MESSAGE_END", "messageId": "m1", "subagentRunId": "A"}),
+    ))
+    .unwrap();
+    v.observe(&ev(
+        json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}),
+    ))
+    .unwrap();
+    v.observe(&started("r2")).unwrap();
+    v.observe(&call("c1", "m1")).unwrap();
+    v.observe(&args("c1", "A")).unwrap();
+}
