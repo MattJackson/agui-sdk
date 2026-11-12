@@ -123,8 +123,8 @@ fn tool_call_index_is_rebuilt_from_the_snapshot() {
 }
 
 /// A delta for a message a snapshot dropped is discarded loudly: the stream
-/// stays valid, the history does not regain the message, and one warning
-/// says so.
+/// stays valid, the history does not regain the message, and each discarded
+/// event (CONTENT and END) draws a `stream.missing_target` warning.
 #[test]
 fn deltas_for_a_message_the_snapshot_dropped_are_reported() {
     use support_pipeline::{finished, run, started};

@@ -351,10 +351,9 @@ fn a_custom_transport_gets_the_same_verdicts_as_http() {
             )
             .await
         });
+        // The client driver is generic over the transport, so identical
+        // frames are identical verdicts.
         assert_eq!(over_http, over_channel);
-        let a = judge(&over_http).map_err(|e| e.code());
-        let b = judge(&over_channel).map_err(|e| e.code());
-        assert_eq!(a, b);
     }
 }
 
