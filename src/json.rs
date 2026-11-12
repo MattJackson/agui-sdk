@@ -530,6 +530,9 @@ const ENTRY: usize = std::mem::size_of::<String>() + VALUE_SLOT;
 /// A B-tree leaf of `serde_json`'s default map: 11 entries and a header.
 const BTREE_NODE: usize = 11 * ENTRY + 16;
 
+/// An internal B-tree node: a leaf plus its 12 child pointers.
+const BTREE_INTERNAL: usize = BTREE_NODE + 12 * std::mem::size_of::<usize>();
+
 /// Largest integer JSON carries exactly in an IEEE double: 2^53 − 1.
 pub(crate) const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
@@ -585,9 +588,16 @@ pub(crate) fn map_bytes(n: usize) -> usize {
             .saturating_add(buckets.saturating_mul(9))
             .saturating_add(16)
     } else {
-        // B-tree leaves of 11 entries, about half full for the ascending
-        // inserts `serde_json` and patches make.
-        n.div_ceil(6).saturating_mul(BTREE_NODE)
+        // B-tree leaves of 11 entries at their minimum fill, which any
+        // insertion order can reach (a peer chooses member order): five
+        // entries per leaf plus one separator above it. A non-root internal
+        // node has at least six children, so the internal levels together
+        // hold at most a fifth as many nodes as the leaves.
+        let leaves = n.div_ceil(6);
+        let internal = if leaves > 1 { leaves.div_ceil(5) } else { 0 };
+        leaves
+            .saturating_mul(BTREE_NODE)
+            .saturating_add(internal.saturating_mul(BTREE_INTERNAL))
     }
 }
 
