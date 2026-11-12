@@ -1123,26 +1123,34 @@ impl ProducerState {
 
     /// Ends the run: everything run-scoped is forgotten. Items are tracked per
     /// run (a later run reusing an id opens a new message, which BASIC-15
-    /// refuses through `messages`); only message ids outlive the run. Each
-    /// table holds one run's entries, so this is O(that run), never O(stream).
+    /// refuses through `messages`); only message ids outlive the run. A
+    /// table is cleared for reuse, or dropped when far larger than the run
+    /// that just used it, so this is O(that run), never O(the stream's
+    /// largest run).
     fn end_run(&mut self, phase: RunPhase) {
+        use crate::pipeline::{reset_map, reset_set, RETAIN_FLOOR};
         self.phase = phase;
-        self.text.clear();
-        self.reasoning.clear();
-        self.spans.clear();
-        self.calls.clear();
+        reset_map(&mut self.text);
+        reset_map(&mut self.reasoning);
+        reset_map(&mut self.spans);
+        reset_map(&mut self.calls);
         self.open_explicit = 0;
-        self.open_owned.clear();
-        self.steps.clear();
-        self.subagents.clear();
+        reset_map(&mut self.open_owned);
+        reset_map(&mut self.steps);
+        reset_map(&mut self.subagents);
         self.active_subagents = 0;
         self.suspended = false;
         self.parent_lane = None;
-        self.lanes.clear();
-        self.lane_messages.clear();
-        self.lane_calls.clear();
-        self.calls_order.clear();
-        self.answered.clear();
+        reset_map(&mut self.lanes);
+        reset_map(&mut self.lane_messages);
+        reset_map(&mut self.lane_calls);
+        let order = self.calls_order.capacity();
+        if order > RETAIN_FLOOR && order / 4 > self.calls_order.len() {
+            self.calls_order = Vec::new();
+        } else {
+            self.calls_order.clear();
+        }
+        reset_set(&mut self.answered);
     }
 
     /// The lane `owner`'s pending chunk stream.
@@ -2794,6 +2802,48 @@ mod tests {
             err.message.contains(", and 84 more"),
             "{}",
             &err.message[..256]
+        );
+    }
+
+    /// A table inflated by one run is dropped, not cleared at O(capacity),
+    /// once later runs are small.
+    #[test]
+    fn an_oversized_run_table_is_dropped_after_a_small_run() {
+        use serde_json::json;
+        let floor = crate::pipeline::RETAIN_FLOOR;
+        let mut v = ProducerVerifier::new();
+        v.check(&ev(
+            json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r1"}),
+        ))
+        .unwrap();
+        for i in 0..100_000 {
+            let id = format!("m{i}");
+            v.check(&ev(json!({"type": "TEXT_MESSAGE_START", "messageId": id})))
+                .unwrap();
+            let call = format!("c{i}");
+            v.check(&ev(
+                json!({"type": "TOOL_CALL_START", "toolCallId": call, "toolCallName": "x"}),
+            ))
+            .unwrap();
+        }
+        v.check(&ev(json!({"type": "RUN_ERROR", "message": "boom"})))
+            .unwrap();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r2"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "only"}),
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "only"}),
+                json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r2"}),
+            ],
+        );
+        let s = &v.state;
+        assert!(s.text.capacity() <= floor, "text {}", s.text.capacity());
+        assert!(s.calls.capacity() <= floor, "calls {}", s.calls.capacity());
+        assert!(
+            s.calls_order.capacity() <= floor,
+            "order {}",
+            s.calls_order.capacity()
         );
     }
 
