@@ -1133,7 +1133,7 @@ impl SubagentScope {
         self.close_open(closing).await?;
         let mut finished = SubagentFinished::new(self.id);
         finished.outcome = outcome;
-        finished.result = result;
+        finished.result = result.and_then(crate::json::present);
         self.emitter.send(finished.into()).await
     }
 

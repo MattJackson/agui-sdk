@@ -801,7 +801,7 @@ impl<A: Agent> Driver<A> {
 
         let mut finished = RunFinished::new(self.thread_id(), self.run_id());
         finished.outcome = Some(wire_outcome);
-        finished.result = result;
+        finished.result = result.and_then(crate::json::present);
         finished.usage = usage.clone();
         let finished = Event::RunFinished(finished);
         match st.verifier.check(&finished) {

@@ -1338,3 +1338,34 @@ fn a_wrapped_cancellation_still_finishes_cancelled() {
         Some(RunFinishedOutcome::cancelled())
     );
 }
+
+/// covers: LIFE-08, SUB-13
+#[test]
+fn a_null_result_is_sent_as_no_result() {
+    // `null` is "no result", as the protocol types' own setters treat it;
+    // it must not turn a successful run into a producer violation.
+    let runner = Runner::new(agent(|_ctx| async {
+        Ok(RunOutcome::success().with_result(serde_json::Value::Null))
+    }));
+    let events = run(&runner, input());
+    assert_one_valid_run(&events);
+    let finished = finished(&events);
+    assert_eq!(finished.outcome, Some(RunFinishedOutcome::success()));
+    assert!(finished.result.is_none());
+
+    let runner = Runner::new(agent(|ctx| async move {
+        let sub = ctx.emitter().start_subagent("helper").await?;
+        sub.finish(None, Some(serde_json::Value::Null)).await?;
+        Ok(RunOutcome::success())
+    }));
+    let events = run(&runner, input());
+    assert_one_valid_run(&events);
+    assert_eq!(terminal(&events).event_type(), EventType::RunFinished);
+    let Some(Event::SubagentFinished(sub)) = events
+        .iter()
+        .find(|e| e.event_type() == EventType::SubagentFinished)
+    else {
+        panic!("subagent finished")
+    };
+    assert!(sub.result.is_none());
+}
