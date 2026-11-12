@@ -445,6 +445,15 @@ impl Lane {
     }
 }
 
+/// A tool call of the input history.
+#[derive(Debug)]
+struct HistoryCall {
+    /// Its name's fingerprint.
+    name: u64,
+    /// The assistant message holding it.
+    parent: MessageId,
+}
+
 #[derive(Debug)]
 struct ProducerState {
     input: Option<InputFacts>,
@@ -471,8 +480,8 @@ struct ProducerState {
     reasoning: HashMap<MessageId, Item>,
     spans: HashMap<MessageId, Item>,
     calls: HashMap<ToolCallId, Call>,
-    /// Tool calls from the input history: id → name fingerprint.
-    history_calls: HashMap<ToolCallId, u64>,
+    /// Tool calls from the input history.
+    history_calls: HashMap<ToolCallId, HistoryCall>,
     /// Tool messages of the input history: id → the call it answered.
     history_answers: HashMap<MessageId, ToolCallId>,
     /// Explicitly open items (text, reasoning, spans, calls, steps), for
@@ -816,7 +825,10 @@ impl ProducerState {
             for call in message.tool_calls() {
                 self.history_calls
                     .entry(call.id.clone())
-                    .or_insert_with(|| fingerprint(&call.function.name));
+                    .or_insert_with(|| HistoryCall {
+                        name: fingerprint(&call.function.name),
+                        parent: message.id().clone(),
+                    });
             }
         }
     }
@@ -1768,20 +1780,34 @@ impl ProducerState {
                     None => Ok(owner),
                 }
             }
-            // A call of the input history reopens under its own name (TOOL-07).
-            None => match (name, self.history_calls.get(id)) {
-                (Some(name), Some(&had)) if fingerprint(name) != had => {
-                    Err(ProducerViolation::new(
+            // A call of the input history reopens in place, under its own
+            // name, parent and owner (the holding message's) (TOOL-07).
+            None => {
+                let Some(had) = self.history_calls.get(id) else {
+                    return Ok(owner);
+                };
+                let holder_owner = self.held.get(&had.parent).and_then(|h| h.owner.clone());
+                let disagrees = if holder_owner != owner {
+                    Some("owner")
+                } else if name.is_some_and(|n| fingerprint(n) != had.name) {
+                    Some("toolCallName")
+                } else if parent.is_some_and(|p| *p != had.parent) {
+                    Some("parentMessageId")
+                } else {
+                    None
+                };
+                match disagrees {
+                    Some(field) => Err(ProducerViolation::new(
                         ProducerRule::OwnerMismatch,
                         format!(
                             "{event_type} reopens tool call '{id}' of the input history with a \
-                             different toolCallName (TOOL-07)",
+                             different {field} (TOOL-07)",
                             id = shown(id.as_ref())
                         ),
-                    ))
+                    )),
+                    None => Ok(owner),
                 }
-                _ => Ok(owner),
-            },
+            }
         }
     }
 
@@ -1794,6 +1820,12 @@ impl ProducerState {
         chunk: bool,
     ) {
         let seq = self.next_seq();
+        // A reopening that names no parent leaves the call in its message:
+        // the one it was opened in, or the input history's.
+        let parent = parent
+            .or_else(|| self.calls.get(id).and_then(|call| call.parent.as_ref()))
+            .or_else(|| self.history_calls.get(id).map(|had| &had.parent))
+            .cloned();
         let previous = self.calls.insert(
             id.clone(),
             Call {
@@ -1802,7 +1834,7 @@ impl ProducerState {
                 chunk,
                 seq,
                 name,
-                parent: parent.cloned(),
+                parent: parent.clone(),
             },
         );
         if previous.is_none() {
@@ -1812,7 +1844,7 @@ impl ProducerState {
         // for it, under the call's owner: its id is taken (BASIC-15), a later
         // call under it agrees with that owner (SUB-26, TOOL-02), and a text
         // opener reopens it.
-        if let Some(parent) = parent {
+        if let Some(parent) = &parent {
             if !self.messages.contains_key(parent) {
                 let seq = self.next_seq();
                 self.text.insert(
@@ -1894,7 +1926,7 @@ impl ProducerState {
             .calls
             .get(call_id)
             .map(|call| call.name)
-            .or_else(|| self.history_calls.get(call_id).copied());
+            .or_else(|| self.history_calls.get(call_id).map(|had| had.name));
         if name.is_some_and(|name| self.frontend.contains(&name)) {
             return refuse(
                 ProducerRule::Outcome,
@@ -3108,6 +3140,86 @@ mod tests {
             vec![
                 json!({"type": "TOOL_CALL_START", "toolCallId": "h1", "toolCallName": "search"}),
                 json!({"type": "TOOL_CALL_END", "toolCallId": "h1"}),
+            ],
+        );
+    }
+
+    /// A reopened call of the input history keeps its parent and owner too
+    /// (TOOL-07): the reducer reopens it in place, so a new parent would
+    /// never be minted, and its id must stay free.
+    #[test]
+    fn a_history_call_reopens_only_under_its_parent_and_owner() {
+        use serde_json::json;
+        let history = json!([
+            {"id": "a1", "role": "assistant", "content": "x", "subagentRunId": "S",
+             "toolCalls": [{"id": "h1", "type": "function",
+                            "function": {"name": "search", "arguments": "{}"}}]}
+        ]);
+        let start = |extra: serde_json::Value| {
+            let mut event = json!({"type": "TOOL_CALL_START", "toolCallId": "h1",
+                                   "toolCallName": "search"});
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            ev(event)
+        };
+        let fresh = || {
+            let mut v = ProducerVerifier::for_input(&input(history.clone()));
+            feed(
+                &mut v,
+                vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"})],
+            );
+            v
+        };
+        for refused in [
+            json!({"parentMessageId": "P", "subagentRunId": "S"}),
+            json!({"subagentRunId": "T"}),
+            json!({"parentMessageId": "a1", "subagentRunId": "T"}),
+            json!({}),
+        ] {
+            let mut v = fresh();
+            let err = v.check(&start(refused.clone())).unwrap_err();
+            assert_eq!(err.rule, ProducerRule::OwnerMismatch, "{refused}");
+            assert!(!v.state.messages.contains_key("P"), "{refused}: minted P");
+        }
+        for accepted in [
+            json!({"parentMessageId": "a1"}),
+            json!({"subagentRunId": "S"}),
+            json!({"parentMessageId": "a1", "subagentRunId": "S"}),
+        ] {
+            let mut v = fresh();
+            v.check(&start(accepted.clone()))
+                .unwrap_or_else(|e| panic!("{accepted}: {e:?}"));
+            feed(
+                &mut v,
+                vec![json!({"type": "TOOL_CALL_END", "toolCallId": "h1",
+                            "subagentRunId": "S"})],
+            );
+            // Reopened again within the run, it still sits in a1.
+            v.check(&start(json!({"parentMessageId": "a1"})))
+                .unwrap_or_else(|e| panic!("{accepted} then a1: {e:?}"));
+        }
+    }
+
+    /// A reopening that names no parent leaves the call where it was, so a
+    /// later reopening naming that parent agrees (TOOL-07).
+    #[test]
+    fn a_reopening_without_a_parent_keeps_the_calls_parent() {
+        use serde_json::json;
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x",
+                       "parentMessageId": "P"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
+                json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "x",
+                       "parentMessageId": "P"}),
+                json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}),
             ],
         );
     }
