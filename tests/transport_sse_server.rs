@@ -467,3 +467,27 @@ fn axum_default_body_limit_still_answers_413() {
         assert_eq!(status, Ok(Some(413)));
     });
 }
+
+/// A keep-alive interval beyond any reachable instant is accepted and
+/// simply never fires: the response streams normally.
+#[test]
+fn an_unreachable_keep_alive_interval_does_not_break_the_stream() {
+    use agui_sdk::server::axum::AguiResponse;
+    use agui_sdk::server::http::{handle, HttpRequest};
+    use axum::response::IntoResponse;
+
+    let mut config = sse_only();
+    config.keepalive = Some(Duration::MAX);
+    let body = input_json("t1", "r1");
+    let request = HttpRequest::new(Some("application/json"), Some("text/event-stream"), &body);
+    let response = handle(&talker(), &config, request, CancelToken::new()).unwrap();
+    let text = runtime().block_on(async move {
+        let response = AguiResponse::from(response).into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    });
+    assert!(text.contains("RUN_FINISHED"), "{text}");
+    assert!(!text.contains(": keep-alive"), "{text}");
+}

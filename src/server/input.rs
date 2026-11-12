@@ -2,7 +2,10 @@
 //!
 //! [`admit`] parses the body once, strips unknown members with warnings
 //! (RUNIN-30, PROC-35), rejects malformed input (RUNIN-29), classifies the
-//! declared version (VER-21..VER-25), and fills absent collections as empty
+//! declared version (VER-21..VER-25). Absent collections stay absent in
+//! [`AdmittedInput::input`]; they read as empty through
+//! [`RunAgentInput::tools`], [`RunAgentInput::context`] and
+//! [`RunAgentInput::resume`], and the runner treats an absent state as `{}`
 //! (RUNIN-20, RUNIN-23, RUNIN-24). A rejection carries the HTTP status to use;
 //! it is never turned into `RUN_ERROR` (SSE-12, PB-19, TRN-05).
 
@@ -51,7 +54,8 @@ pub struct AdmittedInput {
     pub input: RunAgentInput,
     /// How the client's declared version relates to ours.
     pub peer_version: PeerVersion,
-    /// What admission stripped or noted; also reported to the sink.
+    /// What admission stripped or noted; reported to the runner's sink when
+    /// the run starts.
     pub diagnostics: Vec<Diagnostic>,
 }
 

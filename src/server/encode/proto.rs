@@ -11,7 +11,7 @@
 //! [`encode_json`](crate::proto::encode::encode_json) of the event's JSON text,
 //! which reproduces the canonical byte corpus; from typed events the
 //! open-object entry order matches the corpus only with the crate feature
-//! `preserve-order` (PB-12, decision D4).
+//! `preserve-order`, which keeps typed events in insertion order (PB-12).
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::event::Event;

@@ -658,7 +658,7 @@ impl Emitter {
                 let event = if resync {
                     Some(st.publisher.snapshot_event(next))
                 } else {
-                    st.publisher.prepare(&next)
+                    st.publisher.prepare_owned(next)
                 };
                 Ok(event.map_or(Staging::Nothing, Staging::Transform))
             })
@@ -681,9 +681,21 @@ impl Emitter {
     ///
     /// # Errors
     ///
-    /// [`ErrorCode::ProducerViolation`]
-    /// (the event is not sent), [`ErrorCode::Cancelled`]
-    /// or [`ErrorCode::Disconnected`].
+    /// - [`ErrorCode::ProducerViolation`]: the event (or one a transformer
+    ///   made from it) breaks a producer rule.
+    /// - [`ErrorCode::QueueOverflow`]: the transformers expanded this one
+    ///   send into more events than the queue can hold.
+    /// - [`ErrorCode::AgentPanicked`]: a transformer or the diagnostic sink
+    ///   panicked.
+    ///
+    /// Any of these ends the run: later sends fail with the same error and
+    /// the run closes with `RUN_ERROR`. When a transformer expanded the
+    /// event and one of the expanded events fails verification, the ones
+    /// before it are still sent; a lifecycle event among them, or an
+    /// expansion beyond the queue, sends none.
+    ///
+    /// [`ErrorCode::Cancelled`] or [`ErrorCode::Disconnected`]: the run was
+    /// cancelled or its stream is gone; nothing more is sent.
     pub async fn emit(&self, event: impl Into<Event>) -> Result<()> {
         self.send(event.into()).await
     }

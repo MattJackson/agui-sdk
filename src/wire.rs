@@ -108,7 +108,7 @@ fn is_ows(c: char) -> bool {
 }
 
 /// The `type/subtype` of a media type or range, without parameters.
-fn essence(text: &str) -> &str {
+pub(crate) fn essence(text: &str) -> &str {
     let end = text.find(';').unwrap_or(text.len());
     text[..end].trim_matches(is_ows)
 }

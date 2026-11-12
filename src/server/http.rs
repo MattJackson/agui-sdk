@@ -170,7 +170,12 @@ impl HttpRejection {
 }
 
 fn error_body(code: ErrorCode, message: &str) -> String {
-    serde_json::json!({ "code": code.as_str(), "message": message }).to_string()
+    json_error_body(code.as_str(), message)
+}
+
+/// The one error body shape of every transport: `{"code", "message"}`.
+pub(super) fn json_error_body(code: &str, message: &str) -> String {
+    serde_json::json!({ "code": code, "message": message }).to_string()
 }
 
 /// A streaming response.
@@ -198,7 +203,7 @@ impl std::fmt::Debug for HttpResponse {
 
 /// The encoded response body. Each poll encodes every event that is ready
 /// into one [`Chunk`] (coalesced), carved from a reused buffer without a
-/// per-event allocation (§8: encode is 0 amortized). Consume with
+/// per-event allocation once the buffer has grown. Consume with
 /// [`next`](Self::next) / [`poll_next`](Self::poll_next), or as a
 /// `futures_core::Stream` with feature `stream`. Dropping it cancels the run
 /// (a disconnected client).
@@ -349,12 +354,7 @@ impl std::fmt::Debug for ResponseBody {
 /// Whether `content_type` is `application/json` (parameters such as
 /// `charset` ignored, compared ASCII case-insensitively).
 fn is_json(content_type: &str) -> bool {
-    let essence = content_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim_matches(|c| c == ' ' || c == '\t');
-    essence.eq_ignore_ascii_case(JSON_MEDIA_TYPE)
+    crate::wire::essence(content_type).eq_ignore_ascii_case(JSON_MEDIA_TYPE)
 }
 
 /// Handles one POST: negotiate, check the media type (415), admit the

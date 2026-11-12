@@ -222,7 +222,7 @@ enum Inner {
 
 impl AguiResponse {
     fn rejection(status: u16, code: ErrorCode, message: &str) -> Self {
-        let body = serde_json::json!({ "code": code.as_str(), "message": message }).to_string();
+        let body = super::http::json_error_body(code.as_str(), message);
         AguiResponse {
             inner: Inner::Rejection(HttpRejection { status, code, body }),
         }
@@ -236,11 +236,10 @@ impl AguiResponse {
             Some(body) => Inner::Json { status: 200, body },
             None => Inner::Json {
                 status: 404,
-                body: serde_json::json!({
-                    "code": "server.not_found",
-                    "message": "this endpoint declares no capabilities",
-                })
-                .to_string(),
+                body: super::http::json_error_body(
+                    "server.not_found",
+                    "this endpoint declares no capabilities",
+                ),
             },
         };
         AguiResponse { inner }
@@ -324,8 +323,13 @@ impl StreamBody {
     }
 
     fn rearm(&mut self) {
-        if let Some((every, sleep)) = &mut self.keepalive {
-            sleep.as_mut().reset(tokio::time::Instant::now() + *every);
+        let Some((every, sleep)) = &mut self.keepalive else {
+            return;
+        };
+        match tokio::time::Instant::now().checked_add(*every) {
+            Some(at) => sleep.as_mut().reset(at),
+            // Beyond any reachable instant: the keep-alive never fires.
+            None => self.keepalive = None,
         }
     }
 }

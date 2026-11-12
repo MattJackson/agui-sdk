@@ -271,6 +271,47 @@ fn unrecognised_resume_pointers_name_each_entry() {
     assert_eq!(report(&ghost, &entries), ["/resume"]);
 }
 
+/// covers: INTR-18, INTR-20
+#[test]
+fn classify_keeps_input_order_and_duplicates() {
+    let open = [
+        Interrupt::new("i3", "approval"),
+        Interrupt::new("i1", "approval"),
+        Interrupt::new("i2", "approval"),
+        Interrupt::new("i4", "approval"),
+    ];
+    let entries = [
+        ResumeEntry::resolved("x", json!(0)),
+        ResumeEntry::resolved("i2", json!(1)),
+        ResumeEntry::resolved("i3", json!(2)),
+        ResumeEntry::resolved("x", json!(3)),
+        ResumeEntry::resolved("i2", json!(4)),
+    ];
+    let check = ResumeCheck::classify(&open, &entries);
+    let ids = |list: &[ResumeEntry]| -> Vec<String> {
+        list.iter()
+            .map(|e| e.interrupt_id.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&check.recognised), ["i2", "i3", "i2"]);
+    assert_eq!(ids(&check.unrecognised), ["x", "x"]);
+    let uncovered: Vec<&str> = check.uncovered.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(uncovered, ["i1", "i4"]);
+
+    // Many entries against many open interrupts: same sorting, linear time.
+    let open: Vec<Interrupt> = (0..20_000)
+        .map(|i| Interrupt::new(format!("o{i}"), "approval"))
+        .collect();
+    let entries: Vec<ResumeEntry> = (0..20_000)
+        .map(|i| ResumeEntry::resolved(format!("o{}", i * 2), json!(i)))
+        .collect();
+    let check = ResumeCheck::classify(&open, &entries);
+    assert_eq!(check.recognised.len(), 10_000);
+    assert_eq!(check.unrecognised.len(), 10_000);
+    assert_eq!(check.uncovered.len(), 10_000);
+    assert_eq!(check.uncovered[0].id.as_str(), "o1");
+}
+
 /// covers: INTR-20, INTR-21, INTR-22, INTR-23
 #[test]
 fn an_uncovered_interrupt_stays_open_and_blocks_success() {

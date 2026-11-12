@@ -151,11 +151,12 @@ impl<S: serde::Serialize> RunContext<S> {
     /// Sends the state change since the last publication: a `STATE_DELTA`
     /// against the baseline the client holds (the input's state until the
     /// first snapshot, RUNIN-25, SNAP-07), or a snapshot when a delta would
-    /// not be smaller. No event when nothing changed.
+    /// be larger. No event when nothing changed.
     ///
     /// # Errors
     ///
-    /// As [`Emitter::emit`].
+    /// [`ErrorCode::Json`]: the state could not be serialized; nothing is
+    /// sent and the run continues. Otherwise as [`Emitter::emit`].
     pub async fn publish_state(&mut self) -> Result<()> {
         let next = self.state_value()?;
         self.emitter.send_state(next, false).await
@@ -166,7 +167,8 @@ impl<S: serde::Serialize> RunContext<S> {
     ///
     /// # Errors
     ///
-    /// As [`Emitter::emit`].
+    /// [`ErrorCode::Json`]: the state could not be serialized; nothing is
+    /// sent and the run continues. Otherwise as [`Emitter::emit`].
     pub async fn resync_state(&mut self) -> Result<()> {
         let next = self.state_value()?;
         self.emitter.send_state(next, true).await

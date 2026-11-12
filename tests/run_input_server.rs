@@ -462,3 +462,36 @@ fn unknown_members_are_stripped_with_a_warning() {
         Some(agui_sdk::lifecycle::RunFinishedOutcome::success())
     );
 }
+
+/// Admission's own capped list reaches the sink as it is: its summary and
+/// the version note after it are not capped a second time.
+#[test]
+fn admission_diagnostics_reach_the_sink_uncapped_again() {
+    let mut value = minimal_body();
+    for i in 0..300 {
+        value[format!("x{i}")] = json!(i);
+    }
+    value["protocolVersion"] = json!("1.9");
+    let admitted = admit(&body(value), &InputPolicy::default()).unwrap();
+    let listed = admitted.diagnostics.clone();
+    let sink = Arc::new(CollectingSink::new());
+    let runner = Runner::new(agent(|_ctx| async { Ok(RunOutcome::success()) }))
+        .diagnostic_sink(sink.clone());
+    let stream = runner
+        .run(admitted, CancelToken::new(), Extensions::new())
+        .unwrap();
+    drain(stream);
+    let reported = sink.take();
+    let codes = codes(&reported);
+    assert!(
+        codes.contains(&DiagnosticCode::NewerMinorVersion),
+        "{codes:?}"
+    );
+    let limits: Vec<_> = reported
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::Limit)
+        .collect();
+    assert_eq!(limits.len(), 1, "{limits:?}");
+    // Admission's own summary, not a recount of what the runner replayed.
+    assert_eq!(reported, listed);
+}

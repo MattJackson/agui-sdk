@@ -1,5 +1,5 @@
 //! Producer-side helpers for rules the agent author owns but the SDK can
-//! check (sdk-assistable rows).
+//! check.
 //!
 //! * [`PartFilter`]: skip content parts the model cannot take, without
 //!   failing the run, with a warning, and answer a tool call with `""` when
@@ -13,7 +13,7 @@
 //!   (INTR-18..INTR-23). [`MemoryInterruptStore`] is the bounded in-process
 //!   implementation; implement the trait for a shared database.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -446,19 +446,25 @@ impl ResumeCheck {
             unrecognised: Vec::new(),
             uncovered: Vec::new(),
         };
+        // Both lists may be long (the entries are the peer's): set lookups
+        // keep this linear.
+        let open_ids: HashSet<&InterruptId> = open.iter().map(|i| &i.id).collect();
         for entry in entries {
-            if open.iter().any(|i| i.id == entry.interrupt_id) {
+            if open_ids.contains(&entry.interrupt_id) {
                 check.recognised.push(entry.clone());
             } else {
                 // An answer to nothing this thread asked (INTR-18).
                 check.unrecognised.push(entry.clone());
             }
         }
-        check.uncovered = open
-            .iter()
-            .filter(|i| !entries.iter().any(|e| e.interrupt_id == i.id))
-            .cloned()
-            .collect();
+        if !open.is_empty() {
+            let named: HashSet<&InterruptId> = entries.iter().map(|e| &e.interrupt_id).collect();
+            check.uncovered = open
+                .iter()
+                .filter(|i| !named.contains(&i.id))
+                .cloned()
+                .collect();
+        }
         check
     }
 

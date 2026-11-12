@@ -285,3 +285,64 @@ fn state_carried_back_by_the_next_input_is_the_baseline() {
         1
     );
 }
+
+/// covers: RUNIN-25, SNAP-07
+#[test]
+fn a_replayed_state_is_the_baseline_for_the_first_delta() {
+    // Large enough that a delta is smaller than a snapshot.
+    let doc = "d".repeat(200);
+    let wanted = json!({"doc": doc, "x": 1});
+    let run = |replayed: Value, input_state: Value| {
+        let next = wanted.clone();
+        let runner = Runner::new(agent(move |mut ctx| {
+            let next = next.clone();
+            async move {
+                *ctx.state_mut() = next;
+                ctx.publish_state().await?;
+                Ok(RunOutcome::success())
+            }
+        }));
+        let replay = vec![ReplayedRun::new("old".into(), Vec::new(), replayed)];
+        drain(
+            runner
+                .run_with_replay(
+                    replay,
+                    admitted(input().with_state(input_state)),
+                    CancelToken::new(),
+                    Extensions::new(),
+                )
+                .unwrap(),
+        )
+    };
+
+    // The client holds the replayed state; the delta is against it.
+    let events = run(json!({ "doc": doc }), json!({}));
+    let published = events
+        .iter()
+        .rev()
+        .find(|e| matches!(e, Event::StateDelta(_) | Event::StateSnapshot(_)))
+        .unwrap();
+    let Event::StateDelta(delta) = published else {
+        panic!("expected a delta against the replayed state, got {published:?}");
+    };
+    assert_eq!(
+        serde_json::to_value(&delta.delta).unwrap(),
+        json!([{"op": "add", "path": "/x", "value": 1}])
+    );
+    assert_eq!(apply_all(Value::Null, &events), wanted);
+
+    // A delta against the input's state would leave the client diverged.
+    let events = run(json!({}), json!({ "doc": doc }));
+    assert_eq!(apply_all(Value::Null, &events), wanted);
+}
+
+/// A default publisher is one over an absent input state: baseline `{}`.
+#[test]
+fn a_default_publisher_has_the_empty_object_baseline() {
+    let mut publisher = StatePublisher::default();
+    assert!(publisher.publish(&json!({})).is_none());
+    assert_eq!(
+        publisher.publish(&json!({"a": 1})),
+        StatePublisher::new(Value::Null).publish(&json!({"a": 1}))
+    );
+}

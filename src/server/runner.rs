@@ -548,10 +548,14 @@ impl<A: Agent> Drive for Driver<A> {
 impl<A: Agent> Driver<A> {
     /// Replays, opens the run, starts the agent.
     fn start(&mut self) {
-        for diagnostic in std::mem::take(&mut self.admission) {
-            self.reporter.report(|| diagnostic);
+        // Admission already capped its list and summarised what it dropped;
+        // capping it again would hide that summary and what follows it.
+        let admission = std::mem::take(&mut self.admission);
+        if !admission.is_empty() && self.sink.enabled() {
+            for diagnostic in &admission {
+                self.sink.report(diagnostic);
+            }
         }
-        self.reporter.end_event(None);
         if self.sink.panicked() && self.startup_failure.is_none() {
             self.startup_failure = Some(sink_panicked());
         }
@@ -578,7 +582,14 @@ impl<A: Agent> Driver<A> {
             // stream already has runs, so open this one first.
             if replayed {
                 if let Some(started) = self.started.take() {
-                    let _ = self.push_verified(started.into());
+                    if let Err(why) = self.push_verified(started.into()) {
+                        // The run cannot even be opened: that is the error.
+                        self.fail_now(
+                            ErrorCode::ProducerViolation,
+                            &format!("RUN_STARTED was refused: {why}"),
+                        );
+                        return;
+                    }
                 }
             }
             self.tail
@@ -608,7 +619,14 @@ impl<A: Agent> Driver<A> {
     /// Verifies a runner-made event and queues it for output.
     /// The refusal is the verifier's message (ids, no payloads).
     fn push_verified(&mut self, event: Event) -> Result<(), String> {
-        let verdict = self.shared.lock().verifier.check(&event);
+        let mut st = self.shared.lock();
+        let verdict = st.verifier.check(&event);
+        if verdict.is_ok() {
+            // A replayed snapshot is what the client holds next: it is the
+            // baseline for the run's first delta (RUNIN-25, SNAP-07).
+            st.publisher.observe(&event);
+        }
+        drop(st);
         match verdict {
             Ok(()) => {
                 self.tail.push_back(event);
@@ -644,11 +662,18 @@ impl<A: Agent> Driver<A> {
 
     /// The run is decided: stop the agent and refuse further sends.
     fn decide(&mut self, ending: Ending) {
+        // Closed first, as in `Drop`: a send blocked on a full queue is
+        // failed and woken before agent destructors run (one may wait for
+        // the task making that send). The queue is empty when this is
+        // reached, so such a send exists only if another thread's emitter
+        // filled the queue and parked between the empty `poll_pop` and the
+        // cancellation check; no pop wakes it then. That window cannot be
+        // hit deterministically, so no test pins this order.
+        self.shared.close();
         // Dropping the future may run agent destructors; a panic there must
         // not escape the stream either.
         let future = self.future.take();
         let _ = catch_unwind(AssertUnwindSafe(move || drop(future)));
-        self.shared.close();
         self.phase = Phase::Finishing(ending);
     }
 
@@ -896,13 +921,9 @@ fn interrupt_problem(list: &[Interrupt]) -> Option<&'static str> {
     if list.is_empty() {
         return Some("an interrupt outcome needs at least one interrupt");
     }
-    for (index, interrupt) in list.iter().enumerate() {
-        if list[..index]
-            .iter()
-            .any(|earlier| earlier.id == interrupt.id)
-        {
-            return Some("interrupt ids must be unique within the run");
-        }
+    let mut seen = HashSet::with_capacity(list.len());
+    if list.iter().any(|interrupt| !seen.insert(&interrupt.id)) {
+        return Some("interrupt ids must be unique within the run");
     }
     None
 }
@@ -959,7 +980,7 @@ fn replay_events(thread_id: &ThreadId, run: ReplayedRun, declare: bool) -> [Even
 /// Typed state from the input (`{}` when absent, RUNIN-24).
 fn decode_state<S: serde::de::DeserializeOwned>(state: Option<&Value>) -> Result<S> {
     let decoded = match state {
-        Some(value) => serde_json::from_value(value.clone()),
+        Some(value) => S::deserialize(value),
         None => serde_json::from_value(Value::Object(serde_json::Map::new())),
     };
     decoded.map_err(|e| {
@@ -973,11 +994,14 @@ fn decode_state<S: serde::de::DeserializeOwned>(state: Option<&Value>) -> Result
     })
 }
 
-/// Whether an agent's error is the cancellation its sends reported.
+/// Whether an agent's error is, or wraps (through `source`), the
+/// cancellation its sends reported.
 fn is_cancellation(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
-    error
-        .downcast_ref::<Error>()
-        .is_some_and(|e| e.code() == ErrorCode::Cancelled)
+    let error: &(dyn std::error::Error + 'static) = error;
+    std::iter::successors(Some(error), |e| e.source()).any(|e| {
+        e.downcast_ref::<Error>()
+            .is_some_and(|e| e.code() == ErrorCode::Cancelled)
+    })
 }
 
 /// `RUN_ERROR` for an agent's `Err`: the code and message of a public

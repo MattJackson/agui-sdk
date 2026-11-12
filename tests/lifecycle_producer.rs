@@ -902,6 +902,41 @@ fn a_refused_replay_says_why() {
     );
 }
 
+/// A run that fails before it begins, after a replay whose run id it
+/// repeats: the RUN_ERROR says why the run could not even be opened.
+#[test]
+fn a_startup_failure_after_a_refused_run_started_names_the_refusal() {
+    struct Passthrough;
+    impl Transformer for Passthrough {
+        fn transform(&mut self, event: Event, out: &mut Vec<Event>) {
+            out.push(event);
+        }
+    }
+    let runner = Runner::new(agent(|_ctx| async { Ok(RunOutcome::success()) }))
+        .transformer(|| -> Passthrough { panic!("factory fault") });
+    let replay = vec![ReplayedRun::new(RunId::new("r1"), Vec::new(), json!({}))];
+    let events = drain(
+        runner
+            .run_with_replay(
+                replay,
+                admitted(input()),
+                CancelToken::new(),
+                Extensions::new(),
+            )
+            .unwrap(),
+    );
+    let error = run_error(&events);
+    assert_eq!(
+        error.code.as_deref(),
+        Some(ErrorCode::ProducerViolation.as_str()),
+        "{error:?}"
+    );
+    assert!(
+        error.message.starts_with("RUN_STARTED was refused"),
+        "{error:?}"
+    );
+}
+
 /// covers: LIFE-39
 #[test]
 fn only_a_late_run_error_may_follow_a_finished_run() {
@@ -1268,4 +1303,38 @@ mod failure_injection {
             Some(RunFinishedOutcome::success_with_pending(pending))
         );
     }
+}
+
+/// An agent error that wraps the cancellation its send reported.
+#[derive(Debug)]
+struct Wrapped(Error);
+
+impl std::fmt::Display for Wrapped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the agent wound down")
+    }
+}
+
+impl std::error::Error for Wrapped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// covers: LIFE-11, LIFE-16
+#[test]
+fn a_wrapped_cancellation_still_finishes_cancelled() {
+    let runner = Runner::new(agent(|ctx| async move {
+        ctx.cancellation().cancel();
+        match ctx.emitter().say("too late").await {
+            Err(e) => Err(Wrapped(e).into()),
+            Ok(_) => Ok(RunOutcome::success()),
+        }
+    }));
+    let events = run(&runner, input());
+    assert_one_valid_run(&events);
+    assert_eq!(
+        finished(&events).outcome,
+        Some(RunFinishedOutcome::cancelled())
+    );
 }
