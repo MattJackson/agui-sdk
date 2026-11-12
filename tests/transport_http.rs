@@ -1274,6 +1274,23 @@ fn native_tls_with_a_custom_root() {
     });
 }
 
+/// A PEM bundle whose last certificate is cut off is refused, not trusted
+/// short of that root, under either backend.
+#[cfg(feature = "native-tls")]
+#[test]
+fn native_tls_refuses_a_truncated_pem_bundle() {
+    use agui_sdk::client::transport::TlsBackend;
+    let mut bundle = tls::file("ca.pem");
+    bundle.extend_from_slice(b"\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n");
+    expect_code(
+        HttpTransport::builder("https://127.0.0.1:1/")
+            .tls_backend(TlsBackend::NativeTls)
+            .add_root_certificates_pem(bundle)
+            .build(),
+        ErrorCode::InvalidConfig,
+    );
+}
+
 // ---------------------------------------------------------------- capabilities
 
 #[test]
