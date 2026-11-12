@@ -198,9 +198,10 @@ pub struct Limits {
     /// that grows it ends the stream. Server input admission and
     /// `validate_*` use the same limit.
     pub max_container_entries: usize,
-    /// Deepest accepted JSON nesting in one event. Events decoded from the
-    /// protobuf wire are additionally bounded at 128 levels (the codec's
-    /// stack-safe ceiling) whatever this is set to.
+    /// Deepest accepted JSON nesting in one event, clamped to 512 levels
+    /// (a stack-safe ceiling) whatever this is set to. Events decoded from
+    /// the protobuf wire are additionally bounded at 128 levels (the codec's
+    /// stack-safe ceiling).
     pub max_depth: usize,
     /// JSON Patch limits for state and activity content.
     pub patch: PatchLimits,

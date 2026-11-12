@@ -2103,3 +2103,46 @@ fn subagent_tool_chunk_lanes_hold_no_copy_of_the_parent_id() {
         );
     }
 }
+
+/// An application that raises `max_depth` past what the JSON walk can
+/// recurse through on a thread's stack still gets a verdict, not a stack
+/// overflow: the JSON depth is clamped to a fixed ceiling, as the patch
+/// engine's and the protobuf codec's are. The ceiling itself is reachable on
+/// a default-sized (2 MiB) thread stack in an optimized build; an
+/// unoptimized one has far larger frames, so the test gives it more stack.
+#[test]
+fn a_raised_max_depth_is_clamped_to_a_stack_safe_ceiling() {
+    let _g = lock();
+    let deep = |n: usize| {
+        format!(
+            r#"{{"type":"CUSTOM","name":"n","value":{}1{}}}"#,
+            "[".repeat(n),
+            "]".repeat(n)
+        )
+    };
+    std::thread::Builder::new()
+        .stack_size(if cfg!(debug_assertions) {
+            16 << 20
+        } else {
+            2 << 20
+        })
+        .spawn(move || {
+            let mut config = PipelineConfig::default();
+            config.limits.max_depth = usize::MAX;
+            let push = |frame: &str| {
+                let mut p = Processor::new(config.clone());
+                let mut reporter = Reporter::new(Arc::new(NullSink), 256);
+                let mut out = Vec::new();
+                p.push_json(started().to_string().as_bytes(), &mut reporter, &mut out)
+                    .unwrap();
+                p.push_json(frame.as_bytes(), &mut reporter, &mut out)
+                    .map(|_| ())
+                    .map_err(|e| e.code())
+            };
+            assert_eq!(push(&deep(100_000)), Err(ErrorCode::LimitExceeded));
+            assert_eq!(push(&deep(500)), Ok(()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

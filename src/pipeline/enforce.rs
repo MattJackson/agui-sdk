@@ -73,6 +73,14 @@ use shape::{Shape, Union};
 use stream::{RootTag, Rooted, Stream};
 use tree::{Tree, Verdict};
 
+/// Hard ceiling on the JSON nesting enforcement walks, whatever
+/// [`Limits::max_depth`] says: the byte walk and the value walk recurse once
+/// per level, so a raised limit must not let a peer frame exhaust the stack
+/// (the patch engine and the protobuf codec have ceilings of their own).
+/// An optimized build walks about 1,500 levels on a 2 MiB thread stack, so
+/// 512 leaves room for the caller's own frames.
+const JSON_DEPTH_CEILING: usize = 512;
+
 /// The enforcement stage.
 #[derive(Debug, Clone)]
 pub struct Enforcer {
@@ -119,7 +127,7 @@ impl Enforcer {
             strict: false,
             null_as_absent: true,
             max_entries: self.limits.max_container_entries,
-            max_depth: self.limits.max_depth,
+            max_depth: self.limits.max_depth.min(JSON_DEPTH_CEILING),
             max_findings: self.limits.max_diagnostics_per_event,
         }
     }
