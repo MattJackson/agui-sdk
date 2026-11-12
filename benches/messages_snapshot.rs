@@ -3,13 +3,21 @@
 
 mod support;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use agui_sdk::diagnostics::{NullSink, Reporter};
 use agui_sdk::pipeline::reduce::Reducer;
+use agui_sdk::pipeline::Processed;
 use agui_sdk::Event;
 use serde_json::json;
 use support::{Bench, CountingAllocator, Work};
+
+/// Where a timed `run` parks its reducer (and what it produced) so their
+/// O(held) drop happens in the next untimed `prepare`, not in the timed
+/// region.
+type Parked<T> = Rc<RefCell<Option<T>>>;
 
 #[global_allocator]
 static ALLOC: CountingAllocator = CountingAllocator;
@@ -25,14 +33,18 @@ fn main() {
             .unwrap_or_else(|e| panic!("{e}"));
         let snapshot: Event = serde_json::from_value(json!({"type": "MESSAGES_SNAPSHOT", "messages": messages}))
             .unwrap_or_else(|e| panic!("{e}"));
+        let parked: Parked<(Reducer, Reporter, Processed)> = Rc::default();
+        let park = Rc::clone(&parked);
         let prepare = move || {
+            drop(park.borrow_mut().take());
             let mut reducer = Reducer::new();
             let mut reporter = Reporter::new(Arc::new(NullSink), 256);
             reducer.apply(held.clone(), &mut reporter);
             (reducer, reporter, snapshot.clone())
         };
         let run = move |(mut reducer, mut reporter, snapshot): (Reducer, Reporter, Event)| {
-            std::hint::black_box(reducer.apply(snapshot, &mut reporter));
+            let update = std::hint::black_box(reducer.apply(snapshot, &mut reporter));
+            *parked.borrow_mut() = Some((reducer, reporter, update));
             Work { events: n as u64, bytes }
         };
         (prepare, run)
@@ -55,7 +67,10 @@ fn main() {
             let tiny: Event =
                 serde_json::from_value(json!({"type": "MESSAGES_SNAPSHOT", "messages": []}))
                     .unwrap_or_else(|e| panic!("{e}"));
+            let parked: Parked<(Reducer, Reporter)> = Rc::default();
+            let park = Rc::clone(&parked);
             let prepare = move || {
+                drop(park.borrow_mut().take());
                 let mut reducer = Reducer::new();
                 let mut reporter = Reporter::new(Arc::new(NullSink), 256);
                 for e in activity.clone() {
@@ -69,6 +84,7 @@ fn main() {
                     for e in snapshots {
                         std::hint::black_box(reducer.apply(e, &mut reporter));
                     }
+                    *parked.borrow_mut() = Some((reducer, reporter));
                     Work { events, bytes: 0 }
                 };
             (prepare, run)
@@ -101,7 +117,10 @@ fn main() {
                 })
                 .map(|v| serde_json::from_value(v).unwrap_or_else(|e| panic!("{e}")))
                 .collect();
+            let parked: Parked<(Reducer, Reporter)> = Rc::default();
+            let park = Rc::clone(&parked);
             let prepare = move || {
+                drop(park.borrow_mut().take());
                 let mut reducer = Reducer::new();
                 let mut reporter = Reporter::new(Arc::new(NullSink), 256);
                 for e in activity.clone() {
@@ -115,6 +134,7 @@ fn main() {
                     for e in frames {
                         std::hint::black_box(reducer.apply(e, &mut reporter));
                     }
+                    *parked.borrow_mut() = Some((reducer, reporter));
                     Work { events, bytes: 0 }
                 };
             (prepare, run)
@@ -151,7 +171,10 @@ fn main() {
                     .unwrap_or_else(|e| panic!("{e}"))
                 })
                 .collect();
+            let parked: Parked<(Reducer, Reporter)> = Rc::default();
+            let park = Rc::clone(&parked);
             let prepare = move || {
+                drop(park.borrow_mut().take());
                 let mut reducer = Reducer::new();
                 let mut reporter = Reporter::new(Arc::new(NullSink), 256);
                 for e in held.clone() {
@@ -165,6 +188,7 @@ fn main() {
                     for e in frames {
                         std::hint::black_box(reducer.apply(e, &mut reporter));
                     }
+                    *parked.borrow_mut() = Some((reducer, reporter));
                     Work { events, bytes: 0 }
                 };
             (prepare, run)
