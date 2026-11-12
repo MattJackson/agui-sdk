@@ -1606,9 +1606,9 @@ fn untagged_call_reopen_under_owned_parent_agrees() {
     assert!(h.codes().is_empty());
 }
 
-/// An untagged call under an owned non-assistant parent sits on a carrier
-/// minted with its own (absent) owner, so it inherits nothing and its
-/// reopen agrees.
+/// An untagged call under an owned non-assistant parent inherits the
+/// parent's owner, as the verifier gives it (SUB-26): its carrier is minted
+/// with that owner, and its reopen agrees.
 #[test]
 fn untagged_call_reopen_under_owned_reasoning_parent_agrees() {
     let mut h = H::new();
@@ -1625,6 +1625,36 @@ fn untagged_call_reopen_under_owned_reasoning_parent_agrees() {
         h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}));
     }
     assert!(h.codes().is_empty());
+    let carrier = &h.r.messages()[1];
+    assert_eq!(carrier.tool_calls()[0].id.as_str(), "c1");
+    assert_eq!(carrier.subagent_run_id().map(|s| s.as_str()), Some("A"));
+}
+
+/// A parentless untagged call after a carrier that inherited a subagent's
+/// owner does not join it: the subagent's and the parent agent's calls stay
+/// in separate messages.
+#[test]
+fn parentless_untagged_call_does_not_join_an_inherited_owner_carrier() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "REASONING_MESSAGE_START", "messageId": "r1", "role": "reasoning",
+        "subagentRunId": "S"}),
+    );
+    h.push(json!({"type": "REASONING_MESSAGE_END", "messageId": "r1", "subagentRunId": "S"}));
+    h.push(
+        json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+        "parentMessageId": "r1"}),
+    );
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}));
+    h.push(json!({"type": "TOOL_CALL_START", "toolCallId": "c2", "toolCallName": "g"}));
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c2"}));
+    assert!(h.codes().is_empty());
+    let messages = h.r.messages();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1].tool_calls().len(), 1);
+    assert_eq!(messages[1].subagent_run_id().map(|s| s.as_str()), Some("S"));
+    assert_eq!(messages[2].tool_calls()[0].id.as_str(), "c2");
+    assert_eq!(messages[2].subagent_run_id(), None);
 }
 
 /// The first text for a message a tool call minted under its parent id

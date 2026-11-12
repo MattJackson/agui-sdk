@@ -49,10 +49,12 @@
 //! handle, the next event is moved into that allocation instead of a new
 //! one. Streaming a message therefore costs no allocation per delta beyond
 //! the text's amortized growth. If the application still holds the update,
-//! a fresh `Arc` is made, as for every other event. Events that carry a
-//! payload (snapshots, results, custom and raw events) are never retained,
-//! so the application's handle to them stays unique and
-//! `Arc::try_unwrap` on it succeeds once the reducer has let go.
+//! a fresh `Arc` is made, as for every other event. Other events that carry
+//! a payload (`MESSAGES_SNAPSHOT`, results, custom and raw events) are never
+//! retained, so the application's handle to them stays unique and
+//! `Arc::try_unwrap` on it succeeds. A `STATE_SNAPSHOT` is the exception: it
+//! is held as the state until the next state change (above), so
+//! `Arc::try_unwrap` on it fails until then.
 
 //!
 //! # Choices the spec leaves to the consumer
@@ -62,7 +64,9 @@
 //!   held. Without a parent, it joins the latest message when that is an
 //!   assistant message of the same owner added by the current run; otherwise a
 //!   tool-call-only assistant message is minted under the call's own id
-//!   (renamed if the producer later uses that id, above).
+//!   (renamed if the producer later uses that id, above). An untagged call
+//!   takes its parent message's owner (SUB-26), so a message minted for a
+//!   call whose parent is not an assistant message carries that owner.
 //! * **Reopens.** A reopening `TEXT_MESSAGE_START` that disagrees with the
 //!   message (role, name or owner) keeps the established values and warns
 //!   (TEXT-07). A reopening `TOOL_CALL_START` that disagrees warns; the
@@ -334,9 +338,10 @@ pub struct Reducer {
     calls: HashMap<ToolCallId, CallSlot>,
     /// The last content delta's target: `index`'s own key and the position
     /// it maps to, so a run of deltas to one message hashes its id once.
-    /// Cleared by every event that is not a content delta (see
-    /// [`keeps_hot_targets`]): only those leave `index` and `messages` as
-    /// they were.
+    /// Cleared by every event except the plain appends [`keeps_hot_targets`]
+    /// lists (`TEXT_MESSAGE_CONTENT`, `REASONING_MESSAGE_CONTENT`,
+    /// `TOOL_CALL_ARGS`): only those leave `index` and `messages` as they
+    /// were. Chunk forms clear it too, as they can open or rename messages.
     hot_message: Option<(MessageId, usize)>,
     /// As `hot_message`, for the last `TOOL_CALL_ARGS` target in `calls`.
     hot_call: Option<(ToolCallId, CallSlot)>,
@@ -1228,7 +1233,19 @@ impl Reducer {
         if let Some(&slot) = self.calls.get(opening.id) {
             return self.reopen_call(slot, opening, reporter);
         }
-        let message = self.call_parent(opening.id, opening.parent, opening.owner);
+        // An untagged call inherits its parent message's owner, as the
+        // verifier gives it (SUB-26), so a carrier minted for it under a
+        // non-assistant parent carries that owner too.
+        let inherited = match (opening.owner, opening.parent) {
+            (None, Some(p)) => self
+                .index
+                .get(p)
+                .and_then(|&i| message_owner(&self.messages[i]))
+                .cloned(),
+            _ => None,
+        };
+        let owner = opening.owner.or(inherited.as_ref());
+        let message = self.call_parent(opening.id, opening.parent, owner);
         debug_assert!(matches!(self.messages[message], Message::Assistant(_)));
         let call = ToolCall {
             id: opening.id.clone(),
@@ -1274,14 +1291,11 @@ impl Reducer {
             .parent
             .is_some_and(|p| self.resolve_parent(opening.id, p) != Some(slot.message));
         // An untagged call inherits its parent message's owner, as the
-        // verifier gives it, but only when the call sits in that parent: a
-        // call under a non-assistant parent sits on a carrier minted with the
-        // call's own owner.
+        // verifier gives it and as `open_call` minted its carrier with.
         let owner = opening.owner.or_else(|| {
             opening
                 .parent
                 .and_then(|p| self.index.get(p))
-                .filter(|&&i| i == slot.message)
                 .and_then(|&i| message_owner(&self.messages[i]))
         });
         let owner_differs = message_owner(held) != owner;
@@ -2619,18 +2633,13 @@ fn signed(bytes: usize) -> i64 {
 
 /// What a message is estimated to retain, in resident bytes: the fixed
 /// overhead for it and each call it holds, its own heap, and the part of each
-/// content part's slot beyond the [`Value`] slot [`resident_bytes`] assumes
-/// for every sequence element.
+/// content part's slot (user and tool messages) beyond the [`Value`] slot
+/// [`resident_bytes`] assumes for every sequence element.
 fn message_bytes(m: &Message) -> usize {
     let (calls, parts) = match m {
         Message::Assistant(a) => (a.tool_calls.as_ref().map_or(0, Vec::len), 0),
-        Message::User(u) => (
-            0,
-            match &u.content {
-                crate::content::Content::Parts(p) => p.len(),
-                crate::content::Content::Text(_) => 0,
-            },
-        ),
+        Message::User(u) => (0, parts_of(&u.content)),
+        Message::Tool(t) => (0, parts_of(&t.content)),
         _ => (0, 0),
     };
     const PART_EXTRA: usize =
@@ -2639,6 +2648,14 @@ fn message_bytes(m: &Message) -> usize {
         .saturating_mul(calls.saturating_add(1))
         .saturating_add(resident_bytes(m))
         .saturating_add(parts.saturating_mul(PART_EXTRA))
+}
+
+/// How many content parts `content` holds.
+fn parts_of(content: &Content) -> usize {
+    match content {
+        Content::Parts(p) => p.len(),
+        Content::Text(_) => 0,
+    }
 }
 
 fn new_text_message(opening: &TextOpening<'_>) -> Message {
