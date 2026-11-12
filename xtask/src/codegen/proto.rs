@@ -580,16 +580,18 @@ pub fn render(
     // declaration whose number space it belongs to (the key minus its last
     // segment and any lowercase oneof segments, as upstream's freeze groups
     // keys). A slot whose declaration is gone has no table entry to go in.
-    let owners: BTreeMap<&str, Vec<i64>> = set
+    // Each owner carries its live numbers and whether it is an enum (whose
+    // numbers are i32) or a message (whose numbers are field numbers).
+    let owners: BTreeMap<&str, (bool, Vec<i64>)> = set
         .messages
         .iter()
         .map(|m| {
             let live = m.fields.iter().map(|f| i64::from(f.number)).collect();
-            (m.name.as_str(), live)
+            (m.name.as_str(), (false, live))
         })
         .chain(set.enums.iter().map(|e| {
             let live = e.values.iter().map(|v| i64::from(v.1)).collect();
-            (e.name.as_str(), live)
+            (e.name.as_str(), (true, live))
         }))
         .collect();
     let mut retired_by_owner: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
@@ -597,9 +599,19 @@ pub fn render(
         if used.contains(key.as_str()) {
             continue;
         }
-        let Some((owner, live)) = owners.get_key_value(freeze_group(key)) else {
+        let Some((owner, (is_enum, live))) = owners.get_key_value(freeze_group(key)) else {
             continue;
         };
+        let in_range = if *is_enum {
+            i32::try_from(number).is_ok()
+        } else {
+            u32::try_from(number).is_ok_and(|n| {
+                (1..=MAX_FIELD_NUMBER).contains(&n) && !RESERVED_FIELD_NUMBERS.contains(&n)
+            })
+        };
+        if !in_range {
+            return Err(format!("{key} = {number} is out of range"));
+        }
         if live.contains(&number) {
             return Err(format!(
                 "{key} = {number} is retired, but {owner} still uses {number}"
@@ -1132,5 +1144,26 @@ mod tests {
         assert_eq!(resolve(".ag_ui.A.Foo", "A", &set)?, "Message(A_FOO)");
         assert!(resolve(".other.Foo", "A", &set).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn out_of_range_retired_numbers_are_refused() {
+        for (proto, freeze) in [
+            (
+                "syntax = \"proto3\";\nmessage M { reserved -1; string a = 1; }\n",
+                "M.a = 1\nM.b = -1\n",
+            ),
+            (
+                "syntax = \"proto3\";\nmessage M { reserved 536870912; string a = 1; }\n",
+                "M.a = 1\nM.b = 536870912\n",
+            ),
+            (
+                "syntax = \"proto3\";\nenum E { E_A = 0; reserved 2147483648; }\n",
+                "E.E_A = 0\nE.E_B = 2147483648\n",
+            ),
+        ] {
+            let err = refused(proto, freeze);
+            assert!(err.contains("out of range"), "{err}");
+        }
     }
 }
