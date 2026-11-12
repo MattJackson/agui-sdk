@@ -205,7 +205,10 @@ mod tests {
 
     #[test]
     fn chunking_targets_get_their_body_after_the_size_byte() {
-        // What `fuzz_targets/common.rs` `chunking` does with an input.
+        // A copy of `fuzz/fuzz_targets/common.rs` `chunking`: the fuzz crate
+        // is outside the workspace, so it cannot be called from here. Keep the
+        // two in step; if the size-byte convention there changes, this copy
+        // and `chunked` must change with it.
         fn chunking(data: &[u8]) -> (usize, &[u8]) {
             match data.split_first() {
                 Some((first, rest)) => (usize::from(*first) + 1, rest),
