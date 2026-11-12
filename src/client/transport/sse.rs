@@ -40,6 +40,18 @@ fn could_be_data(head: impl Iterator<Item = u8>) -> bool {
         .all(|(i, byte)| byte == b"data:"[i])
 }
 
+/// Appends `bytes`, growing the buffer by doubling as usual but never past
+/// `cap` (the longest line accepted), so a line near the cap does not leave
+/// twice that capacity behind.
+fn extend_within(buf: &mut Vec<u8>, bytes: &[u8], cap: usize) {
+    let needed = buf.len() + bytes.len();
+    if needed > buf.capacity() {
+        let target = needed.max(buf.capacity().saturating_mul(2).min(cap));
+        buf.reserve_exact(target - buf.len());
+    }
+    buf.extend_from_slice(bytes);
+}
+
 const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// How far the decoder is through a leading byte-order mark.
@@ -131,16 +143,30 @@ impl SseDecoder {
     }
 
     /// Whether an incomplete event is buffered. At end of body, the run was
-    /// truncated mid-event.
+    /// truncated mid-event. An unterminated last line that cannot be a
+    /// `data` line (a comment, an ignored field) is discarded, as WHATWG
+    /// discards an incomplete line, and does not count.
     #[must_use]
     pub fn has_partial(&self) -> bool {
-        let unscanned =
-            self.queue
-                .iter()
-                .enumerate()
-                .any(|(i, c)| if i == 0 { c.len() > self.pos } else { true });
         let bom_head = matches!(self.bom, Bom::Matching(n) if n > 0);
-        self.has_data || !self.pending.is_empty() || bom_head || unscanned
+        if self.has_data || bom_head {
+            return true;
+        }
+        // Lines not yet scanned (input pushed but not read): judged by
+        // `next_event`, so they may hold an event.
+        let more_lines = self.queue.len() > 1
+            || self.queue.front().is_some_and(|c| {
+                memchr::memchr2(b'\n', b'\r', &c[self.scan.min(c.len())..]).is_some()
+            });
+        if more_lines {
+            return true;
+        }
+        let rest = self
+            .queue
+            .front()
+            .map_or(&[][..], |c| &c[self.pos.min(c.len())..]);
+        let mut head = self.pending.iter().chain(rest).copied().peekable();
+        head.peek().is_some() && could_be_data(head)
     }
 
     /// Frees the buffers after an error; input from then on is ignored.
@@ -252,7 +278,7 @@ impl SseDecoder {
                     let start = self.pos;
                     self.pos = next;
                     self.scan = next;
-                    if self.line(start, eol)? {
+                    if self.line(start, eol, cap)? {
                         return Ok(Some(self.dispatch()));
                     }
                 }
@@ -264,7 +290,7 @@ impl SseDecoder {
                     }
                     if self.scan == chunk.len() {
                         // The line continues in a later chunk: keep its head.
-                        self.pending.extend_from_slice(&chunk[self.pos..]);
+                        extend_within(&mut self.pending, &chunk[self.pos..], cap);
                         self.queue.pop_front();
                         self.pos = 0;
                         self.scan = 0;
@@ -277,13 +303,18 @@ impl SseDecoder {
     /// Applies one complete line: `queue[0][start..eol]`, prefixed by the
     /// pending head when the line began in an earlier chunk. Returns whether
     /// it dispatched an event.
-    fn line(&mut self, start: usize, eol: usize) -> std::result::Result<bool, (ErrorCode, String)> {
+    fn line(
+        &mut self,
+        start: usize,
+        eol: usize,
+        cap: usize,
+    ) -> std::result::Result<bool, (ErrorCode, String)> {
         let Some(chunk) = self.queue.front() else {
             return Ok(false);
         };
         let whole = self.pending.is_empty();
         if !whole {
-            self.pending.extend_from_slice(&chunk[start..eol]);
+            extend_within(&mut self.pending, &chunk[start..eol], cap);
         }
         let line: &[u8] = if whole {
             &chunk[start..eol]
@@ -462,6 +493,54 @@ mod tests {
         // An endless line is refused before its end arrives.
         let long = vec![b'x'; 200];
         assert_eq!(decode(&[&long], 4).1, Some(ErrorCode::FrameTooLarge));
+    }
+
+    /// An unterminated trailing line that cannot be a `data` line is
+    /// discarded at end of body (WHATWG), so it does not truncate the run;
+    /// one that may still be `data` does.
+    #[test]
+    fn an_unterminated_ignored_line_is_not_a_partial_event() {
+        for tail in [
+            &b": bye"[..],
+            b"id: 1",
+            b"event: x",
+            b"retry",
+            b"x",
+            b"dat:",
+        ] {
+            let mut input = b"data: {\"a\":1}\n\n".to_vec();
+            input.extend_from_slice(tail);
+            let (e, err, partial) = one(&input);
+            assert_eq!((e.len(), err, partial), (1, None, false), "{tail:?}");
+            split_invariant(&input, DEFAULT_MAX_EVENT_BYTES);
+        }
+        for tail in [&b"data: {"[..], b"data", b"dat", b"d", b"data:"] {
+            let mut input = b"data: {\"a\":1}\n\n".to_vec();
+            input.extend_from_slice(tail);
+            assert!(one(&input).2, "{tail:?}");
+            split_invariant(&input, DEFAULT_MAX_EVENT_BYTES);
+        }
+    }
+
+    /// A long ignored line arriving in many chunks does not leave the line
+    /// buffer at twice the line cap (the documented bound).
+    #[test]
+    fn the_line_buffer_stays_within_the_line_cap() {
+        let max = 1000;
+        let mut decoder = SseDecoder::new(max);
+        decoder.push(Chunk::copy_from_slice(b": "));
+        for _ in 0..(max + LINE_SLACK - 2) {
+            decoder.push(Chunk::copy_from_slice(b"x"));
+            assert!(matches!(decoder.next_event(), Ok(None)));
+        }
+        assert!(
+            decoder.pending.capacity() <= max + LINE_SLACK,
+            "{}",
+            decoder.pending.capacity()
+        );
+        decoder.push(Chunk::copy_from_slice(b"\ndata: 1\n\n"));
+        assert!(matches!(decoder.next_event(), Ok(Some(_))));
+        assert!(decoder.pending.capacity() <= max + LINE_SLACK);
     }
 
     /// Only `data` lines must be UTF-8: comments and ignored fields may hold
