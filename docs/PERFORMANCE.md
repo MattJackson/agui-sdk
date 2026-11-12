@@ -37,7 +37,7 @@ linearity and the cache" below). No throughput floor is set yet: every case has
 Allocation counts are the default-feature build's (the CI gate's).
 `preserve-order`, and so `--all-features`, makes `serde_json` objects
 `IndexMap`s, which changes the count of every case that builds objects
-(`pipeline_push_json/text_heavy` measures 1.542 there, for example). Those
+(`pipeline_push_json/text_heavy` measures 1.576 there, for example). Those
 cases carry `map_dependent = true` in `benches/budgets.toml`, and a
 `preserve-order` build prints their counts without gating them; the other
 budgets, linearity and the computed ceilings stay gated. The bench
@@ -47,8 +47,8 @@ every frame, the harder order for a tagged parse.
 | Hot path | Allocation budget (per event) | Linearity bound | Throughput floor |
 | --- | --- | --- | --- |
 | SSE decode (`sse_decode/1KiB`, `/64KiB`) | 0 | 8 x 1.15 allocs, 8 x 2.0 time | not set |
-| JSON event through the pipeline (`pipeline_push_json/text_heavy`) | 1.509 (below the owned-strings ceiling asserted in the bench) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
-| Middleware path, `Value` in (`pipeline_push_value/text_heavy`) | 0.542 | 8 x 1.15 allocs, 8 x 2.0 time | not set |
+| JSON event through the pipeline (`pipeline_push_json/text_heavy`) | 1.542 (below the owned-strings ceiling asserted in the bench) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
+| Middleware path, `Value` in (`pipeline_push_value/text_heavy`) | 0.576 | 8 x 1.15 allocs, 8 x 2.0 time | not set |
 | Protobuf framing (`proto_decode/framing`) | 0 | 8 x 1.15 allocs, 8 x 2.0 time | not set |
 | Protobuf decode to a `Value` (`proto_decode/decode`) | 7.119 (the value's own nodes) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
 | Event encode with producer verification (`server_emit_encode/sse`, `/proto`) | 0 each | 8 x 1.15 allocs, 8 x 2.0 time | not set |
@@ -57,7 +57,7 @@ every frame, the harder order for a tagged parse.
 | `MESSAGES_SNAPSHOT` reconcile, per message (`messages_snapshot/reconcile`) | 1 | 8 x 1.15 allocs; time 8 x 2 from 1.25k to 10k messages and 8 x 4 from 10k to 80k (see below) | not set |
 | Tiny `MESSAGES_SNAPSHOT`s against held activity (`messages_snapshot/tiny_snapshots_vs_held_activity`) | 1 | 3.0 time | not set |
 | Reopening a message under a new parent (`reducer_deltas/reopen_new_parent`) | 1 | 3.0 time | not set |
-| Client run loop (`client_run/await`, `/iterate_observed`) | 1.509 each (equal to the pipeline: the client adds 0) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
+| Client run loop (`client_run/await`, `/iterate_observed`) | 1.542 each (equal to the pipeline: the client adds 0) | 8 x 1.15 allocs, 8 x 2.0 time | not set |
 
 ### Time linearity and the cache
 
@@ -129,6 +129,21 @@ shows up as a budget breach rather than a slow drift:
 - **Repeated ids are shared.** Ids are `Arc<str>`; the last few read on a
   thread are remembered, so `messageId` on every content delta and
   `toolCallId` on every argument delta allocate nothing (`ids.rs`).
+- **A run of deltas hashes its id once.** The reducer and the consumer
+  verifier remember the last content or argument delta's target (the
+  table's own key, compared by pointer first) and forget it on any other
+  event, so the next delta to the same item skips the SipHash lookup.
+- **A closed item keeps no slack.** `*_END` shrinks the text or arguments
+  it closes, so the history holds what `max_history_bytes` charges for it
+  (one shrinking reallocation per END, in the budgets above).
+- **A finding nobody receives is not built.** With a `NullSink`
+  (`DiagnosticSink::enabled` is `false`) or past the reporter's cap, the
+  enforcer counts a stripped member without building its pointer and
+  message, so the counts and summaries stay exact at no allocation.
+- **Names are found by length and first byte.** Member and event-type
+  tables are short and share long prefixes, so a scan that compares lengths
+  and first bytes beats a binary search that compares the common prefix at
+  every step.
 - **Member names are matched as bytes.** A name without escapes is looked up
   in the shape table by its bytes; only an unrecognised one is checked as
   UTF-8. String scans move eight bytes a step (SWAR on a `u64`, no `unsafe`),
@@ -144,6 +159,47 @@ shows up as a budget breach rather than a slow drift:
   unescaped into a reused arena, numbers as the `f64` `JSON.parse` would read)
   instead of writing JSON and parsing it back; the bytes are identical, and a
   value the builder does not mirror takes the text path.
+
+## Measuring a change
+
+Wall-clock numbers from a shared machine are not comparable between runs. A
+change is measured instead by what load does not distort:
+
+- **Instructions retired per event**: the process's count from
+  `/usr/bin/time -l` (macOS; `perf stat -e instructions` on Linux) for a
+  workload repeated `a` and `b` times, `(I(a) - I(b)) / (events(a) -
+  events(b))`, so setup cancels. Repeat runs agree within about 2 %.
+- **Allocations and bytes per event**, from the counting allocator (the
+  bench budgets, exact).
+- **Resident bytes per held item**: live bytes after a stream of N items,
+  with the smallest `max_history_bytes` that still passes it as the
+  estimate (binary search), from the same allocator.
+
+0.9.1 against 0.9.0, measured that way on an Apple M-series laptop under
+heavy load (instructions per event; the workloads are the bench streams):
+
+| Path | 0.9.0 | 0.9.1 | Change |
+| --- | ---: | ---: | ---: |
+| `push_json`, typical stream (sorted keys, `type` last) | 8475 | 7769 | -8.3 % |
+| `push_json`, the same with `type` first (TypeScript order) | 8304 | 7664 | -7.7 % |
+| `push_json`, an unknown member on every content delta (`NullSink`) | 10604 | 8185 | -23 % |
+| `push_value`, typical stream | 9392 | 8632 | -8.1 % |
+| Reducer, content deltas to one message (event clone included) | 996 | 849 | -15 % |
+| Reducer, the same with every update held | 1428 | 1272 | -11 % |
+| Reducer, `TOOL_CALL_ARGS` to one call | 1005 | 856 | -15 % |
+| Reducer, content deltas with two metadata keys (net of the clone) | 2784 | 1098 | -61 % |
+| Reducer, two-operation `ACTIVITY_DELTA` (net of the clone) | 13929 | 9885 | -29 % |
+| `MESSAGES_SNAPSHOT` reconcile, per message (10k, half held) | 3144 | 2765 | -12 % |
+| Producer verifier (`server_emit_encode`'s check) | 450 | 457 | 0 % |
+| `decode_event_json`, typical stream | 4622 | 4019 | -13 % |
+| `decode_event` to a `Value` | 6225 | 6218 | 0 % |
+| SSE decode, typical stream | 679 | 597 | -12 % |
+
+Resident per held item: a text message streamed in 10 deltas (200 bytes)
+794.6 to 674.6 bytes, a tool call with 200 bytes of streamed arguments 754.9
+to 634.9 bytes; the history estimate goes from 0.83 to 0.98 of what is held
+for streamed text. One unknown member per content delta with a `NullSink`: 5
+to 1 allocations and 331 to 25 bytes per event.
 
 ## Allocation-budget policy
 

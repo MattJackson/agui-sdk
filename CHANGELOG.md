@@ -8,6 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+Measured as instructions retired per event, which a loaded machine does not
+distort, against 0.9.0 (`docs/PERFORMANCE.md`, "Measuring a change"). A JSON
+event through the pipeline costs 8 % less on a typical stream.
+
+- Streaming deltas no longer hash their id on every event. The reducer and
+  the consumer verifier remember the last `TEXT_MESSAGE_CONTENT`,
+  `REASONING_MESSAGE_CONTENT` or `TOOL_CALL_ARGS` target, so a run of deltas
+  to one message or call looks it up once: -15 % per delta in the reducer.
+- A held message keeps no growth slack. `TEXT_MESSAGE_END`,
+  `REASONING_MESSAGE_END` and `TOOL_CALL_END` shrink the text or arguments
+  they close to their length, so a message streamed in 10 deltas holds 15 %
+  less (795 to 675 bytes for 200 bytes of text; a tool call's arguments 16 %
+  less), and `Limits::max_history_bytes` now matches what the history holds
+  (the estimate was 0.83 of it for streamed text). This costs one shrinking
+  reallocation per `*_END`: the `pipeline_push_json` and `client_run` budgets
+  go from 1.509 to 1.542 allocations per event, `pipeline_push_value` from
+  0.542 to 0.576.
+- Unknown members cost nothing when no diagnostic is delivered. With a
+  `NullSink`, or once the reporter's per-event cap is reached, a stripped
+  member costs no allocation (5 to 1 allocations per event, 331 to 25 bytes,
+  for a newer minor's extra member on every content delta), and -23 %
+  instructions. Delivered diagnostics, the per-event cap and the
+  `diagnostics.limit` summaries are unchanged; a delivered finding's pointer
+  is built in one allocation instead of two or more.
+- Member names and event types are found by length and first byte instead of
+  a binary search over shared prefixes: -4.6 % per event on `push_json`,
+  -7.8 % on `push_value`.
+- `decode_event_json` copies a string that needs no escaping in one step:
+  -13 % per event.
+- `ACTIVITY_DELTA` charging no longer serializes the patch to refill its
+  credit, and resolves paths without allocating: -29 % for a two-operation
+  delta. Metadata merges look each key up once and copy only the values:
+  -61 % for content deltas carrying two metadata keys.
+- `MESSAGES_SNAPSHOT` reserves its tables once for the messages it appends and
+  skips hashing for empty side tables: -12 % per message.
+- The SSE decoder settles an ASCII `data` line without full UTF-8 validation:
+  -12 % per event. Invalid UTF-8 is still refused with `framing.sse`.
+
+### Added
+
+- `DiagnosticSink::enabled`, default `true`; `false` for `NullSink`, and
+  forwarded by `Arc` and `Tee`. A `Reporter` over a sink that is not enabled
+  no longer calls the closure that builds a diagnostic; its per-event counts
+  move as before.
+
 ## [0.9.0] - 2026-11-11
 
 The first release. Implements **AG-UI protocol 1.0**. Both crates carry

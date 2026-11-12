@@ -9,7 +9,7 @@
 #   default-feature build's, which CI's perf job runs.
 # map_dependent = true: the count changes with `serde_json`'s map type, so a
 #   `preserve-order` build (and so `--all-features`) prints it ungated; for
-#   example pipeline_push_json/text_heavy measures 1.542 there.
+#   example pipeline_push_json/text_heavy measures 1.576 there.
 # min_mb_per_s: loose throughput floor that catches cliffs on a shared runner.
 #   0 = not set yet (set it from a green run on the reference runner, with a
 #   wide margin).
