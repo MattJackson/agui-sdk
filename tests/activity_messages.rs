@@ -57,6 +57,9 @@ fn snapshot_replaces_content_and_type_by_default() {
     let mut h = Harness::new();
     h.push(snap("a", "search", json!({"q": "x", "n": 1})));
     h.push(snap("a", "results", json!({"hits": []})));
+    // No `replace` at all: replaced.
+    assert_eq!(h.history()[0]["activityType"], "results");
+    assert_eq!(h.history()[0]["content"], json!({"hits": []}));
     let mut explicit = snap("a", "done", json!({"ok": true}));
     explicit["replace"] = json!(true);
     h.push(explicit);
