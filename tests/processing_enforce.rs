@@ -266,6 +266,13 @@ fn a_known_role_a_text_message_cannot_take_is_malformed() {
 #[test]
 fn the_parser_alone_keeps_what_enforcement_strips() {
     let frame = json!({"type": "TEXT_MESSAGE_END", "messageId": "m", "futureProp": 1});
+    // The parser alone: the raw parse keeps the unknown member, and the typed
+    // event parse accepts the frame rather than rejecting it.
+    let raw = serde_json::to_vec(&frame).unwrap_or_else(|e| panic!("{e}"));
+    let parsed: Value = serde_json::from_slice(&raw).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(parsed["futureProp"], 1);
+    assert!(serde_json::from_slice::<agui_sdk::Event>(&raw).is_ok());
+    // Enforcement strips it.
     let (v, _) = kept(frame);
     assert!(v.get("futureProp").is_none());
 }
