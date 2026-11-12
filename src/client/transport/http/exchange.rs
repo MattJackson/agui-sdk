@@ -118,26 +118,42 @@ impl Clock {
     }
 }
 
-/// Maps a client error raised before response headers.
-fn request_error(error: hyper_util::client::legacy::Error) -> Error {
+/// Maps a client error raised before response headers, and whether it
+/// happened while connecting (nothing was sent, so a retry is safe): a
+/// refused connection, or a TCP, proxy or TLS-handshake timeout.
+fn request_error(error: hyper_util::client::legacy::Error) -> (Error, bool) {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     while let Some(e) = source {
         if e.is::<ConnectTimeout>() {
-            return Error::new(ErrorCode::Timeout, e.to_string()).with_source(error);
+            return (
+                Error::new(ErrorCode::Timeout, e.to_string())
+                    .with_source(error)
+                    .with_connect_phase(),
+                true,
+            );
         }
         if e.is::<NoTls>() {
-            return Error::new(ErrorCode::InvalidConfig, e.to_string()).with_source(error);
+            return (
+                Error::new(ErrorCode::InvalidConfig, e.to_string()).with_source(error),
+                false,
+            );
         }
         source = e.source();
     }
     if error.is_connect() {
-        Error::new(ErrorCode::Connect, "connecting to the agent failed").with_source(error)
-    } else {
-        Error::new(
-            ErrorCode::StreamRead,
-            "the request failed before response headers arrived",
+        (
+            Error::new(ErrorCode::Connect, "connecting to the agent failed").with_source(error),
+            true,
         )
-        .with_source(error)
+    } else {
+        (
+            Error::new(
+                ErrorCode::StreamRead,
+                "the request failed before response headers arrived",
+            )
+            .with_source(error),
+            false,
+        )
     }
 }
 
@@ -203,9 +219,13 @@ async fn send(
             }
             Err(why) => return Err(clock.interrupted(why)),
             Ok(Err(e)) => {
-                let error = request_error(e);
-                if error.code() == ErrorCode::Connect && attempt < inner.retry.max_retries {
-                    pause(inner, attempt, None, cancel, clock).await?;
+                let (error, connecting) = request_error(e);
+                if connecting && attempt < inner.retry.max_retries {
+                    // A wait past the deadline reports this failure.
+                    let Some(wake) = retry_wake(inner, attempt, None, clock) else {
+                        return Err(error);
+                    };
+                    pause(wake, cancel, clock).await?;
                     attempt += 1;
                     continue;
                 }
@@ -234,7 +254,7 @@ async fn send(
                     continue;
                 }
             }
-            return Err(status_error(inner, response, cancel, clock).await);
+            return Err(status_error(inner, out.purpose, response, cancel, clock).await);
         }
         if retryable_status(status) && attempt < inner.retry.max_retries {
             let retry_after = response
@@ -245,26 +265,31 @@ async fn send(
             if let Some(after) = retry_after.filter(|_| inner.retry.honor_retry_after) {
                 if after > inner.retry.max_retry_after {
                     // Longer than we are willing to wait: report it.
-                    return Err(status_error(inner, response, cancel, clock).await);
+                    return Err(status_error(inner, out.purpose, response, cancel, clock).await);
                 }
             }
+            // A wait past the deadline reports the status (with its
+            // Retry-After and body), as without a policy.
+            let Some(wake) = retry_wake(inner, attempt, retry_after, clock) else {
+                return Err(status_error(inner, out.purpose, response, cancel, clock).await);
+            };
             drop(response);
-            pause(inner, attempt, retry_after, cancel, clock).await?;
+            pause(wake, cancel, clock).await?;
             attempt += 1;
             continue;
         }
-        return Err(status_error(inner, response, cancel, clock).await);
+        return Err(status_error(inner, out.purpose, response, cancel, clock).await);
     }
 }
 
-/// Waits before retry number `attempt`.
-async fn pause(
+/// When retry number `attempt` may be sent; `None` when that is past the
+/// total deadline.
+fn retry_wake(
     inner: &HttpInner,
     attempt: u32,
     retry_after: Option<Duration>,
-    cancel: &CancelToken,
     clock: &Clock,
-) -> Result<()> {
+) -> Option<Instant> {
     let policy = &inner.retry;
     let delay = match retry_after.filter(|_| policy.honor_retry_after) {
         // `send` already reports a longer delay instead of retrying; this
@@ -274,9 +299,11 @@ async fn pause(
         None => policy.backoff(attempt),
     };
     let wake = in_from_now(delay);
-    if wake > clock.deadline {
-        return Err(total_timeout_error(clock.total));
-    }
+    (wake <= clock.deadline).then_some(wake)
+}
+
+/// Waits until `wake` (from [`retry_wake`]) before a retry.
+async fn pause(wake: Instant, cancel: &CancelToken, clock: &Clock) -> Result<()> {
     guarded(tokio::time::sleep_until(wake), cancel, clock.deadline)
         .await
         .map_err(|why| clock.interrupted(why))
@@ -346,6 +373,7 @@ async fn read_bounded(
 /// the start of the error body.
 async fn status_error(
     inner: &HttpInner,
+    purpose: Purpose,
     response: Response<Incoming>,
     cancel: &CancelToken,
     clock: &Clock,
@@ -366,14 +394,17 @@ async fn status_error(
     } else {
         ""
     };
-    let mut error = Error::new(
-        ErrorCode::HttpStatus,
-        format!(
+    let message = match purpose {
+        Purpose::Run => format!(
             "the agent answered HTTP {} {reason}{what} before any event stream",
             status.as_u16()
         ),
-    )
-    .with_http_status(status.as_u16());
+        Purpose::Capabilities => format!(
+            "the capabilities endpoint answered HTTP {} {reason}{what}",
+            status.as_u16()
+        ),
+    };
+    let mut error = Error::new(ErrorCode::HttpStatus, message).with_http_status(status.as_u16());
     if let Some(after) = retry_after {
         error = error.with_retry_after(after);
     }
@@ -507,15 +538,24 @@ pub(super) async fn fetch(
     } else {
         HeaderMap::new()
     };
-    for (name, value) in extra {
-        let header = super::super::Header::new(name.clone(), value.clone());
-        let (name, value) = super::header_pair(&header, ErrorCode::InvalidRequest)?;
-        headers.insert(name, value);
-    }
     if let Some((user, pass)) = &target.userinfo {
         if let Some(auth) = endpoint::basic_auth(user, pass) {
             headers.insert(::http::header::AUTHORIZATION, auth);
         }
+    }
+    // The request's own headers override both, as per-run headers do in
+    // `open`: each name replaces the values above, and several values of
+    // one name are all sent.
+    let mut own = Vec::with_capacity(extra.len());
+    for (name, value) in extra {
+        let header = super::super::Header::new(name.clone(), value.clone());
+        own.push(super::header_pair(&header, ErrorCode::InvalidRequest)?);
+    }
+    for (name, _) in &own {
+        headers.remove(name);
+    }
+    for (name, value) in own {
+        headers.append(name, value);
     }
     headers.insert(ACCEPT, HeaderValue::from_static(JSON_MEDIA_TYPE));
     if let Some(auth) = inner.proxy_auth_for(&target.uri) {

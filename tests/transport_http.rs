@@ -409,7 +409,7 @@ fn a_disabled_error_body_timeout_does_not_overflow_the_clock() {
 }
 
 #[test]
-fn a_huge_backoff_ends_in_the_total_timeout_without_overflowing() {
+fn a_huge_backoff_past_the_total_timeout_reports_the_status_without_overflowing() {
     for jitter in [true, false] {
         block(async {
             let server = MockServer::sequence(vec![Reply::status(503).body("x"), ok_reply()])
@@ -425,7 +425,9 @@ fn a_huge_backoff_ends_in_the_total_timeout_without_overflowing() {
                     .total_timeout(Duration::from_secs(5)),
             );
             let started = Instant::now();
-            expect_code(transport.open(request()).await, ErrorCode::Timeout);
+            // The wait would pass the deadline: the 503 is reported.
+            let error = expect_code(transport.open(request()).await, ErrorCode::HttpStatus);
+            assert_eq!(error.http_status(), Some(503));
             assert!(started.elapsed() < Duration::from_secs(3));
         });
     }
@@ -520,7 +522,8 @@ fn total_timeout_is_enforced_while_streaming() {
             .await
             .unwrap_or_else(|e| panic!("{e}"));
         let transport = build(HttpTransport::builder(server.url("/")).total_timeout(150 * MS));
-        expect_code(transport.open(request()).await, ErrorCode::Timeout);
+        let error = expect_code(transport.open(request()).await, ErrorCode::Timeout);
+        assert!(!error.is_retryable(), "{error}");
     });
 }
 
@@ -541,6 +544,8 @@ fn connect_timeout_covers_the_tls_handshake() {
         let error = expect_code(transport.open(request()).await, ErrorCode::Timeout);
         assert!(started.elapsed() < Duration::from_secs(3), "{error}");
         assert!(error.message().contains("connect"), "{error}");
+        // Nothing was sent: retryable, as the transport's policy treats it.
+        assert!(error.is_retryable(), "{error}");
     });
 }
 
@@ -563,6 +568,71 @@ fn refused_connections_are_connect_errors() {
         let started = Instant::now();
         expect_code(transport.open(request()).await, ErrorCode::Connect);
         assert!(started.elapsed() >= 450 * MS, "{:?}", started.elapsed());
+    });
+}
+
+/// A connect-phase timeout (here the TLS handshake) is a connect failure:
+/// nothing was sent, so the policy retries it as it retries a refusal. The
+/// surfaced code stays `transport.timeout`.
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
+#[test]
+fn connect_timeouts_are_retried() {
+    block(async {
+        let silent = SilentServer::start()
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut policy = RetryPolicy::exponential(2);
+        policy.initial_backoff = 50 * MS;
+        policy.jitter = false;
+        let transport = build(
+            HttpTransport::builder(format!("https://{}/", silent.addr()))
+                .connect_timeout(150 * MS)
+                .response_timeout(Duration::from_secs(10))
+                .retry(policy),
+        );
+        let started = Instant::now();
+        expect_code(transport.open(request()).await, ErrorCode::Timeout);
+        // Three attempts of 150 ms plus backoffs of 50 and 100 ms.
+        assert!(started.elapsed() >= 550 * MS, "{:?}", started.elapsed());
+    });
+}
+
+/// When the wait before a retry would pass the total deadline, the failure
+/// that prompted it is reported, not a bare total timeout.
+#[test]
+fn a_retry_past_the_deadline_reports_the_failure() {
+    block(async {
+        let server = MockServer::always(
+            Reply::status(503)
+                .header("Retry-After", "30")
+                .framing(Framing::Length),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+        let transport = build(
+            HttpTransport::builder(server.url("/"))
+                .retry(RetryPolicy::exponential(1))
+                .total_timeout(Duration::from_secs(2)),
+        );
+        let error = expect_code(transport.open(request()).await, ErrorCode::HttpStatus);
+        assert_eq!(error.http_status(), Some(503));
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(30)));
+        assert_eq!(server.requests().len(), 1);
+
+        let addr = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
+            listener.local_addr().unwrap_or_else(|e| panic!("{e}"))
+        };
+        let mut policy = RetryPolicy::exponential(1);
+        policy.initial_backoff = Duration::from_secs(5);
+        policy.jitter = false;
+        let transport = build(
+            HttpTransport::builder(format!("http://{addr}/"))
+                .retry(policy)
+                .total_timeout(Duration::from_secs(1)),
+        );
+        expect_code(transport.open(request()).await, ErrorCode::Connect);
     });
 }
 
@@ -1274,6 +1344,23 @@ fn native_tls_with_a_custom_root() {
     });
 }
 
+/// A PEM bundle whose last certificate is cut off is refused, not trusted
+/// short of that root, under either backend.
+#[cfg(feature = "native-tls")]
+#[test]
+fn native_tls_refuses_a_truncated_pem_bundle() {
+    use agui_sdk::client::transport::TlsBackend;
+    let mut bundle = tls::file("ca.pem");
+    bundle.extend_from_slice(b"\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n");
+    expect_code(
+        HttpTransport::builder("https://127.0.0.1:1/")
+            .tls_backend(TlsBackend::NativeTls)
+            .add_root_certificates_pem(bundle)
+            .build(),
+        ErrorCode::InvalidConfig,
+    );
+}
+
 // ---------------------------------------------------------------- capabilities
 
 #[test]
@@ -1449,6 +1536,45 @@ fn capabilities_on_another_origin_get_no_transport_credentials() {
             Some("Bearer SECRET-AGENT-TOKEN")
         );
         assert_eq!(got.header("x-api-key"), Some("SECRET-KEY"));
+    });
+}
+
+/// The request's own headers override the capabilities URL's userinfo,
+/// and every value of a repeated request header is sent, as on a run.
+#[test]
+fn capabilities_request_headers_override_and_repeat() {
+    block(async {
+        let server = MockServer::always(
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"transport": {"streaming": true}}"#),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+        let transport =
+            build(HttpTransport::builder(server.url("/agent")).header("X-Scope", "base"));
+        let caps = format!("http://u:p@{}/caps", server.addr());
+        transport
+            .fetch_capabilities(
+                &CapabilitiesRequest::new(caps)
+                    .bearer_token("t")
+                    .header("X-Scope", "a")
+                    .header("X-Scope", "b"),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let got = server.last_request().unwrap_or_default();
+        assert_eq!(got.header_all("authorization"), ["Bearer t"], "{got:?}");
+        assert_eq!(got.header_all("x-scope"), ["a", "b"], "{got:?}");
+        // Without an explicit Authorization, the URL's userinfo is sent.
+        let caps = format!("http://u:p@{}/caps", server.addr());
+        transport
+            .fetch_capabilities(&CapabilitiesRequest::new(caps))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let got = server.last_request().unwrap_or_default();
+        assert_eq!(got.header_all("authorization"), ["Basic dTpw"], "{got:?}");
+        assert_eq!(got.header_all("x-scope"), ["base"], "{got:?}");
     });
 }
 

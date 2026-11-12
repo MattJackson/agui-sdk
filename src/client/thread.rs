@@ -39,9 +39,11 @@ pub enum DecidedBy {
     },
 }
 
-/// A pending frontend call that was explicitly approved. The only way to get
-/// a call's arguments for execution (IDX-05, TOOL-39). Carries the tool as
-/// advertised on the thread at approval time, if it was.
+/// A pending frontend call that was explicitly approved. The intended way to
+/// take a call's arguments for execution: approval records who decided
+/// (IDX-05, TOOL-39). The pending call's arguments are readable, but
+/// executing from them skips that record. Carries the tool as advertised on
+/// the thread at approval time, if it was.
 #[derive(Debug, Clone)]
 pub struct ApprovedToolCall {
     call: PendingToolCall,
@@ -164,6 +166,11 @@ pub struct ThreadSnapshot {
     pub staged: Vec<ToolMessage>,
     /// Frontend tools advertised on every run.
     pub tools: Vec<Tool>,
+    /// Tools the last absorbed run's request advertised besides `tools`,
+    /// so a call to one is still advertised after a restore. Absent from
+    /// snapshots written before 0.9.1, which read as empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_tools: Vec<Tool>,
 }
 
 /// A multi-turn conversation with one agent.
@@ -305,6 +312,7 @@ impl<T: Transport> Thread<T> {
             pending_tool_calls,
             staged,
             tools,
+            run_tools,
         } = snapshot;
         let mut thread = Thread::new(client, thread_id);
         thread.reducer = Reducer::restore(
@@ -317,6 +325,7 @@ impl<T: Transport> Thread<T> {
         thread.set_pending(pending_tool_calls);
         thread.staged = staged;
         thread.tools = tools;
+        thread.run_tools = run_tools;
         thread.last_run_id = last_run_id;
         thread
     }
@@ -334,6 +343,7 @@ impl<T: Transport> Thread<T> {
             pending_tool_calls: self.pending.clone(),
             staged: self.staged.clone(),
             tools: self.tools.clone(),
+            run_tools: self.run_tools.clone(),
         }
     }
 

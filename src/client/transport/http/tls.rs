@@ -176,7 +176,10 @@ pub(crate) fn native_connector(settings: &TlsSettings<'_>) -> Result<native_tls:
         builder.add_root_certificate(cert);
     }
     for pem in settings.pem {
-        let blocks = pem_blocks(pem, "CERTIFICATE");
+        // A cut-off last certificate is refused, as the rustls backend
+        // refuses it, rather than trusting the bundle short of that root.
+        let blocks = pem_blocks(pem, "CERTIFICATE")
+            .ok_or_else(|| invalid("a PEM root certificate bundle is not valid PEM"))?;
         if blocks.is_empty() {
             return Err(invalid("a PEM root bundle holds no certificate"));
         }
@@ -199,24 +202,22 @@ pub(crate) fn native_connector(settings: &TlsSettings<'_>) -> Result<native_tls:
 }
 
 /// The `-----BEGIN <label>-----` … `-----END <label>-----` blocks of a PEM
-/// bundle, markers included.
+/// bundle, markers included. `None` when a `BEGIN` has no matching `END`.
 #[cfg_attr(not(feature = "native-tls"), allow(dead_code))]
-pub(crate) fn pem_blocks<'a>(pem: &'a [u8], label: &str) -> Vec<&'a [u8]> {
+pub(crate) fn pem_blocks<'a>(pem: &'a [u8], label: &str) -> Option<Vec<&'a [u8]>> {
     let begin = format!("-----BEGIN {label}-----");
     let end = format!("-----END {label}-----");
     let mut blocks = Vec::new();
     let mut rest = pem;
     let mut offset = 0;
     while let Some(start) = find(rest, begin.as_bytes()) {
-        let Some(stop) = find(&rest[start..], end.as_bytes()) else {
-            break;
-        };
+        let stop = find(&rest[start..], end.as_bytes())?;
         let stop = start + stop + end.len();
         blocks.push(&pem[offset + start..offset + stop]);
         offset += stop;
         rest = &pem[offset..];
     }
-    blocks
+    Some(blocks)
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -230,11 +231,15 @@ mod tests {
     #[test]
     fn splits_pem_bundles() {
         let pem = b"junk\n-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n\
-                    -----BEGIN CERTIFICATE-----\nBB==\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\n";
-        let blocks = pem_blocks(pem, "CERTIFICATE");
+                    -----BEGIN CERTIFICATE-----\nBB==\n-----END CERTIFICATE-----\n";
+        let blocks = pem_blocks(pem, "CERTIFICATE").unwrap_or_default();
         assert_eq!(blocks.len(), 2);
         assert!(blocks[1].starts_with(b"-----BEGIN CERTIFICATE-----\nBB=="));
         assert!(blocks[1].ends_with(b"-----END CERTIFICATE-----"));
-        assert!(pem_blocks(b"none", "CERTIFICATE").is_empty());
+        assert_eq!(pem_blocks(b"none", "CERTIFICATE"), Some(Vec::new()));
+        // A last block cut off before its END marker is not silently skipped.
+        let mut cut = pem.to_vec();
+        cut.extend_from_slice(b"-----BEGIN CERTIFICATE-----\nCC==\n");
+        assert_eq!(pem_blocks(&cut, "CERTIFICATE"), None);
     }
 }

@@ -37,7 +37,11 @@ impl<'a> RunInfo<'a> {
 }
 
 /// A borrowed view of the run's reduced state at the moment of a callback.
-/// Nothing is copied to build it.
+/// Nothing is copied to build it. Every event one wire frame expands into
+/// (a chunk event's start and content, say) is applied before the first is
+/// delivered, so the view may already include later events of the same
+/// frame; use [`RunUpdate::changes`](crate::client::RunUpdate::changes) for per-event
+/// deltas.
 #[derive(Debug, Clone, Copy)]
 pub struct RunView<'a> {
     run: RunInfo<'a>,

@@ -144,8 +144,9 @@ pub struct TransportRequest {
 impl TransportRequest {
     /// A request with no per-run headers, a fresh cancel token, the
     /// [`default_sink`](crate::diagnostics::default_sink), the default frame
-    /// limit and the `Accept` list this build supports. For custom transports' tests; set the public
-    /// fields to vary the rest.
+    /// limit and the `Accept` list this build supports (SSE first; the
+    /// built-in client lists protobuf first when it is enabled). For custom
+    /// transports' tests; set the public fields to vary the rest.
     pub fn new(body: Chunk, thread_id: ThreadId, run_id: RunId) -> Self {
         let mut accept = vec![WireFormat::Sse];
         if cfg!(feature = "proto") {

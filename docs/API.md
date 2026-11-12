@@ -213,8 +213,9 @@ pipeline, codec) except the outcomes listed at the end of this section. It is op
 - `message()`: human text with no payload values and no secrets.
 - `pointer()`: the JSON pointer of the offending value, for validation errors.
 - `http_status()` and `retry_after()` for pre-stream HTTP failures.
-- `is_retryable()`: only failures before response headers (connect, 429,
-  502, 503, 504). It implies `!run_started()`.
+- `is_retryable()`: only failures before response headers (connect,
+  including a TCP, proxy or TLS-handshake timeout; 429, 502, 503, 504).
+  Response, idle and total timeouts are not. It implies `!run_started()`.
 - `run_started()` and, with `client`, `partial()`/`into_partial()`: the
   `RunReport` of everything delivered before the failure (LIFE-19, TRN-11).
 - `source()` reaches the underlying cause. No third-party error type appears
@@ -546,7 +547,7 @@ diagnostics and capabilities) is the starting point. What changed:
 | MSRV 1.88, edition 2024 | MSRV 1.75, edition 2021 | Owner requirement. Nothing needed past 1.75 once let-chains are avoided. |
 | `HttpAgent` / `HttpAgentBuilder` | `AgentClient::http(url) -> ClientBuilder<HttpTransportBuilder>` | In one crate, "Agent" is the server trait; the client is named for its role. Transport and client options share one builder. |
 | `RunUpdate { event, state: Arc<Value>, messages: Arc<Vec<Message>>, *_changed }` | `RunUpdate { event, changes }`; history and state borrowed via `RunHandle::messages()/state()` and `RunView` | Arc snapshots force copy-on-write. A consumer that keeps the last update alive makes every later event clone the whole history: O(n) per event. Borrowing is O(1) with zero allocation. |
-| Middleware on `serde_json::Value` frames | Middleware on `Frame` (raw bytes, parsed on demand) | A pass-through or peeking middleware costs no parse. With no middleware, the pipeline parses once, straight into typed events. |
+| Middleware on `serde_json::Value` frames | Middleware on `Frame` (raw bytes or a parsed value) | With middleware installed, the innermost stage parses each frame once (the compatibility boundary needs the value); a pass-through or peeking middleware adds no further parse. With no middleware, the pipeline parses once, straight into typed events. |
 | `Transport` yields `Value` frames; request carries `Value` body | `Transport` yields `Frame`s; `TransportRequest.body` is a pre-serialized `wire::Chunk` | No transport parses JSON it doesn't need to, and the input is serialized exactly once. |
 | Pipeline internals hidden in the client (`event_handler`, `protocol_state`, `chunk`) | Public sans-IO `pipeline::{Processor, compat, enforce, chunks, verify, reduce}` | The same verdicts serve the client, the server's verifier, corpus tests and custom hosts. They are documented building blocks, not facade internals. |
 | `compat::Subscriber` wrapping a 40-hook `AgentSubscriber` trait (TypeScript-shaped, `async-trait`) | `client::subscriber::Subscriber`: closures keyed by `EventType`, returning `Flow`, with `Mutation` | The hook-per-event trait was a TS design port (provenance) and a semver liability: each new event is a new hook. A closure registry is ours, and new events cost nothing. |

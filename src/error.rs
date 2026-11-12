@@ -277,6 +277,9 @@ struct ErrorInner {
     http_status: Option<u16>,
     retry_after: Option<Duration>,
     run_started: bool,
+    /// A timeout while connecting (TCP, proxy or TLS handshake): nothing
+    /// was sent, so it is retryable like a connect error.
+    connect_phase: bool,
     public: bool,
     #[cfg(feature = "client")]
     partial: Option<crate::client::RunReport>,
@@ -297,6 +300,7 @@ impl Error {
                 http_status: None,
                 retry_after: None,
                 run_started: false,
+                connect_phase: false,
                 public: false,
                 #[cfg(feature = "client")]
                 partial: None,
@@ -338,6 +342,14 @@ impl Error {
     #[allow(dead_code)] // used by the client and server runtimes
     pub(crate) fn with_run_started(mut self) -> Self {
         self.inner.run_started = true;
+        self
+    }
+
+    /// Marks a timeout as having happened while connecting (nothing was
+    /// sent), which makes it retryable.
+    #[cfg(feature = "client")]
+    pub(crate) fn with_connect_phase(mut self) -> Self {
+        self.inner.connect_phase = true;
         self
     }
 
@@ -402,10 +414,11 @@ impl Error {
         self.inner.retry_after
     }
 
-    /// Whether retrying might succeed: connect errors and 429/502/503/504
-    /// received before the stream started. Never true once a run started. A
-    /// 502/504 from a gateway does not prove the agent never received the
-    /// request, so retrying a non-idempotent run can duplicate it.
+    /// Whether retrying might succeed: only failures before response headers,
+    /// and only connect errors (including a TCP, proxy or TLS-handshake
+    /// timeout) and 429/502/503/504. Never true once a run started. A 502/504
+    /// from a gateway does not prove the agent never received the request, so
+    /// retrying a non-idempotent run can duplicate it.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         if self.inner.run_started {
@@ -413,6 +426,7 @@ impl Error {
         }
         match self.inner.code {
             ErrorCode::Connect => true,
+            ErrorCode::Timeout => self.inner.connect_phase,
             ErrorCode::HttpStatus => {
                 matches!(self.inner.http_status, Some(429 | 502 | 503 | 504))
             }
@@ -622,6 +636,12 @@ mod tests {
         }
         assert!(!Error::new(ErrorCode::HttpStatus, "no status").is_retryable());
         assert!(!Error::new(ErrorCode::Timeout, "slow").is_retryable());
+        #[cfg(feature = "client")]
+        {
+            let connecting = Error::new(ErrorCode::Timeout, "connecting").with_connect_phase();
+            assert!(connecting.is_retryable());
+            assert!(!connecting.with_run_started().is_retryable());
+        }
         assert!(!Error::new(ErrorCode::ToolCall, "bad").is_retryable());
         let started = Error::new(ErrorCode::Connect, "reset").with_run_started();
         assert!(started.run_started());

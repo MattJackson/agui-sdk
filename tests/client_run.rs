@@ -1260,3 +1260,200 @@ fn a_middleware_dropping_reasoning_frames_still_bounds_the_boundary() {
     let err = block_on(client.run(request()).into_future()).unwrap_err();
     assert_eq!(err.code(), ErrorCode::LimitExceeded, "{err}");
 }
+
+// ------------------------------------------------- conclusion edge cases
+
+/// Serves `frames` in order, then ends.
+#[derive(Clone)]
+struct Scripted(Arc<dyn Fn() -> Vec<agui_sdk::Result<Frame>> + Send + Sync>);
+
+impl agui_sdk::client::Transport for Scripted {
+    async fn open(
+        &self,
+        _request: agui_sdk::client::transport::TransportRequest,
+    ) -> agui_sdk::Result<agui_sdk::client::FrameStream> {
+        Ok(agui_sdk::client::FrameStream::from_frames((self.0)()))
+    }
+}
+
+fn json_frame(value: &Value) -> agui_sdk::Result<Frame> {
+    Ok(Frame::from_json(agui_sdk::wire::Chunk::from(
+        serde_json::to_vec(value).unwrap(),
+    )))
+}
+
+/// A transport error after the last run's terminal event does not fail a
+/// completed run: the terminal stands, as with a dropped connection.
+#[test]
+fn a_transport_error_after_the_terminal_keeps_the_run_complete() {
+    for code in [
+        ErrorCode::IdleTimeout,
+        ErrorCode::Timeout,
+        ErrorCode::StreamRead,
+        ErrorCode::Truncated,
+    ] {
+        let transport = Scripted(Arc::new(move || {
+            vec![
+                json_frame(&run_started("t1", "r1")),
+                json_frame(&run_finished("t1", "r1")),
+                Err(Error::new(code, "late transport failure")),
+            ]
+        }));
+        let client = AgentClient::with_transport(transport)
+            .diagnostic_sink(NullSink)
+            .build()
+            .unwrap();
+        let report = block_on(client.run(request()).into_future())
+            .unwrap_or_else(|e| panic!("{code:?}: {e}"));
+        assert!(report.status.is_success(), "{code:?}");
+    }
+    // Before the terminal, the error stands.
+    let transport = Scripted(Arc::new(|| {
+        vec![
+            json_frame(&run_started("t1", "r1")),
+            Err(Error::new(ErrorCode::IdleTimeout, "idle")),
+        ]
+    }));
+    let client = AgentClient::with_transport(transport)
+        .diagnostic_sink(NullSink)
+        .build()
+        .unwrap();
+    let err = block_on(client.run(request()).into_future()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::IdleTimeout);
+}
+
+/// On a replayed multi-run stream, a cancel after an earlier run's
+/// terminal but before the requested run started is `run.cancelled`.
+#[test]
+fn a_cancel_before_the_requested_run_starts_is_run_cancelled() {
+    let transport = StallingTransport {
+        frames: vec![run_started("t1", "r0"), run_finished("t1", "r0")],
+        ..Default::default()
+    };
+    let client = AgentClient::with_transport(transport)
+        .diagnostic_sink(NullSink)
+        .build()
+        .unwrap();
+    let mut run = client.run(request());
+    for _ in 0..2 {
+        block_on(run.next()).unwrap().unwrap();
+    }
+    run.cancel();
+    let err = block_on(run.into_future()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Cancelled, "{err}");
+}
+
+#[derive(Default)]
+struct SeenTypes(Mutex<Vec<EventType>>);
+
+impl Observer for SeenTypes {
+    fn on_event(&self, update: &RunUpdate, _view: RunView<'_>) {
+        self.0.lock().unwrap().push(update.event.event_type());
+    }
+}
+
+struct SharedSeen(Arc<SeenTypes>);
+
+impl Observer for SharedSeen {
+    fn on_event(&self, update: &RunUpdate, view: RunView<'_>) {
+        self.0.on_event(update, view)
+    }
+}
+
+/// When a later event of one wire frame fails, the events of that frame
+/// already applied to the partial report still reach observers first.
+#[test]
+fn events_applied_before_a_failure_in_the_same_frame_are_delivered() {
+    let seen = Arc::new(SeenTypes::default());
+    let mut limits = Limits::default();
+    limits.max_history_bytes = 4096;
+    let frames = vec![
+        run_started("t1", "r1"),
+        json!({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "role": "assistant", "delta": "x".repeat(20_000)}),
+    ];
+    let client = AgentClient::with_transport(mock(frames))
+        .diagnostic_sink(NullSink)
+        .limits(limits)
+        .observer(SharedSeen(Arc::clone(&seen)))
+        .build()
+        .unwrap();
+    let err = block_on(client.run(request()).into_future()).unwrap_err();
+    let partial = err.partial().unwrap();
+    assert!(
+        partial.messages.iter().any(|m| m.id().as_str() == "m1"),
+        "{err}: the start was applied"
+    );
+    assert_eq!(
+        *seen.0.lock().unwrap(),
+        [EventType::RunStarted, EventType::TextMessageStart],
+        "{err}"
+    );
+}
+
+/// Reports a diagnostic from the transport's last poll, then ends.
+#[derive(Clone)]
+struct DiagnosesAtEof;
+
+impl agui_sdk::client::Transport for DiagnosesAtEof {
+    async fn open(
+        &self,
+        request: agui_sdk::client::transport::TransportRequest,
+    ) -> agui_sdk::Result<agui_sdk::client::FrameStream> {
+        let sink = request.diagnostics.clone();
+        let mut frames = vec![
+            json_frame(&run_started("t1", "r1")),
+            json_frame(&run_finished("t1", "r1")),
+        ]
+        .into_iter();
+        Ok(agui_sdk::client::FrameStream::from_poll_fn(
+            move |_cx| match frames.next() {
+                Some(frame) => std::task::Poll::Ready(Some(frame)),
+                None => {
+                    sink.report(&Diagnostic::new(
+                        DiagnosticCode::UnknownEvent,
+                        agui_sdk::diagnostics::Scope::Stream,
+                        "",
+                        "at end of body",
+                    ));
+                    std::task::Poll::Ready(None)
+                }
+            },
+        ))
+    }
+}
+
+/// An observer panic during the final poll fails the run, and every
+/// observer's `on_finish` is told the same failure the caller gets.
+#[test]
+fn a_panic_on_the_last_diagnostic_reaches_on_finish_as_an_error() {
+    let recorder = Arc::new(Recorder::default());
+    let client = AgentClient::with_transport(DiagnosesAtEof)
+        .diagnostic_sink(NullSink)
+        .observer(PanicsOnDiagnostic)
+        .observer(Shared(Arc::clone(&recorder)))
+        .build()
+        .unwrap();
+    let err = block_on(client.run(request()).into_future()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ObserverPanicked);
+    assert!(err.partial().unwrap().status.is_success());
+    assert_eq!(
+        *recorder.finishes.lock().unwrap(),
+        vec![("t1".to_owned(), Err(ErrorCode::ObserverPanicked))]
+    );
+}
+
+/// A request's `Debug` prints ids and counts, not state or forwarded props
+/// (which may carry secrets), as `MiddlewareRequest`'s does.
+#[test]
+fn a_run_request_debug_omits_state_and_forwarded_props() {
+    let request = request()
+        .state(&json!({"apiKey": "SECRET-STATE"}))
+        .forwarded_props(&json!({"token": "SECRET-PROPS"}));
+    let printed = format!("{request:?}");
+    assert!(!printed.contains("SECRET-STATE"), "{printed}");
+    assert!(!printed.contains("SECRET-PROPS"), "{printed}");
+    assert!(
+        printed.contains("r1") && printed.contains("t1"),
+        "{printed}"
+    );
+}

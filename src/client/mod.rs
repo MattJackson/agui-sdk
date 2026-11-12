@@ -44,8 +44,8 @@
 //! the agent is a delivered outcome ([`RunStatus::Errored`]), while a stream
 //! the pipeline rejects is an [`Error`]; the two are never
 //! presented as one another (LIFE-54). A truncated stream is an error with
-//! code `stream.truncated` and a partial report; no `RUN_FINISHED` is ever
-//! synthesized (TRN-09, LIFE-20).
+//! code `stream.truncated` and, once the run has started, a partial report;
+//! no `RUN_FINISHED` is ever synthesized (TRN-09, LIFE-20).
 
 pub mod capabilities;
 pub mod middleware;

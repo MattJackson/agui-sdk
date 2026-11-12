@@ -16,10 +16,15 @@
 //!
 //! # Cost
 //!
-//! Frames reach middleware as [`Frame`]s: the transport's bytes, parsed into
-//! a `Value` only when a middleware asks ([`Frame::value_mut`]). A pass-through
-//! middleware that only peeks at [`Frame::event_type`] costs no parse. With no
-//! middleware installed the client skips this module entirely.
+//! Frames reach middleware as [`Frame`]s. With middleware installed, the
+//! innermost stage parses each transport frame once into a `Value` (the
+//! compatibility boundary upgrades it there), so the first middleware already
+//! sees a parsed frame; a pass-through middleware, or one that only peeks at
+//! [`Frame::event_type`], adds no further parse. A frame a middleware builds
+//! with [`Frame::from_json`] is parsed only when one asks
+//! ([`Frame::value_mut`]). With no middleware installed the client skips this
+//! module entirely and the pipeline parses each frame once, straight into
+//! typed events.
 
 use std::borrow::Cow;
 use std::future::Future;

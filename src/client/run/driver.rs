@@ -178,10 +178,11 @@ pub(in crate::client) struct RunDriver {
     ready: VecDeque<Processed>,
     started: bool,
     last_ids: Option<(ThreadId, RunId)>,
-    terminal: Option<RunStatus>,
-    /// How the requested run ended, kept when a later run on the same
-    /// stream starts (`terminal` follows the last run).
-    requested_terminal: Option<RunStatus>,
+    /// The last run's terminal, and the requested run's.
+    terminals: Terminals,
+    /// A failure of a frame some of whose events were already applied: it
+    /// concludes the run once those events are delivered.
+    pending_error: Option<Error>,
     state_override: Option<Value>,
     messages_override: Option<Vec<Message>>,
     report: Option<RunReport>,
@@ -235,8 +236,8 @@ impl RunDriver {
             ready: VecDeque::new(),
             started: false,
             last_ids: None,
-            terminal: None,
-            requested_terminal: None,
+            terminals: Terminals::default(),
+            pending_error: None,
             state_override: None,
             messages_override: None,
             report: None,
@@ -305,6 +306,9 @@ impl RunDriver {
             if let Some(processed) = self.ready.pop_front() {
                 return Poll::Ready(Some(self.deliver(processed)));
             }
+            if let Some(err) = self.pending_error.take() {
+                return Poll::Ready(Some(Err(self.conclude_err(err))));
+            }
             if self.sink.observer_panicked.load(Ordering::Relaxed) {
                 return Poll::Ready(Some(Err(self.conclude_err(observer_panicked()))));
             }
@@ -347,14 +351,33 @@ impl RunDriver {
                     } else {
                         transport_panicked
                     };
+                    let mut panicked = false;
                     let polled = catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx)))
-                        .unwrap_or_else(|_| Poll::Ready(Some(Err(fallback()))));
+                        .unwrap_or_else(|_| {
+                            panicked = true;
+                            Poll::Ready(Some(Err(fallback())))
+                        });
                     match polled {
                         Poll::Ready(Some(Ok(frame))) => {
                             frames += 1;
                             if let Err(err) = self.push(frame) {
-                                return Poll::Ready(Some(Err(self.conclude_err(err))));
+                                if self.ready.is_empty() {
+                                    return Poll::Ready(Some(Err(self.conclude_err(err))));
+                                }
+                                // Events of this frame were applied before
+                                // it failed: deliver them, then fail.
+                                self.pending_error = Some(err);
                             }
+                        }
+                        // After the requested run's terminal, a failing
+                        // transport ends the stream as a dropped connection
+                        // does: the terminal stands (transports/index.mdx).
+                        Poll::Ready(Some(Err(err)))
+                            if !panicked
+                                && self.terminals.requested_concluded()
+                                && ends_the_stream(err.code()) =>
+                        {
+                            return Poll::Ready(self.end_of_stream().map(Err));
                         }
                         Poll::Ready(Some(Err(err))) => {
                             return Poll::Ready(Some(Err(self.conclude_err(err))))
@@ -385,13 +408,18 @@ impl RunDriver {
         }
     }
 
-    /// The run's token is cancelled. Before any terminal event, the run ends
-    /// with `run.cancelled`. Once the run's terminal has been received, the
+    /// The run's token is cancelled. Before the requested run's terminal
+    /// event, the run ends with `run.cancelled` (an earlier run's terminal
+    /// on a replayed stream does not count). Once it has been received, the
     /// server's verdict wins: the events already received are still
     /// delivered (`None` here) and the run concludes as that terminal says,
-    /// without reading the transport any further.
+    /// without reading the transport any further. A failure already pending
+    /// (`pending_error`) is the run's verdict and is surfaced instead.
     fn cancelled_now(&mut self) -> Option<Option<Result<RunUpdate>>> {
-        if self.terminal.is_none() {
+        if let Some(err) = self.pending_error.take() {
+            return Some(Some(Err(self.conclude_err(err))));
+        }
+        if !self.terminals.requested_concluded() {
             return Some(Some(Err(self.conclude_err(cancelled_error()))));
         }
         if !self.ready.is_empty() {
@@ -417,18 +445,36 @@ impl RunDriver {
         };
 
         // The reducer keeps the whole history, activity messages included;
-        // the peer gets the sendable part (RUNIN-12, ACT-18).
-        let history = input.messages.clone();
-        let state = input.state.clone().unwrap_or_else(empty_object);
-        input.messages.retain(|m| m.role() != Role::Activity);
+        // the peer gets the sendable part (RUNIN-12, ACT-18). Only a history
+        // holding activity messages is copied; otherwise the input's
+        // messages and state move to the reducer once the input is sent.
+        let full_history = if input.messages.iter().any(|m| m.role() == Role::Activity) {
+            let history = input.messages.clone();
+            input.messages.retain(|m| m.role() != Role::Activity);
+            Some(history)
+        } else {
+            None
+        };
         input.protocol_version = match legacy {
             Some(_) => None,
             None => Some(crate::PROTOCOL_VERSION.to_owned()),
         };
-        let enforcer = Enforcer::new(limits);
 
-        let thread_id = input.thread_id.clone();
-        let run_id = input.run_id.clone();
+        let request = RequestParts {
+            thread_id: input.thread_id.clone(),
+            run_id: input.run_id.clone(),
+            headers,
+            cancel: self.cancel.clone(),
+            sink: Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>,
+            max_frame_bytes: limits.max_frame_bytes,
+            max_container_entries: limits.max_container_entries,
+        };
+        let sent = self.send(&input, &config, legacy, request, open);
+
+        // Built whether or not sending succeeded, so the handle's history
+        // and state read the same either way.
+        let history = full_history.unwrap_or_else(|| std::mem::take(&mut input.messages));
+        let state = input.state.take().unwrap_or_else(empty_object);
         self.processor = Some(
             Processor::with_history(
                 PipelineConfig {
@@ -438,22 +484,28 @@ impl RunDriver {
                 history,
                 state,
             )
-            .expecting(thread_id.clone(), run_id.clone()),
+            .expecting(input.thread_id, input.run_id),
         );
-        let era = legacy.map(EraShims::new);
-        let request = RequestParts {
-            thread_id,
-            run_id,
-            headers,
-            cancel: self.cancel.clone(),
-            sink: Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>,
-            max_frame_bytes: limits.max_frame_bytes,
-            max_container_entries: limits.max_container_entries,
-        };
+        sent
+    }
 
+    /// Encodes the input and opens the exchange, directly or through the
+    /// middleware chain. The processor is not built yet: nothing is polled
+    /// here.
+    fn send(
+        &mut self,
+        input: &RunAgentInput,
+        config: &ClientConfig,
+        legacy: Option<crate::version::LegacyEra>,
+        request: RequestParts,
+        open: Open,
+    ) -> Result<()> {
+        let limits = config.limits;
+        let enforcer = Enforcer::new(limits);
+        let era = legacy.map(EraShims::new);
         if config.middleware.is_empty() {
             // Upgrade, era downgrade, enforcement, one serialization.
-            let body = outgoing::encode_input(&input, era.as_ref(), &enforcer, &mut self.reporter);
+            let body = outgoing::encode_input(input, era.as_ref(), &enforcer, &mut self.reporter);
             self.reporter.end_event(None);
             let body = body?;
             self.boundary = Some(Boundary::new());
@@ -463,9 +515,8 @@ impl RunDriver {
             // The typed check first, so middleware never sees a malformed
             // input; then upgrade and era downgrade. Enforcement runs again
             // on what middleware hands on (`upstream`).
-            enforcer.check_outgoing_input(&input, &mut self.reporter)?;
-            let value =
-                outgoing::prepare_value(to_value(&input)?, era.as_ref(), &mut self.reporter);
+            enforcer.check_outgoing_input(input, &mut self.reporter)?;
+            let value = outgoing::prepare_value(to_value(input)?, era.as_ref(), &mut self.reporter);
             self.reporter.end_event(None);
             let innermost = upstream(
                 open,
@@ -527,8 +578,7 @@ impl RunDriver {
                 &self.run_id,
                 &mut self.started,
                 &mut self.last_ids,
-                &mut self.terminal,
-                &mut self.requested_terminal,
+                &mut self.terminals,
             );
             self.ready.push_back(processed);
         }
@@ -592,7 +642,7 @@ impl RunDriver {
             Some(Err(err)) => return Some(self.conclude_err(err)),
             None => Termination::Truncated,
         };
-        if termination == Termination::Complete && self.terminal.is_some() {
+        if termination == Termination::Complete && self.terminals.last.is_some() {
             self.conclude(Ok(()))
         } else {
             Some(self.conclude_err(Error::new(
@@ -619,6 +669,14 @@ impl RunDriver {
         self.phase = Phase::Done;
         self.cancelled = None;
         self.ready.clear();
+        // A panic in the final poll (a diagnostic raised there) fails the
+        // run: observers are told the same failure the caller gets.
+        let outcome = match outcome {
+            Ok(()) if self.sink.observer_panicked.load(Ordering::Relaxed) => {
+                Err(observer_panicked())
+            }
+            outcome => outcome,
+        };
         match outcome {
             Ok(()) => {
                 let report = self.build_report(None);
@@ -684,7 +742,8 @@ impl RunDriver {
                     .with_code(ErrorCode::Truncated.as_str()),
             ),
         };
-        let status = self.terminal.take().unwrap_or_else(unterminated);
+        let requested_is_last = self.terminals.last_is_requested;
+        let status = self.terminals.last.take().unwrap_or_else(unterminated);
         let (thread_id, run_id) = self
             .last_ids
             .take()
@@ -692,7 +751,10 @@ impl RunDriver {
         // The requested run's own ending: an earlier run on a multi-run
         // stream keeps its verdict, so a failed requested run is never
         // reported as a success because a later run succeeded (LIFE-23).
-        let requested_status = match self.requested_terminal.take() {
+        // Held once while the run was open; copied only here, when both
+        // report fields need it.
+        let requested_status = match self.terminals.requested.take() {
+            _ if requested_is_last => status.clone(),
             Some(requested) => requested,
             None if run_id == self.run_id => status.clone(),
             None => unterminated(),
@@ -738,14 +800,14 @@ fn note(
     requested: &RunId,
     started: &mut bool,
     last_ids: &mut Option<(ThreadId, RunId)>,
-    terminal: &mut Option<RunStatus>,
-    requested_terminal: &mut Option<RunStatus>,
+    terminals: &mut Terminals,
 ) {
     let status = match event {
         Event::RunStarted(e) => {
             *started = true;
             *last_ids = Some((e.thread_id.clone(), e.run_id.clone()));
-            *terminal = None;
+            terminals.keep_requested();
+            terminals.last = None;
             return;
         }
         Event::RunFinished(e) => {
@@ -761,10 +823,40 @@ fn note(
     };
     // A stream that opens with RUN_ERROR is the requested run failing
     // before it started (LIFE-03).
-    if last_ids.as_ref().map_or(true, |(_, run)| run == requested) {
-        *requested_terminal = Some(status.clone());
+    let is_requested = last_ids.as_ref().map_or(true, |(_, run)| run == requested);
+    terminals.keep_requested();
+    if is_requested {
+        terminals.requested = None;
     }
-    *terminal = Some(status);
+    terminals.last = Some(status);
+    terminals.last_is_requested = is_requested;
+}
+
+/// How the last run and the requested run ended. A status (whose `result`
+/// may be large) is held once: when the last run is the requested one,
+/// `last` stands for both.
+#[derive(Default)]
+struct Terminals {
+    /// The last run's terminal; `None` while it runs.
+    last: Option<RunStatus>,
+    /// The requested run's terminal, when it is not `last`.
+    requested: Option<RunStatus>,
+    /// `last` is the requested run's terminal.
+    last_is_requested: bool,
+}
+
+impl Terminals {
+    /// The last run ended, and so did the requested run.
+    fn requested_concluded(&self) -> bool {
+        self.last.is_some() && (self.last_is_requested || self.requested.is_some())
+    }
+
+    /// `last` is about to be replaced: keep it if it is the requested run's.
+    fn keep_requested(&mut self) {
+        if std::mem::take(&mut self.last_is_requested) {
+            self.requested = self.last.take();
+        }
+    }
 }
 
 /// `on_finish` to every observer; true if one panicked.
@@ -778,6 +870,16 @@ fn notify(
         panicked |= catch_unwind(AssertUnwindSafe(|| observer.on_finish(result, run))).is_err();
     }
     panicked
+}
+
+/// Transport failures that, once the requested run's terminal arrived, end
+/// the stream rather than fail the run (a timeout, a read error, a body cut
+/// inside the next event). Framing and protocol errors still fail it.
+fn ends_the_stream(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::Timeout | ErrorCode::IdleTimeout | ErrorCode::StreamRead | ErrorCode::Truncated
+    )
 }
 
 fn cancelled_error() -> Error {

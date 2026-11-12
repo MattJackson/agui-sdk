@@ -376,10 +376,12 @@ impl HttpTransportBuilder {
         self
     }
 
-    /// Follow up to `max` same-origin redirects (default 0). Cross-origin
-    /// redirects are never followed: they would leak credentials. A followed
-    /// redirect re-sends the request unchanged; it is same-origin, so its
-    /// credentials were already that origin's.
+    /// Follow up to `max` same-origin 307/308 redirects (default 0), which
+    /// re-send the request unchanged; the capabilities GET also follows
+    /// 301-303. Other redirect statuses are reported as
+    /// `transport.http_status`. Cross-origin redirects are never followed:
+    /// they would leak credentials. A followed redirect is same-origin, so
+    /// its credentials were already that origin's.
     pub fn same_origin_redirects(mut self, max: u32) -> Self {
         self.same_origin_redirects = max;
         self
@@ -420,7 +422,8 @@ impl HttpTransportBuilder {
     }
 
     /// Presents a client certificate (mutual TLS): a PEM certificate chain,
-    /// leaf first, and its PEM private key (PKCS #8, PKCS #1 or SEC1).
+    /// leaf first, and its PEM private key: PKCS #8, PKCS #1 or SEC1 with
+    /// rustls; PKCS #8 only with native-tls.
     /// The key is redacted from `Debug`.
     pub fn client_identity_pem(
         mut self,

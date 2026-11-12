@@ -290,7 +290,8 @@ impl RunHandle {
         self.driver.messages()
     }
 
-    /// One message by id, O(1) while the run is in progress.
+    /// One message by id, O(1) while the run is in progress, unless a
+    /// subscriber replaced the history (then a linear search).
     #[must_use]
     pub fn message(&self, id: &MessageId) -> Option<&Message> {
         self.driver.message(id)
@@ -312,7 +313,9 @@ impl RunHandle {
     }
 
     /// The run's cancellation token, usable from another task. Cancelling
-    /// wakes the transport at once and ends the run with `run.cancelled`.
+    /// wakes the transport at once and ends the run with `run.cancelled`,
+    /// unless the run's terminal event was already received (see
+    /// [`cancel`](Self::cancel)).
     #[must_use]
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()

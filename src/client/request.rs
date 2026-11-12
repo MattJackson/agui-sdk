@@ -19,7 +19,7 @@ use super::transport::Header;
 /// `{}`, RUNIN-24), no `parentRunId` (never set implicitly), `forwardedProps`
 /// absent. `protocolVersion` is set by the client's outgoing pipeline, not
 /// here (RUNIN-08).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct RunRequest {
     input: Option<RunAgentInput>,
     /// Why typed state did not serialize; cleared by a later good state.
@@ -28,6 +28,34 @@ pub struct RunRequest {
     props_error: Option<String>,
     headers: Vec<Header>,
     cancel: Option<CancelToken>,
+}
+
+impl std::fmt::Debug for RunRequest {
+    /// Ids, counts and headers (whose values are redacted) only: state and
+    /// `forwardedProps` may carry secrets, as `MiddlewareRequest`'s
+    /// `Debug` assumes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let input = self.input.as_ref();
+        f.debug_struct("RunRequest")
+            .field("thread_id", &input.map(|i| &i.thread_id))
+            .field("run_id", &input.map(|i| &i.run_id))
+            .field(
+                "parent_run_id",
+                &input.and_then(|i| i.parent_run_id.as_ref()),
+            )
+            .field("messages", &input.map_or(0, |i| i.messages.len()))
+            .field(
+                "tools",
+                &input.and_then(|i| i.tools.as_ref()).map_or(0, Vec::len),
+            )
+            .field(
+                "resume",
+                &input.and_then(|i| i.resume.as_ref()).map_or(0, Vec::len),
+            )
+            .field("headers", &self.headers)
+            .field("cancel", &self.cancel.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The input of a request that set nothing: random ids, no messages.
