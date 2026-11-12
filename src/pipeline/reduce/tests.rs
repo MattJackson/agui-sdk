@@ -1578,3 +1578,20 @@ fn text_deltas_on_an_activity_message_change_nothing() {
     assert_eq!(c.message, None);
     assert_eq!(h.r.history_growth, held);
 }
+
+/// An untagged call reopened under a subagent-owned parent inherits the
+/// parent's owner, as the verifier gives it, so the reopen agrees.
+#[test]
+fn untagged_call_reopen_under_owned_parent_agrees() {
+    let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "subagentRunId": "A"}));
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "m1", "subagentRunId": "A"}));
+    for _ in 0..2 {
+        h.push(
+            json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+            "parentMessageId": "m1"}),
+        );
+        h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}));
+    }
+    assert!(h.codes().is_empty());
+}

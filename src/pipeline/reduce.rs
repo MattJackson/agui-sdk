@@ -1260,7 +1260,15 @@ impl Reducer {
         let parent_differs = opening
             .parent
             .is_some_and(|p| self.resolve_parent(opening.id, p) != Some(slot.message));
-        let owner_differs = message_owner(held) != opening.owner;
+        // An untagged call inherits its parent message's owner, as the
+        // verifier gives it.
+        let owner = opening.owner.or_else(|| {
+            opening
+                .parent
+                .and_then(|p| self.index.get(p))
+                .and_then(|&i| message_owner(&self.messages[i]))
+        });
+        let owner_differs = message_owner(held) != owner;
         let name_differs = self
             .call(slot)
             .is_some_and(|c| c.function.name != opening.name);
