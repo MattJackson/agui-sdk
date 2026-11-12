@@ -1516,3 +1516,32 @@ fn ending_large_text_keeps_growth_slack() {
     let text = s.content.as_ref().unwrap();
     assert_eq!(text.capacity(), text.len());
 }
+
+/// A snapshot that drops most of a large history releases the storage the
+/// dropped messages were charged for (their slots and index entries).
+#[test]
+fn snapshot_dropping_most_history_releases_tables() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut h = H::new();
+    h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}));
+    for i in 0..5000 {
+        h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": format!("m{i}")}));
+        h.push(
+            json!({"type": "TOOL_CALL_START", "toolCallId": format!("c{i}"),
+            "toolCallName": "f", "parentMessageId": format!("m{i}")}),
+        );
+    }
+    h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m0", "role": "assistant", "content": ""}
+    ]}));
+    assert_eq!(h.r.messages().len(), 1);
+    for (name, capacity) in [
+        ("messages", h.r.messages.capacity()),
+        ("charged", h.r.charged.capacity()),
+        ("run_ids", h.r.run_ids.capacity()),
+        ("index", h.r.index.capacity()),
+        ("calls", h.r.calls.capacity()),
+    ] {
+        assert!(capacity <= floor, "{name} capacity {capacity}");
+    }
+}

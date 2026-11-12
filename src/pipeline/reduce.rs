@@ -1697,6 +1697,7 @@ impl Reducer {
         let mut run_tail = run_tail.into_iter();
         let tail = self.messages.split_off(from);
         let charges = self.charged.split_off(from);
+        let mut dropped = false;
         for (offset, (m, charge)) in tail.into_iter().zip(charges).enumerate() {
             let old = from + offset;
             let id = message_id(&m).clone();
@@ -1735,6 +1736,7 @@ impl Reducer {
                 self.messages.push(m);
                 self.charged.push(charge);
             } else {
+                dropped = true;
                 self.class_counts[class(&m)] -= 1;
                 self.history_growth = self.history_growth.saturating_sub(signed(charge));
                 if self.index.get(&id) == Some(&old) {
@@ -1758,6 +1760,33 @@ impl Reducer {
             }
         }
         debug_assert!(run_tail.next().is_none(), "run ids outnumber the tail");
+        if dropped {
+            self.release_tables();
+        }
+    }
+
+    /// Releases the storage of history tables left far larger than what they
+    /// hold, after messages were dropped: the slots and index entries
+    /// `ITEM_OVERHEAD` charged for are credited with the message, so they
+    /// must not stay resident. O(len), and only once the tables are a
+    /// quarter full, so it amortises over the drops that emptied them.
+    fn release_tables(&mut self) {
+        use super::oversized;
+        if oversized(self.messages.capacity(), self.messages.len()) {
+            self.messages.shrink_to_fit();
+        }
+        if oversized(self.charged.capacity(), self.charged.len()) {
+            self.charged.shrink_to_fit();
+        }
+        if oversized(self.run_ids.capacity(), self.run_ids.len()) {
+            self.run_ids.shrink_to_fit();
+        }
+        if oversized(self.index.capacity(), self.index.len()) {
+            self.index.shrink_to_fit();
+        }
+        if oversized(self.calls.capacity(), self.calls.len()) {
+            self.calls.shrink_to_fit();
+        }
     }
 
     fn dup_dec(&mut self, id: &MessageId, class: usize) {
