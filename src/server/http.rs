@@ -60,6 +60,10 @@ const MAX_CHUNK_BYTES: usize = 64 * 1024;
 /// Initial capacity of a response's output buffer.
 const INITIAL_BUFFER: usize = 8 * 1024;
 
+/// The most a response keeps allocated between events: an event or chunk
+/// larger than this is not held for the rest of the response.
+const RETAIN_BYTES: usize = 256 * 1024;
+
 /// Default SSE keep-alive interval.
 const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(15);
 
@@ -272,7 +276,12 @@ impl ResponseBody {
             }
         }
         if !self.buffer.is_empty() {
-            return Poll::Ready(Some(Chunk::from_bytes(self.buffer.split().freeze())));
+            let chunk = self.buffer.split();
+            if chunk.len() > RETAIN_BYTES {
+                // Not reclaimed: its allocation is freed with the chunk.
+                self.buffer = BytesMut::with_capacity(INITIAL_BUFFER);
+            }
+            return Poll::Ready(Some(Chunk::from_bytes(chunk.freeze())));
         }
         if self.done {
             Poll::Ready(None)
@@ -300,6 +309,9 @@ impl ResponseBody {
                     self.buffer.extend_from_slice(&self.scratch);
                 }
             }
+        }
+        if self.scratch.capacity() > RETAIN_BYTES {
+            self.scratch = Vec::new();
         }
     }
 
@@ -456,6 +468,59 @@ mod tests {
         assert!(!is_json("application/json-patch+json"));
         assert!(!is_json("text/plain"));
         assert!(!is_json(""));
+    }
+
+    struct Big;
+
+    impl Agent for Big {
+        type State = serde_json::Value;
+
+        async fn run(
+            &self,
+            ctx: super::super::RunContext,
+        ) -> Result<super::super::RunOutcome, super::super::BoxError> {
+            ctx.emitter().say("x".repeat(4 * RETAIN_BYTES)).await?;
+            ctx.emitter().say("small").await?;
+            Ok(super::super::RunOutcome::success())
+        }
+    }
+
+    #[test]
+    fn one_large_event_is_not_retained_for_the_rest_of_the_response() {
+        let runner = Runner::new(Big);
+        let request = HttpRequest::new(
+            Some("application/json"),
+            Some("text/event-stream"),
+            br#"{"threadId":"t-1","runId":"r-1","messages":[]}"#,
+        );
+        let Ok(response) = handle(
+            &runner,
+            &ServeConfig::default(),
+            request,
+            CancelToken::new(),
+        ) else {
+            panic!("a valid request")
+        };
+        let mut body = response.body;
+        let mut total = 0;
+        futures_executor::block_on(async {
+            while let Some(chunk) = body.next().await {
+                total += chunk.len();
+            }
+        });
+        assert!(total > 4 * RETAIN_BYTES);
+        assert!(
+            body.scratch.capacity() <= RETAIN_BYTES,
+            "scratch kept {} bytes",
+            body.scratch.capacity()
+        );
+        // Writing again would reclaim the buffer's whole allocation.
+        body.buffer.reserve(1);
+        assert!(
+            body.buffer.capacity() <= RETAIN_BYTES,
+            "buffer kept {} bytes",
+            body.buffer.capacity()
+        );
     }
 
     #[test]

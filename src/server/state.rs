@@ -1,8 +1,9 @@
 //! Publishing state changes as snapshots or deltas.
 //!
 //! [`StatePublisher`] keeps the baseline the client holds: the input's state
-//! until the agent's first snapshot (RUNIN-25, SNAP-06), then whatever was
-//! last published. [`StatePublisher::publish`] diffs against it with
+//! (or, under `run_with_replay`, the last replayed run's snapshot) until the
+//! agent's first snapshot (RUNIN-25, SNAP-06), then whatever was last
+//! published. [`StatePublisher::publish`] diffs against it with
 //! [`patch::diff`] and returns a `STATE_DELTA`, or a
 //! `STATE_SNAPSHOT` when the delta would be larger. A delta is never sent
 //! without a baseline (SNAP-07).

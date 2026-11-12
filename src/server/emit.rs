@@ -695,7 +695,8 @@ impl Emitter {
     /// expansion beyond the queue, sends none.
     ///
     /// [`ErrorCode::Cancelled`] or [`ErrorCode::Disconnected`]: the run was
-    /// cancelled or its stream is gone; nothing more is sent.
+    /// cancelled, has already ended, or its stream is gone; nothing more is
+    /// sent.
     pub async fn emit(&self, event: impl Into<Event>) -> Result<()> {
         self.send(event.into()).await
     }
@@ -1133,7 +1134,7 @@ impl SubagentScope {
         self.close_open(closing).await?;
         let mut finished = SubagentFinished::new(self.id);
         finished.outcome = outcome;
-        finished.result = result;
+        finished.result = result.and_then(crate::json::present);
         self.emitter.send(finished.into()).await
     }
 
