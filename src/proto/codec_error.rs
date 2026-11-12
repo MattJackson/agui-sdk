@@ -64,7 +64,8 @@ pub(super) enum Error {
     },
     /// Input or output larger than the 4 GiB the wire can describe.
     TooLarge,
-    /// A message to decode is larger than the 4 GiB the wire can describe.
+    /// A message to decode is `u32::MAX` bytes or more (4 GiB less one byte):
+    /// more than the decoder's `u32` positions can describe.
     InputTooLarge,
 
     // ---- decoding (protobuf side) ----
@@ -108,7 +109,7 @@ impl fmt::Display for Error {
             Error::DepthLimit => f.write_str("nesting deeper than the protobuf codec allows"),
             Error::EntryLimit { max } => write!(f, "more than {max} container entries"),
             Error::TooLarge => f.write_str("message too large"),
-            Error::InputTooLarge => f.write_str("protobuf message larger than 4 GiB"),
+            Error::InputTooLarge => f.write_str("protobuf message of u32::MAX bytes or more"),
             Error::Truncated => f.write_str("protobuf message truncated"),
             Error::InvalidVarint => f.write_str("malformed varint"),
             Error::InvalidWireType(t) => write!(f, "invalid wire type {t}"),
@@ -132,7 +133,8 @@ impl From<Error> for crate::Error {
             | Error::TypeMismatch { .. }
             | Error::UnknownEnumValue { .. } => ErrorCode::MalformedEvent,
             Error::IntegerOutOfRange { .. } | Error::TooLarge => ErrorCode::Encode,
-            // The same `u32` bound `framing` refuses at a frame header.
+            // The `u32` bound `framing` refuses at a frame header, one byte
+            // tighter (`u32::MAX` itself marks a dropped `Struct` entry).
             Error::InputTooLarge => ErrorCode::FrameTooLarge,
             // Nesting is bounded in both directions; on the decoding side the
             // bytes are not a message this build can represent (PB-18).

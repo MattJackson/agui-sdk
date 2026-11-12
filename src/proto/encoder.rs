@@ -134,8 +134,8 @@ pub(super) const SCRATCH_KEEP_ENTRIES: usize = 4096;
 /// encodes: the same bound as the per-thread text and string buffers
 /// (`encode::KEEP_BYTES`). Below it a warm encoder reuses its buffers, so
 /// repeating an event of that size allocates nothing; above it the capacity
-/// one huge event grew the buffers to is released when the encode ends
-/// (proto-17), and every buffer goes back to [`SCRATCH_KEEP_ENTRIES`].
+/// one huge event grew the buffers to is released when the encode ends,
+/// and every buffer goes back to [`SCRATCH_KEEP_ENTRIES`].
 pub(super) const SCRATCH_KEEP_BYTES: usize = 256 * 1024;
 
 impl Encoder {
