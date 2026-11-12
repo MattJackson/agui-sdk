@@ -629,13 +629,13 @@ fn missing_key_removal_reports_path_not_found_when_budget_is_spent() {
     const N: usize = 50_000;
     let mut d = wide_object(N);
     let mut b = PatchBudget::for_document(&d, limits(64, 1, 1));
-    // walk_cap = 4 x 50_001; each removal costs 1 + N / 16 = 3126.
-    let mut p: Vec<Value> = (0..64)
+    // walk_cap = 4 x 50_001; each removal costs about 1 + N / 4 = 12,501.
+    let mut p: Vec<Value> = (0..16)
         .map(|i| json!({"op": "remove", "path": format!("/k{i}")}))
         .collect();
     p.push(json!({"op": "remove", "path": "/missing"}));
     let e = apply(&mut d, &ops(Value::Array(p)), &mut b).unwrap_err();
-    assert_eq!((e.index, e.reason), (64, PatchErrorReason::PathNotFound));
+    assert_eq!((e.index, e.reason), (16, PatchErrorReason::PathNotFound));
 }
 
 /// Counting a displaced subtree is work: it is charged to the walk budget
@@ -1275,7 +1275,8 @@ fn a_document_over_the_ceiling_takes_deltas_that_do_not_grow_it() {
 
 /// `diff` charges path text: clearing many members under a long key would
 /// repeat that key in every `remove`, so it falls back to a root replace
-/// (smaller than such a delta) instead of building it.
+/// (smaller than such a delta) instead of building it. (Under
+/// `preserve-order` the shifts alone already make it replace the object.)
 #[test]
 fn diff_falls_back_when_repeated_path_text_outgrows_the_document() {
     let key = "k".repeat(16 * 1024);
@@ -1285,7 +1286,7 @@ fn diff_falls_back_when_repeated_path_text_outgrows_the_document() {
     let after = json!({ key: {} });
     let patch = diff(&before, &after);
     assert!(
-        patch.len() == 1 && patch[0].path.as_str().is_empty(),
+        patch.len() == 1 && (cfg!(feature = "preserve-order") || patch[0].path.as_str().is_empty()),
         "expected a root replace, got {} op(s)",
         patch.len()
     );
@@ -1312,4 +1313,24 @@ fn diff_near_the_ceiling_counts_net_growth() {
     after["y"] = Value::Array(vec![Value::Null; 10]);
     let patch = diff(&before, &after);
     assert!(patch.len() == 1 && patch[0].path.as_str().is_empty());
+}
+
+/// Under `preserve-order` an object member is a 104-byte `IndexMap` entry
+/// whose hash-table index is rewritten as it shifts, so removals are charged
+/// one walk unit per 4 members shifted, not per 16 like array elements:
+/// 200 head removals on a 100,000-member object (5,000,000 units) exceed the
+/// default 4,000,000-unit walk budget.
+#[cfg(feature = "preserve-order")]
+#[test]
+fn object_member_shifts_are_charged_at_their_own_rate() {
+    const N: usize = 100_000;
+    let doc = wide_object(N);
+    let p: Vec<Value> = (0..200)
+        .map(|i| json!({"op": "remove", "path": format!("/k{i}")}))
+        .collect();
+    let Err(e) = run(&doc, &ops(Value::Array(p))) else {
+        panic!("200 head removals applied");
+    };
+    assert_eq!(e.reason, PatchErrorReason::BudgetExceeded);
+    assert!(e.index <= 4_000_000 * 4 / N + 4, "late: {}", e.index);
 }

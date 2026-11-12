@@ -27,8 +27,10 @@
 //!   one that must (budget binding, or committing) pays for it once.
 //! * **Shifts are work.** Removing from or inserting into an array moves the
 //!   later elements, and with `preserve-order` removing an object member is
-//!   O(members). Both are charged to the walk budget at one unit per 16
-//!   elements moved, so a patch does at most `16 x walk budget` element moves,
+//!   O(members). Both are charged to the walk budget, at one unit per 16
+//!   array elements moved and one per 4 object members (a larger entry
+//!   whose hash index is also rewritten), so a patch does at most
+//!   `16 x walk budget` element moves and `4 x walk budget` member moves,
 //!   linear in the node budget. Rollback replays only shifts already paid for
 //!   (undoing an added member is O(1)). [`diff`] replaces an object (under
 //!   `preserve-order`) or the whole document whenever the member-wise delta
@@ -859,7 +861,7 @@ fn removals_too_costly(
     after: &serde_json::Map<String, Value>,
 ) -> bool {
     let removed = before.keys().filter(|k| !after.contains_key(*k)).count();
-    let shifts = removed.saturating_mul(engine::shift_cost(before.len()));
+    let shifts = removed.saturating_mul(engine::remove_shift(before.len()));
     // Cheap exit: rebuilding costs at least one unit per member.
     if shifts <= before.len() {
         return false;
