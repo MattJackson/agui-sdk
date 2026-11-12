@@ -233,7 +233,11 @@ Two outcomes are deliberately **not** errors:
   `Ok(RunReport)`. A stream the pipeline rejects is an `Err`. The two are
   different types, so they cannot be confused (LIFE-54).
 - A JSON Patch that fails to apply is a `PatchError` plus a
-  `patch.not_applied` diagnostic, and the run continues (SNAP-12, SNAP-13).
+  `patch.not_applied` diagnostic (`patch.budget_exceeded` for the budget,
+  depth and node-ceiling reasons); the prior value is kept and the run
+  continues (SNAP-12, SNAP-13). The exception is a patch refused at the node
+  ceiling (`PatchLimits::max_nodes`), which ends the stream with
+  `processing.limit`.
 
 Four values are verdicts handed back for the caller to act on, not failures
 of the call: `ProducerViolation` (`ProducerVerifier::check`'s refusal of one
