@@ -1,0 +1,11 @@
+# Gated ledger rows not yet proven.
+# Read by the traceability gate: an open half missing from this file fails, and
+# an entry whose half is now covered (by a tagged test, a stream fixture or, for
+# sdk-assistable rows, docs) fails as stale. Delete entries as rows close. The
+# release gate runs with --no-pending: nothing may remain.
+#
+# Format: lists of row ids per half, e.g.
+#   client = ["XX-01"]
+#   server = ["XX-02"]
+client = []
+server = []

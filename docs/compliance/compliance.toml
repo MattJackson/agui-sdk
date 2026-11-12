@@ -1,0 +1,5565 @@
+# AG-UI 1.0 compliance classification: one entry per row of requirements.md (rev 2).
+# Edit by hand, keep IDs stable.
+# Read by the traceability gate (crates/test-support/src/traceability.rs) together with
+# docs/SPEC-MAP.md (test files) and pending.toml (rows still open).
+# docs: in-repo files whose text documents the row; accepted as evidence for sdk-assistable rows only.
+# class: sdk-ownable | sdk-assistable | application | informative
+# role: client | server | both | n/a     scope: "1.0" (gate) or "draft-1.1" (not gated until 1.1 freezes)
+# fixtures: names in spec/1.0/conformance/streams that genuinely exercise the row (for producer rows: must-refuse
+#   inputs or producer-legal examples for the producer verifier; see README "Producer rows and fixtures").
+
+schema_version = 1
+ledger = "requirements.md"
+spec = "docs/spec/1.0"
+
+[[rule]]
+id = "IDX-01"
+keyword = "implicit"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "processing"
+scope = "1.0"
+fixtures = []
+reason = "Defines the schema/prose authority split; nothing to execute. Realised by generating types from schema.json (W3-codegen-swap drift gate)."
+
+[[rule]]
+id = "IDX-02"
+keyword = "implicit"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "processing"
+scope = "1.0"
+fixtures = []
+reason = "Scoping statement: says which rule sets bind a dual-role participant; the client and server rows carry the obligations."
+
+[[rule]]
+id = "IDX-03"
+keyword = "implicit"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "processing"
+scope = "1.0"
+fixtures = []
+reason = "Definition of conformance; it is the bar this matrix measures, not a behaviour."
+
+[[rule]]
+id = "IDX-04"
+keyword = "implicit"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "processing"
+scope = "1.0"
+fixtures = []
+reason = "Definition (conformance judged per stream); the producer verifier (W2-server) judges each stream independently."
+
+[[rule]]
+id = "IDX-05"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Consent is the application's decision. SDK: frontend tool calls are only executable through the Thread/pending-call helper, which requires an explicit Approve/Decline decision per call; rustdoc states the obligation."
+
+[[rule]]
+id = "IDX-06"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Truthful presentation is the UI's. SDK: the decision type records who decided, and the SDK never synthesises an approval."
+
+[[rule]]
+id = "IDX-07"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Acting is the application's. SDK: tool-argument validation against the advertised `Tool.parameters`, and typed `Result`-returning accessors for state (`state_as::<T>()`) and passthrough payloads (`CustomEvent::value_as::<T>()`, `RawEvent::event_as::<T>()`)."
+
+[[rule]]
+id = "IDX-08"
+keyword = "MUST NOT"
+party = "consumer"
+class = "application"
+role = "n/a"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "The SDK renders nothing; it hands content to the application as plain strings and JSON values. Rendering is the UI's. Documented in rustdoc."
+
+[[rule]]
+id = "IDX-09"
+keyword = "SHOULD NOT"
+party = "producer"
+class = "application"
+role = "n/a"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Only the agent knows what in its state or messages is secret. (The SDK's own echo of input on RUN_STARTED is opt-in, covered by RUNIN-02.)"
+
+[[rule]]
+id = "IDX-10"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Storage and display policy are the application's. SDK: reasoning content and `encryptedValue` are redacted in `Debug`, diagnostics and tracing output."
+
+[[rule]]
+id = "IDX-11"
+keyword = "SHOULD"
+party = "both"
+class = "sdk-assistable"
+role = "both"
+area = "security"
+scope = "1.0"
+fixtures = []
+docs = ["src/client/thread.rs"]
+reason = "Guidance for implementors as a whole. SDK: consent gate (IDX-05), validation helpers (IDX-07), no rendering, and `tracing` spans per run and tool call for audit; a security guide in docs/sdk/rust."
+
+[[rule]]
+id = "IDX-12"
+keyword = "implicit"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "processing"
+scope = "1.0"
+fixtures = []
+reason = "Scope statement: community bindings are bound when they claim conformance. That claim is what this matrix substantiates."
+
+[[rule]]
+id = "ARCH-01"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ARCH-02"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["era-0-0-45-thinking-translated"]
+
+[[rule]]
+id = "ARCH-03"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["two-sequential-runs-accumulate"]
+reason = "Implicit, both halves tested. Server (tests/processing_producer.rs): the runner answers one input with a run bracketed by RUN_STARTED/RUN_FINISHED carrying the input's threadId and runId, and the verifier for that input refuses another thread or a later run. Client (tests/processing_order.rs): an exchange is bracketed by the run lifecycle and an unbracketed stream is refused; a Thread's next run reuses its threadId, history and state (tests/interrupts_resume.rs). W4-rules-other."
+
+[[rule]]
+id = "ARCH-04"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ARCH-05"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-property-stripped"]
+restates = ["PROC-01", "PROC-02", "PROC-03", "PROC-11"]
+
+[[rule]]
+id = "ARCH-06"
+keyword = "implicit"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested. Server: every runner event decodes identically from the SSE data payload and, with feature proto, from the protobuf frame (tests/processing_producer.rs); an HTTP run yields the same events and history over either binding (tests/transport_contract.rs). Client: the fast and middleware paths reach the same verdicts (tests/processing_order.rs), and the stream lane replays each expressible fixture over protobuf against the same expectations (tests/corpus_streams.rs). Byte parity itself is PB-12."
+
+[[rule]]
+id = "BASIC-01"
+keyword = "MUST"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-02"
+keyword = "REQUIRED"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-03"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-04"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-05"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-06"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-07"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-08"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-09"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = []
+tie_break = "Outgoing input runs the generated optional-null omission over every optional field before enforcement, as TS enforceOutgoingInput does (audit-1 m6)."
+
+[[rule]]
+id = "BASIC-10"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = ["state-null-snapshot-applies"]
+
+[[rule]]
+id = "BASIC-11"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["open-metadata-preserved"]
+
+[[rule]]
+id = "BASIC-12"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-13"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "The Thread helper mints a threadId once and reuses it; an application may supply its own."
+
+[[rule]]
+id = "BASIC-14"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-15"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-16"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["messages-snapshot-reconciles-by-id"]
+
+[[rule]]
+id = "BASIC-17"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested: the toolCallId on TOOL_CALL_RESULT, tool messages and interrupts names the call (tests/basic_events.rs). Server: the runner's tool result carries its call's id and an interrupt raised for a call reaches the RUN_FINISHED outcome with that id (tests/claims_producer.rs). Client: the result message keeps its call's id and the interrupt's toolCallId is delivered unchanged (tests/claims_client.rs). A result naming an unknown toolCallId is not refused: no rule requires it."
+
+[[rule]]
+id = "BASIC-18"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "BASIC-19"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-01"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-02"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-03"
+keyword = "REQUIRED"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-04"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-05"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-06"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-07"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+tie_break = "parentRunId is settable on run params but never auto-set for follow-up turns. Basis: spec text (it names the spawning run, not the previous turn). TS has a gap here."
+
+[[rule]]
+id = "RUNIN-08"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["current-peer-declares-protocol-version", "era-pinned-peer-omits-protocol-version"]
+
+[[rule]]
+id = "RUNIN-09"
+keyword = "REQUIRED"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-10"
+keyword = "MUST"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "How the agent uses history is the agent's. SDK: `RunContext` exposes `input.messages` as the history and offers no other history source; documented."
+
+[[rule]]
+id = "RUNIN-11"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "Whether a model can use a part is the agent's knowledge. SDK: input enforcement accepts every known part, and a part filter helper (by modality and provider) drops unusable parts without failing the run."
+
+[[rule]]
+id = "RUNIN-12"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-13"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "run-input"
+scope = "1.0"
+fixtures = ["tool-result-file-source-passes-through"]
+
+[[rule]]
+id = "RUNIN-14"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "both"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "The issuing party sets `provider`. SDK: vendor-id constants matching `TokenUsage.provider`, and a builder that lowercases the id."
+
+[[rule]]
+id = "RUNIN-15"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "Handle resolution happens at the agent's provider. SDK: the part filter helper (RUNIN-11) skips unresolvable handles; the runner never fails a run because of them."
+
+[[rule]]
+id = "RUNIN-16"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "Only the agent knows a handle failed to resolve. SDK: the part filter reports skipped parts as diagnostics so the agent can say so."
+
+[[rule]]
+id = "RUNIN-17"
+keyword = "implicit"
+party = "producer"
+class = "informative"
+role = "n/a"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "Descriptive convention: expiry rides in part `metadata`, which is open and preserved already (META-01)."
+
+[[rule]]
+id = "RUNIN-18"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = []
+tie_break = "A1: an unknown media `source.type` strips the containing part with a warning and is never fatal. Basis: spec text, processing.mdx:108-111 (explicit containment rule), read over the looser run-input.mdx:83-86 wording. TS enforce/strip.ts:169-180 drops the part (verified). Upstream: a spec issue to reword run-input.mdx:83-86, and a proposed fixture."
+
+[[rule]]
+id = "RUNIN-19"
+keyword = "OPTIONAL"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-20"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-21"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-22"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+reason = "Prompt construction is the agent framework's. SDK: `RunContext::context()` plus a helper that renders entries as a system preamble; rustdoc states the SHOULD."
+
+[[rule]]
+id = "RUNIN-23"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-24"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-25"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-26"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-27"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-28"
+keyword = "OPTIONAL"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-29"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-30"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "RUNIN-31"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-01"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-02"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-03"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+reason = "Truth of a declaration is the agent author's. SDK: the server derives what it can know (served transports, registered agent tools) and leaves the rest to the author."
+
+[[rule]]
+id = "CAP-04"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-05"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-06"
+keyword = "implicit"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+reason = "Definitional: subagents are definitions and wire ids are per-invocation. No SDK behaviour beyond the shape (CAP-12) and SUB-* rows."
+
+[[rule]]
+id = "CAP-07"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-08"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-09"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-10"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-11"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-12"
+keyword = "MUST"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-13"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-14"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+tie_break = "Implementation-defined for capabilities, but processing.mdx (step 1, spec text) closes every protocol-described object: unknown members are stripped WITH a warning; open-by-key objects (identity.metadata, custom) are preserved. TS passes the object through untouched (agent/agent.ts:317); spec text outranks TS source. Gate 4 consumer rule depends on this."
+
+[[rule]]
+id = "CAP-15"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CAP-16"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-01"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "metadata"
+scope = "1.0"
+fixtures = ["open-metadata-preserved"]
+
+[[rule]]
+id = "META-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-03"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["open-metadata-preserved"]
+
+[[rule]]
+id = "META-04"
+keyword = "implicit"
+party = "both"
+class = "sdk-assistable"
+role = "both"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+reason = "The reservation binds whoever writes metadata. SDK: consumers never strip `ag-ui` (META-03), and the metadata builder warns when application code writes the reserved key."
+
+[[rule]]
+id = "META-05"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+reason = "Key naming is the author's. SDK: a vendor-prefix builder (`Metadata::vendor(\"acme\")`) and rustdoc guidance."
+
+[[rule]]
+id = "META-06"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["metadata-merges-last-write-wins"]
+
+[[rule]]
+id = "META-07"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["metadata-merges-last-write-wins"]
+
+[[rule]]
+id = "META-08"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["metadata-merges-last-write-wins"]
+
+[[rule]]
+id = "META-09"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["tool-call-metadata-lands-on-the-call"]
+
+[[rule]]
+id = "META-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-12"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-13"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-14"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-15"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-16"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "META-17"
+keyword = "OPTIONAL"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "metadata"
+scope = "1.0"
+fixtures = ["open-metadata-preserved"]
+
+[[rule]]
+id = "PROC-01"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-event-dropped"]
+
+[[rule]]
+id = "PROC-02"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-property-stripped"]
+
+[[rule]]
+id = "PROC-03"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-outcome-stripped", "unknown-part-in-message-list"]
+
+[[rule]]
+id = "PROC-04"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["malformed-known-field-fatal", "unknown-outcome-array-fatal", "subagent-started-missing-name-fatal"]
+
+[[rule]]
+id = "PROC-05"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["malformed-known-field-fatal"]
+
+[[rule]]
+id = "PROC-06"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-07"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-08"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-09"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-10"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-property-stripped"]
+
+[[rule]]
+id = "PROC-11"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-event-dropped", "unknown-property-stripped"]
+
+[[rule]]
+id = "PROC-12"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-event-dropped"]
+
+[[rule]]
+id = "PROC-13"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-property-stripped"]
+
+[[rule]]
+id = "PROC-14"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-event-dropped", "unknown-property-stripped"]
+
+[[rule]]
+id = "PROC-15"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["open-object-patch-op-extras"]
+
+[[rule]]
+id = "PROC-16"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-17"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-enum-value-role-fatal"]
+tie_break = "A2: an unknown closed-set enum value is stripped in an optional position, or drops its container in a required position, with a warning. Basis: spec text, processing.mdx:94-101; the Note admits TS and .NET are non-conformant. TS strip.ts treats enums as fatal leaves, and corpus `unknown-enum-value-role-fatal` pins that gap. The Rust lane carries `expectOverrides.rust` (intentional: spec-correct), once the core-team harness admits a rust lane. It ships with a joint upstream PR that fixes TS, updates the fixture and deletes the Note, as the fixture's `kill` text demands."
+
+[[rule]]
+id = "PROC-18"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-outcome-stripped"]
+
+[[rule]]
+id = "PROC-19"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+tie_break = "A1: an unknown media `source.type` strips the containing part with a warning and is never fatal. Basis: spec text, processing.mdx:108-111 (explicit containment rule), read over the looser run-input.mdx:83-86 wording. TS enforce/strip.ts:169-180 drops the part (verified). Upstream: a spec issue to reword run-input.mdx:83-86, and a proposed fixture."
+
+[[rule]]
+id = "PROC-20"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-part-in-message-list", "state-delta-unknown-op-dropped"]
+
+[[rule]]
+id = "PROC-21"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["era-0-0-45-thinking-translated"]
+
+[[rule]]
+id = "PROC-22"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["era-0-0-45-thinking-translated"]
+
+[[rule]]
+id = "PROC-23"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-24"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+reason = "Binds every middleware. The built-in era shims treat the chunk and expanded forms alike (tests/claims_client.rs), and both forms are equivalent downstream (tests/processing_order.rs). User middleware can normalise with the public pipeline::chunks::ChunkExpander; the middleware module docs state the rule."
+
+[[rule]]
+id = "PROC-25"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-26"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-27"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-28"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-expansion-assembles"]
+
+[[rule]]
+id = "PROC-29"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["era-0-0-45-thinking-translated"]
+
+[[rule]]
+id = "PROC-30"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-property-stripped"]
+
+[[rule]]
+id = "PROC-31"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+tie_break = "The Rust client has no reconnect or replay API. Any future connect() path must go through the same pipeline (audit-1 m8). The raw `Agent::run` stream is crate-private (G10)."
+
+[[rule]]
+id = "PROC-32"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-33"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-34"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-35"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-36"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PROC-37"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["conformant-run-is-quiet"]
+tie_break = "Derived: no spec sentence forbids warnings in general, but each legal-traffic rule says nothing warns. Corpus `conformant-run-is-quiet` pins it (tie-break step 2)."
+
+[[rule]]
+id = "VER-01"
+keyword = "MUST"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "versioning"
+scope = "1.0"
+fixtures = ["unknown-event-dropped"]
+reason = "Binds the protocol's evolution (what the spec may add). The SDK side, surviving additions, is PROC-01..03."
+
+[[rule]]
+id = "VER-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+reason = "Strict writer (ARCH-04): a 1.0 server can emit only schema-described shapes, so there is no addition it could misuse."
+
+[[rule]]
+id = "VER-03"
+keyword = "MAY"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-39-flattens-content", "era-0-0-57-subagent-dropped-with-warning"]
+reason = "MAY, implemented on both sides. Server: a Runner configured with a legacy era downgrades the stream for an undeclared peer, dropping subagent events and stripping attribution (tests/versioning_producer.rs). Client: a legacy pin installs the era shims, which downgrade the input and events and warn on every loss (tests/versioning_era.rs, tests/versioning_versions.rs)."
+
+[[rule]]
+id = "VER-04"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-05"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-06"
+keyword = "MAY"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+reason = "MAY, implemented: stripping subagentRunId for a <=0.0.57 peer is silent on both sides; only the dropped lifecycle events warn (VER-07). Server: tests/versioning_producer.rs (every diagnostic is a lossy-drop warning). Client: the era shims strip attribution and touch nothing else (tests/versioning_era.rs)."
+
+[[rule]]
+id = "VER-07"
+keyword = "MUST"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-39-flattens-content", "era-0-0-57-subagent-dropped-with-warning"]
+
+[[rule]]
+id = "VER-08"
+keyword = "MUST"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-57-subagent-dropped-with-warning"]
+
+[[rule]]
+id = "VER-09"
+keyword = "SHOULD"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-10"
+keyword = "MAY"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-11"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+tie_break = "The default diagnostic sink logs through `tracing` at WARN, with a stderr fallback when no subscriber or logger is installed (audit-1 M7). TS writes console.warn unconditionally (enforce/enforce.ts:48)."
+
+[[rule]]
+id = "VER-12"
+keyword = "MUST"
+party = "both"
+class = "informative"
+role = "n/a"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+reason = "Binds the specification's maintainers: the deprecation registry lives in the spec repo. Rust shims cite their registry entry in rustdoc."
+
+[[rule]]
+id = "VER-13"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-45-thinking-translated", "era-0-0-47-upgrades-binary-content"]
+tie_break = "The 0.0.45 THINKING_* and 0.0.47 binary-content translations live in the always-on compatibility boundary, so the 0.0.45 era shim is unreachable (audit-1 m7). Only the 0.0.39 and 0.0.57 shims are scoped."
+
+[[rule]]
+id = "VER-14"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-45-thinking-translated"]
+
+[[rule]]
+id = "VER-15"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-39-flattens-content"]
+
+[[rule]]
+id = "VER-16"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-17"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["current-peer-declares-protocol-version", "era-pinned-peer-omits-protocol-version"]
+
+[[rule]]
+id = "VER-18"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-19"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-pinned-peer-omits-protocol-version"]
+
+[[rule]]
+id = "VER-20"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["producer-declares-newer-version-warns"]
+
+[[rule]]
+id = "VER-21"
+keyword = "SHOULD"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["producer-declares-uninterpretable-version-warns"]
+tie_break = "A5: an uninterpretable protocolVersion means proceed and warn, on both sides. A producer never rejects it, because it cannot name a major line it does not implement. Basis: spec text, versioning.mdx:90-92 ('handled like a newer one'); corpus `producer-declares-uninterpretable-version-warns`."
+
+[[rule]]
+id = "VER-22"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-23"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-24"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+tie_break = "A5: an uninterpretable protocolVersion means proceed and warn, on both sides. A producer never rejects it, because it cannot name a major line it does not implement. Basis: spec text, versioning.mdx:90-92 ('handled like a newer one'); corpus `producer-declares-uninterpretable-version-warns`."
+
+[[rule]]
+id = "VER-25"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-26"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["producer-declares-newer-version-warns"]
+
+[[rule]]
+id = "VER-27"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = ["producer-declares-same-version-quiet"]
+
+[[rule]]
+id = "VER-28"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-29"
+keyword = "MAY"
+party = "transport"
+class = "informative"
+role = "n/a"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+reason = "A permission neither standard binding uses: neither defines a mirror. The Rust pipeline always treats the in-band field as authoritative; a custom `Transport` may mirror."
+
+[[rule]]
+id = "VER-30"
+keyword = "MAY"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-0-0-39-flattens-content"]
+reason = "MAY, implemented. Server: the configured era downgrade applies only to a peer that declared no version; a declared current version is never downgraded (tests/versioning_producer.rs). Client: a legacy era is selected only from a known version (LegacyEra::parse) and a configured pin selects that era's downgrade (tests/versioning_versions.rs)."
+
+[[rule]]
+id = "VER-31"
+keyword = "MUST"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = ["era-current-peer-keeps-modern-content"]
+
+[[rule]]
+id = "VER-32"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "VER-33"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+restates = ["BASIC-09", "ARCH-04", "VER-02"]
+
+[[rule]]
+id = "VER-34"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "versioning"
+scope = "1.0"
+fixtures = []
+restates = ["PROC-01", "PROC-04", "PROC-21", "VER-15", "PROC-30"]
+
+[[rule]]
+id = "PAT-01"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested in tests/transport_contract.rs: the client sends exactly one POST per exchange and nothing while events stream, even when they arrive slowly; over a real server one request yields exactly one run, streamed back on its response. Restates RUNIN-01 + PAT-02; see RULES-OTHER.md."
+
+[[rule]]
+id = "PAT-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PAT-03"
+keyword = "implicit"
+party = "transport"
+class = "informative"
+role = "n/a"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+reason = "Definitional: patterns are expressed in events, so any binding carries them. Covered operationally by ARCH-06 and PROC-06."
+
+[[rule]]
+id = "SNAP-01"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-snapshot-replaces", "activity-replace-false-preserves"]
+
+[[rule]]
+id = "SNAP-02"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-snapshot-replaces"]
+
+[[rule]]
+id = "SNAP-03"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "state"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: the agent may resync a snapshot at any point, even when nothing changed (tests/state_producer.rs), and the verifier accepts snapshots mid-message (producer fixture valid-standalone-events-anywhere, tests/producer_fixtures.rs). Client: a snapshot is adopted before the run, mid-message and after (tests/state_snapshots.rs)."
+
+[[rule]]
+id = "SNAP-04"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = []
+reason = "The state publisher emits a snapshot at the start of any run whose input carries state or messages (a continuing thread), and on `resync_state()`. Only the agent knows 'after an error', so it calls resync."
+
+[[rule]]
+id = "SNAP-05"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-applies", "state-delta-unappliable-warns-and-keeps"]
+reason = "Implicit, both halves tested. Server: the StatePublisher's deltas, applied in order, reproduce each published state, and nothing is sent when nothing changed (tests/state_producer.rs). Client: deltas apply in order to the current value, and an unappliable delta leaves the prior state untouched with a warning (tests/state_snapshots.rs, corpus state-delta-*)."
+
+[[rule]]
+id = "SNAP-06"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-applies"]
+
+[[rule]]
+id = "SNAP-07"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SNAP-08"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["open-object-patch-op-extras"]
+
+[[rule]]
+id = "SNAP-09"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SNAP-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-unknown-op-dropped"]
+
+[[rule]]
+id = "SNAP-11"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-unappliable-warns-and-keeps"]
+
+[[rule]]
+id = "SNAP-12"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-unappliable-warns-and-keeps"]
+
+[[rule]]
+id = "SNAP-13"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-unappliable-warns-and-keeps"]
+
+[[rule]]
+id = "SNAP-14"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SNAP-15"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = []
+reason = "Only the agent learns of divergence (for example, the consumer reports a failed patch out of band). SDK: `RunContext::resync_state()` makes the state publisher emit a snapshot."
+
+[[rule]]
+id = "SNAP-16"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-01"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = ["content-without-start-fatal"]
+
+[[rule]]
+id = "STRM-03"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = ["open-message-at-run-finished-fatal"]
+
+[[rule]]
+id = "STRM-04"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["triad-assembles-message", "tool-call-triad-assembles"]
+
+[[rule]]
+id = "STRM-05"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested: messages, tool calls, reasoning and steps interleave, each keeping its own discipline, in the verifier (tests/streaming_producer.rs, producer fixture valid-interleaved-families) and the client (tests/streaming_triads.rs)."
+
+[[rule]]
+id = "STRM-06"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = ["raw-and-custom-pass-through"]
+
+[[rule]]
+id = "STRM-07"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-expansion-assembles"]
+
+[[rule]]
+id = "STRM-08"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-09"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-11"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = ["first-chunk-missing-id-fatal"]
+
+[[rule]]
+id = "STRM-12"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-conflicting-role-fatal"]
+reason = "MAY, both halves tested: the first text chunk may carry a role or omit it (assistant) in the verifier (tests/streaming_producer.rs) and the client, which invents no role on the expanded start (tests/streaming_chunks.rs)."
+
+[[rule]]
+id = "STRM-13"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-14"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = ["first-tool-chunk-missing-name-fatal"]
+
+[[rule]]
+id = "STRM-15"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-expansion-assembles"]
+reason = "MAY, both halves tested: id-less continuations continue the open tool and reasoning chunk streams in the verifier (tests/streaming_producer.rs; text in producer fixture valid-chunks) and the open tool, text and reasoning streams in the client (tests/streaming_chunks.rs, tests/claims_client.rs, corpus chunk-expansion-assembles)."
+
+[[rule]]
+id = "STRM-16"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["first-chunk-missing-id-fatal", "first-tool-chunk-missing-name-fatal"]
+
+[[rule]]
+id = "STRM-17"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-18"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-19"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-repeat-identical-accepted"]
+reason = "MAY, both halves tested. Server: identical repeats of role/name and toolCallName/parentMessageId are accepted, and a continuation changing role, name, toolCallName or parentMessageId is refused (tests/streaming_producer.rs, tests/claims_producer.rs). Client: identical repeats are accepted without diagnostics (tests/streaming_chunks.rs, corpus chunk-repeat-identical-accepted)."
+
+[[rule]]
+id = "STRM-20"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-conflicting-role-fatal", "chunk-conflicting-tool-name-fatal"]
+
+[[rule]]
+id = "STRM-21"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["custom-closes-chunk-stream-fatal", "raw-does-not-close-chunk-stream"]
+tie_break = "A3: a lane is an owner: the parent agent, or one `subagentRunId`. Each lane holds at most one pending chunk stream, of any kind. Explicit message, tool-call (including TOOL_CALL_RESULT), step, state, CUSTOM and reasoning events close their own lane. RUN_STARTED, RUN_FINISHED, RUN_ERROR and MESSAGES_SNAPSHOT close all lanes. SUBAGENT_FINISHED/ERROR close that subagent's lane; an id-less terminal closes nothing. RAW, ACTIVITY_*, REASONING_ENCRYPTED_VALUE and SUBAGENT_STARTED close nothing. Basis: spec streaming.mdx:128-150, plus TS chunks/transform.ts:401-456 (verified)."
+
+[[rule]]
+id = "STRM-22"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["chunk-expansion-assembles", "subagent-terminal-closes-open-chunk-stream"]
+tie_break = "A3: a lane is an owner: the parent agent, or one `subagentRunId`. Each lane holds at most one pending chunk stream, of any kind. Explicit message, tool-call (including TOOL_CALL_RESULT), step, state, CUSTOM and reasoning events close their own lane. RUN_STARTED, RUN_FINISHED, RUN_ERROR and MESSAGES_SNAPSHOT close all lanes. SUBAGENT_FINISHED/ERROR close that subagent's lane; an id-less terminal closes nothing. RAW, ACTIVITY_*, REASONING_ENCRYPTED_VALUE and SUBAGENT_STARTED close nothing. Basis: spec streaming.mdx:128-150, plus TS chunks/transform.ts:401-456 (verified)."
+
+[[rule]]
+id = "STRM-23"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = ["raw-does-not-close-chunk-stream"]
+tie_break = "A3: a lane is an owner: the parent agent, or one `subagentRunId`. Each lane holds at most one pending chunk stream, of any kind. Explicit message, tool-call (including TOOL_CALL_RESULT), step, state, CUSTOM and reasoning events close their own lane. RUN_STARTED, RUN_FINISHED, RUN_ERROR and MESSAGES_SNAPSHOT close all lanes. SUBAGENT_FINISHED/ERROR close that subagent's lane; an id-less terminal closes nothing. RAW, ACTIVITY_*, REASONING_ENCRYPTED_VALUE and SUBAGENT_STARTED close nothing. Basis: spec streaming.mdx:128-150, plus TS chunks/transform.ts:401-456 (verified)."
+
+[[rule]]
+id = "STRM-24"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-25"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STRM-26"
+keyword = "MUST NOT"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "streaming"
+scope = "1.0"
+fixtures = ["subagent-terminal-closes-open-chunk-stream"]
+tie_break = "A3: a lane is an owner: the parent agent, or one `subagentRunId`. Each lane holds at most one pending chunk stream, of any kind. Explicit message, tool-call (including TOOL_CALL_RESULT), step, state, CUSTOM and reasoning events close their own lane. RUN_STARTED, RUN_FINISHED, RUN_ERROR and MESSAGES_SNAPSHOT close all lanes. SUBAGENT_FINISHED/ERROR close that subagent's lane; an id-less terminal closes nothing. RAW, ACTIVITY_*, REASONING_ENCRYPTED_VALUE and SUBAGENT_STARTED close nothing. Basis: spec streaming.mdx:128-150, plus TS chunks/transform.ts:401-456 (verified)."
+
+[[rule]]
+id = "STRM-27"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "streaming"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-01"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = ["run-finished-interrupt-outcome-accepted"]
+
+[[rule]]
+id = "INTR-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "An interrupt raised through the server API can only end the run with the interrupt outcome; the verifier refuses success while the run holds raised interrupts."
+
+[[rule]]
+id = "INTR-03"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = ["run-finished-cancelled-outcome-accepted"]
+
+[[rule]]
+id = "INTR-04"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-05"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-06"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-07"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = ["run-finished-interrupt-outcome-accepted"]
+
+[[rule]]
+id = "INTR-08"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+tie_break = "A resume entry naming an unknown interrupt is rejected before sending. Basis: spec MUST (interrupt-resume.mdx:49-50); TS buildResumeArray throws on unknown ids (interrupts/index.ts:34-37)."
+
+[[rule]]
+id = "INTR-09"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-10"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-11"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-12"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-13"
+keyword = "implicit"
+party = "producer"
+class = "informative"
+role = "n/a"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "A permission: producers need keep no inter-run state. The Rust server is stateless by default; the interrupt checkpoint store is opt-in."
+
+[[rule]]
+id = "INTR-14"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+tie_break = "A8: `expiresAt` is parsed as an RFC 3339 date-time or a date-only value (UTC midnight). Now-or-earlier means expired. An unparseable value never expires and produces a warning. TS never expires it either, but silently: `new Date(x) <= now` is false for an Invalid Date (interrupts/index.ts:13-15). Documented divergence: JS reads an offset-less date-time as local time, and Rust treats it as unparseable. Basis: spec interrupt-resume.mdx:67-75 leaves the parse to the judging consumer. Step 3 (TS) decides the expiry rule, step 5 (stricter) the accepted formats."
+
+[[rule]]
+id = "INTR-15"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+tie_break = "An expired interrupt can still be cancelled, and must be for coverage. Basis: spec interrupt-resume.mdx:73-75; TS agent/agent.ts:661-671 rejects only non-cancelled entries for an expired interrupt. Port the TS semantics, not #2778's, which rejects the cancel (audit-1 M4)."
+
+[[rule]]
+id = "INTR-16"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested. Server: the resuming run's agent sees the input's messages, state and resume list, and RUN_STARTED keeps the thread (tests/interrupts_producer.rs). Client: a restored Thread sends its threadId, history and state with the resume and keeps them (tests/interrupts_resume.rs)."
+
+[[rule]]
+id = "INTR-17"
+keyword = "implicit"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Which model calls a run made is the agent's knowledge. SDK: a per-run `TokenUsage` accumulator that starts empty on every run, resumed or not."
+
+[[rule]]
+id = "INTR-18"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Detectable only with the checkpoint store; without it the run proceeds, which satisfies the SHOULD."
+
+[[rule]]
+id = "INTR-19"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Detectable only with the checkpoint store; then the unrecognised entry is removed with a warning."
+
+[[rule]]
+id = "INTR-20"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Performing the action is the agent's. SDK: with the checkpoint store, `RunContext::resume_for(interrupt_id)` returns an explicit `Uncovered` state rather than an absent value, so an absent entry cannot read as approval."
+
+[[rule]]
+id = "INTR-21"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "As INTR-20: the uncovered state is distinct from `Cancelled`, so an omission cannot be read as abandonment."
+
+[[rule]]
+id = "INTR-22"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "INTR-23"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Enforced by the runner when the interrupt checkpoint store is configured. A stateless server cannot know, and the spec puts no obligation on it."
+
+[[rule]]
+id = "INTR-24"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "interrupts"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested. Server: an interrupt store with nothing open for the thread reports every resume entry as unrecognised (tests/interrupts_producer.rs). Client: a Thread with nothing open refuses a resume before sending (tests/interrupts_resume.rs), and interrupts on a success outcome are stripped with an unknown_field warning, leaving a plain success (tests/claims_client.rs)."
+
+[[rule]]
+id = "TRN-01"
+keyword = "MUST"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-02"
+keyword = "MUST"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-03"
+keyword = "implicit"
+party = "transport"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-04"
+keyword = "MUST"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-05"
+keyword = "MUST"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-06"
+keyword = "implicit"
+party = "transport"
+class = "informative"
+role = "n/a"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Definitional: AG-UI defines no credential. The SDK passes user-supplied headers through and redacts them in `Debug`."
+
+[[rule]]
+id = "TRN-07"
+keyword = "MUST"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-08"
+keyword = "OPTIONAL"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+reason = "OPTIONAL binding, implemented (feature proto); both halves tested in tests/transport_contract.rs: the server negotiates the protobuf content type and an HTTP run yields the same events and history as SSE; the client sends the protobuf Accept header and reads the same frames as SSE whole or split into small pieces. The stream lane also replays fixtures over protobuf (tests/corpus_streams.rs)."
+
+[[rule]]
+id = "TRN-09"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+tie_break = "Truncation surfaces as `Err(Truncated { partial })` carrying everything delivered, never as a synthesized RUN_FINISHED. Basis: spec transports/index.mdx:51-58, which leaves how to surface it to the consumer."
+
+[[rule]]
+id = "TRN-10"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+tie_break = "Truncation surfaces as `Err(Truncated { partial })` carrying everything delivered, never as a synthesized RUN_FINISHED. Basis: spec transports/index.mdx:51-58, which leaves how to surface it to the consumer."
+
+[[rule]]
+id = "TRN-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TRN-12"
+keyword = "MAY"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+reason = "MAY, implemented; both halves tested in tests/transport_contract.rs: a run produced by Runner and written by NdjsonEncoder, with no HTTP, is read back through the consumer pipeline unchanged; the client's Transport trait carries a run over a custom channel."
+
+[[rule]]
+id = "TRN-13"
+keyword = "MUST"
+party = "transport"
+class = "sdk-assistable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+reason = "Binds whoever writes a custom transport. SDK: every `Transport` feeds the one pipeline, so processing rules hold by construction, and the trait has explicit end and error signals; ordering and completeness of the channel are the author's."
+
+[[rule]]
+id = "TRN-14"
+keyword = "SHOULD"
+party = "transport"
+class = "sdk-assistable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+docs = ["src/client/transport/mod.rs"]
+reason = "Binds custom-transport authors. SDK: the `Transport` trait docs list what to document, and every transport the SDK ships is documented."
+
+[[rule]]
+id = "TRN-15"
+keyword = "SHOULD"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-01"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-02"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-03"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-04"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-05"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-06"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-07"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-08"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-09"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-10"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-11"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: Runner::run_with_replay sends replayed runs ahead of the requested run in one SSE response (tests/transport_sse_server.rs), and the verifier accepts sequential runs (producer fixture valid-sequential-runs). Client: one response carrying several runs is read and judged complete (tests/transport_sse.rs)."
+
+[[rule]]
+id = "SSE-12"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-13"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-14"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-15"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SSE-16"
+keyword = "implicit"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-sse"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested. Server: SSE frames carry no id field and a Last-Event-ID header changes nothing; each request is a whole new run (tests/transport_sse_server.rs). Client: a truncated stream is not reconnected and no request carries Last-Event-ID (tests/transport_sse.rs)."
+
+[[rule]]
+id = "PB-01"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-02"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-03"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-04"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-05"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-06"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-07"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-08"
+keyword = "implicit"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-09"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-11"
+keyword = "implicit"
+party = "transport"
+class = "sdk-ownable"
+role = "both"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+reason = "The protobuf field table is generated from the pinned upstream .proto files and proto-freeze.txt (cargo xtask codegen); tests/spec_drift.rs fails when it differs, and src/proto/schema_sync.rs checks the codec tables against the parsed .proto files."
+
+[[rule]]
+id = "PB-12"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+tie_break = "The spec binds first-party encoders. Rust is community-maintained, but this SDK adopts the 98-file byte corpus anyway, including JS key ordering for Struct. Byte parity of the typed-event path needs insertion-ordered open objects, so it is proven with the opt-in `preserve-order` feature (ag-ui-server tests/transport_proto_bytes.rs, ag-ui-proto tests/transport_proto_bytes.rs); without it open objects go out key-sorted, which the spec permits for semantic values outside the corpus."
+
+[[rule]]
+id = "PB-13"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-14"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+tie_break = "A14: corpus `unknown-outcome-stripped` exercises this on the JSON lane only, so `fixtures` is empty. It counts once the protobuf lane replays the stream corpus over protobuf."
+
+[[rule]]
+id = "PB-15"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-16"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["open-object-patch-op-extras"]
+restates = ["PROC-15", "SNAP-08"]
+
+[[rule]]
+id = "PB-17"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-18"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PB-19"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "transport-proto"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "EVT-01"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "EVT-02"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-01"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["first-event-not-run-started-fatal", "run-error-first-run-continues"]
+
+[[rule]]
+id = "LIFE-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["first-event-not-run-started-fatal"]
+
+[[rule]]
+id = "LIFE-03"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["first-event-not-run-started-fatal"]
+
+[[rule]]
+id = "LIFE-04"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["current-peer-declares-protocol-version"]
+
+[[rule]]
+id = "LIFE-05"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["run-finished-interrupt-outcome-accepted", "run-finished-cancelled-outcome-accepted"]
+reason = "Implicit, both halves tested. Server: the runner closes success, interrupt and cancelled runs with RUN_FINISHED naming the outcome, and the verifier accepts an absent outcome (tests/lifecycle_producer.rs, tests/claims_producer.rs). Client: absent, success, interrupt and cancelled outcomes are delivered as sent (tests/lifecycle_runs.rs, corpus run-finished-*-outcome-accepted)."
+
+[[rule]]
+id = "LIFE-06"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: the runner names unanswered frontend calls in pendingToolCallIds (tests/lifecycle_producer.rs, producer fixture valid-frontend-calls-pending). Client: the outcome is delivered as sent (tests/lifecycle_runs.rs) and the run report lists every unanswered call (tests/tools_frontend.rs)."
+
+[[rule]]
+id = "LIFE-07"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-08"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-09"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-outcome-stripped"]
+
+[[rule]]
+id = "LIFE-10"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["run-finished-cancelled-outcome-accepted"]
+
+[[rule]]
+id = "LIFE-11"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-12"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-13"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-14"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-15"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-16"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested. Server: cancellation closes every open item and finishes with the cancelled outcome, which has no interrupts (tests/lifecycle_producer.rs). Client: a cancelled run is neither success nor failure and the next run is ordinary (tests/lifecycle_runs.rs); a Thread is left with no open interrupts and refuses a resume (tests/claims_client.rs)."
+
+[[rule]]
+id = "LIFE-17"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["run-finished-cancelled-outcome-accepted"]
+
+[[rule]]
+id = "LIFE-18"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-19"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["run-finished-cancelled-outcome-accepted", "run-error-then-new-run-continues"]
+
+[[rule]]
+id = "LIFE-20"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+tie_break = "Truncation surfaces as `Err(Truncated { partial })` carrying everything delivered, never as a synthesized RUN_FINISHED. Basis: spec transports/index.mdx:51-58, which leaves how to surface it to the consumer."
+
+[[rule]]
+id = "LIFE-21"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-22"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["run-error-first-run-continues", "run-error-then-new-run-continues"]
+
+[[rule]]
+id = "LIFE-23"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["late-run-error-after-finished-run-continues", "run-error-first-run-continues"]
+
+[[rule]]
+id = "LIFE-24"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["late-run-error-after-finished-run-continues"]
+
+[[rule]]
+id = "LIFE-25"
+keyword = "implicit"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Counts come from the agent's provider. SDK: `TokenUsage` builder takes provider-native counts and produces the protocol accounting (totals include parts)."
+
+[[rule]]
+id = "LIFE-26"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "The builder derives totals from parts, and the producer verifier checks that each part does not exceed its total (cached + cacheWrite ≤ input, reasoning ≤ output)."
+
+[[rule]]
+id = "LIFE-27"
+keyword = "MUST"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Whether a provider folds a part into its total is provider knowledge. SDK: the builder has explicit `part_reported_beside_total` / `part_included_in_total` inputs and adds accordingly."
+
+[[rule]]
+id = "LIFE-28"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "As LIFE-27: the builder never adds a part twice when told the provider already included it."
+
+[[rule]]
+id = "LIFE-29"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "The builder computes totalTokens, and the producer verifier checks total = input + output whenever all three are present."
+
+[[rule]]
+id = "LIFE-30"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-31"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "The builder always computes `totalTokens` (LIFE-30) and offers no setter for a provider total; an agent bypassing the builder owns the rule."
+
+[[rule]]
+id = "LIFE-32"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Counts are `Option<u64>` and the builder never defaults to zero; an agent passing `Some(0)` without data is the agent's error."
+
+[[rule]]
+id = "LIFE-33"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-34"
+keyword = "implicit"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Which calls belong to the run is the agent's. SDK: the per-run accumulator includes usage recorded from subagent contexts, and subagent event types carry no usage field."
+
+[[rule]]
+id = "LIFE-35"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "A child run spawned via `parentRunId` gets its own `RunContext` and accumulator, so its usage never flows into the parent's."
+
+[[rule]]
+id = "LIFE-36"
+keyword = "implicit"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Covered by the per-run accumulator (see INTR-17)."
+
+[[rule]]
+id = "LIFE-37"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["event-after-run-finished-fatal"]
+
+[[rule]]
+id = "LIFE-38"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["two-sequential-runs-accumulate", "run-error-then-new-run-continues"]
+
+[[rule]]
+id = "LIFE-39"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["late-run-error-after-finished-run-continues"]
+
+[[rule]]
+id = "LIFE-40"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["late-run-error-after-finished-run-continues"]
+
+[[rule]]
+id = "LIFE-41"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+tie_break = "A7: after RUN_ERROR only RUN_STARTED is accepted, so a second RUN_ERROR is fatal. After RUN_FINISHED, both RUN_ERROR and RUN_STARTED are accepted. Basis: spec lifecycle.mdx:180-188; TS verify/verify.ts:229-251 (verified)."
+
+[[rule]]
+id = "LIFE-42"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["event-after-run-finished-fatal"]
+tie_break = "A7: after RUN_ERROR only RUN_STARTED is accepted, so a second RUN_ERROR is fatal. After RUN_FINISHED, both RUN_ERROR and RUN_STARTED are accepted. Basis: spec lifecycle.mdx:180-188; TS verify/verify.ts:229-251 (verified)."
+
+[[rule]]
+id = "LIFE-43"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["two-sequential-runs-accumulate"]
+
+[[rule]]
+id = "LIFE-44"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["nested-run-started-fatal"]
+
+[[rule]]
+id = "LIFE-45"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["two-sequential-runs-accumulate"]
+
+[[rule]]
+id = "LIFE-46"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-47"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = ["reopen-closed-message-appends"]
+
+[[rule]]
+id = "LIFE-48"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["run-error-then-new-run-continues"]
+
+[[rule]]
+id = "LIFE-49"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-50"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["step-finished-without-start-fatal"]
+
+[[rule]]
+id = "LIFE-51"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "LIFE-52"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: the runner's step emitter lets steps overlap and closes one left open before the finish (tests/lifecycle_producer.rs). Client: steps overlap each other and other items (tests/lifecycle_runs.rs)."
+
+[[rule]]
+id = "LIFE-53"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = ["first-event-not-run-started-fatal", "event-after-run-finished-fatal", "nested-run-started-fatal", "step-finished-without-start-fatal", "open-message-at-run-finished-fatal"]
+
+[[rule]]
+id = "LIFE-54"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TEXT-01"
+keyword = "MAY"
+party = "consumer"
+class = "informative"
+role = "n/a"
+area = "text"
+scope = "1.0"
+fixtures = []
+reason = "Presentation freedom. The SDK delivers both incremental updates and the assembled message, so either choice is available."
+
+[[rule]]
+id = "TEXT-02"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = ["triad-assembles-message"]
+
+[[rule]]
+id = "TEXT-03"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "text"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TEXT-04"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = ["triad-assembles-message"]
+
+[[rule]]
+id = "TEXT-05"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "text"
+scope = "1.0"
+fixtures = ["reopen-closed-message-appends"]
+reason = "MAY, both halves tested: the verifier accepts a closed message reopened by an agreeing START (tests/text_producer.rs, producer fixture valid-reopen-agrees); the client appends the new content to the same message (tests/text_messages.rs, corpus reopen-closed-message-appends)."
+
+[[rule]]
+id = "TEXT-06"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "text"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TEXT-07"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = []
+tie_break = "A6 (text): a conflicting reopen leaves the established role and name standing (spec text, text-messages.mdx:58-60). TS keeps them silently (apply/default.ts:651-665). Rust keeps them and also warns: the spec permits detection, and only conformant streams must be quiet. An owner mismatch within a run is fatal (SUB-24; TS verify/verify.ts:403-408)."
+
+[[rule]]
+id = "TEXT-08"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "text"
+scope = "1.0"
+fixtures = ["messages-snapshot-reconciles-by-id"]
+reason = "MAY, both halves tested. Server: the verifier accepts a MESSAGES_SNAPSHOT restating a closed message, refuses duplicate ids in it (tests/text_producer.rs) and refuses content after the message ends (tests/claims_producer.rs). Client: the snapshot replaces the closed message (tests/text_messages.rs, corpus messages-snapshot-reconciles-by-id); content after the end is refused (tests/streaming_triads.rs)."
+
+[[rule]]
+id = "TEXT-09"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = ["chunk-expansion-assembles", "chunk-conflicting-role-fatal"]
+
+[[rule]]
+id = "TEXT-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "metadata"
+scope = "1.0"
+fixtures = ["metadata-merges-last-write-wins"]
+
+[[rule]]
+id = "TEXT-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = ["content-without-start-fatal", "open-message-at-run-finished-fatal"]
+
+[[rule]]
+id = "TEXT-12"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "text"
+scope = "1.0"
+fixtures = ["triad-assembles-message"]
+
+[[rule]]
+id = "TOOL-01"
+keyword = "OPTIONAL"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = ["tool-call-triad-assembles"]
+
+[[rule]]
+id = "TOOL-02"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-03"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = ["tool-call-triad-assembles"]
+
+[[rule]]
+id = "TOOL-04"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "The pending-call and execution helpers expose arguments only after TOOL_CALL_END; streamed partial arguments are delivered marked partial."
+
+[[rule]]
+id = "TOOL-05"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-06"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: the runner reopens a closed call with an agreeing START and refuses one that renames it (tests/tools_producer.rs, producer fixture valid-reopen-agrees). Client: a reopened call's arguments append to the same call (tests/tools_calls.rs)."
+tie_break = "A13: arguments after a tool-call reopen append. Basis: spec text, tool-calls.mdx:61-62 and lifecycle.mdx:201-203. TS instead replaces the stored arguments on the first TOOL_CALL_ARGS after a reopening START (apply/default.ts:821,933-937), so that replays are idempotent. Spec text wins; an upstream issue is needed."
+
+[[rule]]
+id = "TOOL-07"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+tie_break = "A6 (tool calls): on a conflicting reopen the spec makes no promise which value wins (tool-calls.mdx:65-68). Tie-break step 3 (TS source): warn and adopt the reopening START's toolCallName, so the latest value wins (apply/default.ts:828-834). An owner mismatch within a run is fatal (TS verify.ts subagentTagError; SUB-24). Keeping the established values, or making the conflict fatal, would both be wrong for tool calls."
+
+[[rule]]
+id = "TOOL-08"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+tie_break = "A6 (tool calls): on a conflicting reopen the spec makes no promise which value wins (tool-calls.mdx:65-68). Tie-break step 3 (TS source): warn and adopt the reopening START's toolCallName, so the latest value wins (apply/default.ts:828-834). An owner mismatch within a run is fatal (TS verify.ts subagentTagError; SUB-24). Keeping the established values, or making the conflict fatal, would both be wrong for tool calls."
+
+[[rule]]
+id = "TOOL-09"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = ["chunk-repeat-identical-accepted", "first-tool-chunk-missing-name-fatal"]
+
+[[rule]]
+id = "TOOL-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = ["chunk-conflicting-tool-name-fatal"]
+
+[[rule]]
+id = "TOOL-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = ["tool-result-parts-mint-tool-message"]
+
+[[rule]]
+id = "TOOL-12"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: an agent-executed call is answered in the same run and leaves nothing pending (tests/tools_producer.rs); the verifier accepts in-run and never-in-stream results (producer fixture valid-frontend-calls-pending). Client: an in-run result becomes its own tool message and a client-executed call needs none in the stream (tests/tools_calls.rs); the application's tool message travels in the next input (tests/tools_frontend.rs)."
+
+[[rule]]
+id = "TOOL-13"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = ["tool-result-parts-mint-tool-message"]
+
+[[rule]]
+id = "TOOL-14"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = ["tool-result-parts-mint-tool-message"]
+
+[[rule]]
+id = "TOOL-15"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-16"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = ["tool-result-file-source-passes-through"]
+
+[[rule]]
+id = "TOOL-17"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "Which parts a model can take is the agent's knowledge. SDK: the part filter helper (RUNIN-11) applies to tool results too."
+
+[[rule]]
+id = "TOOL-18"
+keyword = "MUST"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "The filter helper returns the empty string when every part is dropped, and the runner offers `answer_tool_call` so the call is always answered."
+
+[[rule]]
+id = "TOOL-19"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-20"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-21"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = ["era-0-0-39-flattens-content"]
+reason = "MAY, implemented on both sides. Server: flatten_for_legacy_peer flattens with a warning (tests/tools_producer.rs), and a Runner configured for 0.0.39 flattens tool results for a peer that declared no version (tests/versioning_producer.rs). Client: the 0.0.39 era shim flattens and announces the loss (tests/tools_calls.rs, tests/versioning_era.rs)."
+
+[[rule]]
+id = "TOOL-22"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = ["era-0-0-39-flattens-content"]
+
+[[rule]]
+id = "TOOL-23"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-24"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "The producer verifier refuses a TOOL_CALL_RESULT for a call whose name is in `RunAgentInput.tools`."
+
+[[rule]]
+id = "TOOL-25"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-26"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-27"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "When nothing remains is the agent loop's judgement; the SDK makes finishing then immediate. `RunOutcome::success()` closes the run at once: `Runner::run` never waits for a frontend result, closes what is open and lists the unanswered calls in `pendingToolCallIds` (`ProducerVerifier::unanswered_tool_calls`). Documented on `server::Agent` (Frontend tools) and `RunOutcome::success`; tests/tools_producer.rs drives a run to its end without one `Pending`."
+
+[[rule]]
+id = "TOOL-28"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: several frontend calls left unanswered are listed in call order (tests/tools_producer.rs, producer fixture valid-frontend-calls-pending). Client: the stream is accepted with every call kept (tests/tools_calls.rs) and the Thread derives them in call order (tests/tools_frontend.rs)."
+
+[[rule]]
+id = "TOOL-29"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-30"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-31"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-32"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-33"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "The Thread refuses to send the next run while a pending frontend call has no tool message. The answer's content is the application's."
+
+[[rule]]
+id = "TOOL-34"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-35"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+reason = "The agent decides what to call. SDK: the server warns when a call names neither an advertised frontend tool nor a registered agent tool."
+
+[[rule]]
+id = "TOOL-36"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-37"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "TOOL-38"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Execution is the application's. SDK: `PendingToolCall::validated_args()` validates against the advertised parameter schema; escaping at use sites is the application's."
+
+[[rule]]
+id = "TOOL-39"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "As IDX-05: the approval gate in the pending-call helper."
+
+[[rule]]
+id = "TOOL-40"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "As IDX-06."
+
+[[rule]]
+id = "TOOL-41"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "The SDK never interprets tool-result content: it stays an opaque string or list of parts. The 'instructions carrying the user's authority' half concerns the application and model, and is documented."
+
+[[rule]]
+id = "TOOL-42"
+keyword = "SHOULD NOT"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Scrutiny is the application's. SDK: pending calls carry `advertised: bool`, and the approval gate is mandatory for unadvertised calls."
+
+[[rule]]
+id = "TOOL-43"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "1.0"
+fixtures = []
+tie_break = "A13: arguments after a tool-call reopen append. Basis: spec text, tool-calls.mdx:61-62 and lifecycle.mdx:201-203. TS instead replaces the stored arguments on the first TOOL_CALL_ARGS after a reopening START (apply/default.ts:821,933-937), so that replays are idempotent. Spec text wins; an upstream issue is needed."
+
+[[rule]]
+id = "STATE-01"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-snapshot-replaces", "state-falsy-snapshot-applies", "state-null-snapshot-applies"]
+
+[[rule]]
+id = "STATE-02"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-applies"]
+
+[[rule]]
+id = "STATE-03"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-falsy-snapshot-applies", "state-null-snapshot-applies"]
+
+[[rule]]
+id = "STATE-04"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["messages-snapshot-reconciles-by-id"]
+
+[[rule]]
+id = "STATE-05"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STATE-06"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["messages-snapshot-reconciles-by-id"]
+
+[[rule]]
+id = "STATE-07"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STATE-08"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STATE-09"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "STATE-10"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "state"
+scope = "1.0"
+fixtures = []
+reason = "Implicit, both halves tested. Server: the input's state is the publisher's baseline (tests/state_producer.rs) and the agent sees the input's messages and state (tests/interrupts_producer.rs). Client: state and history persist across runs (tests/state_snapshots.rs) and a Thread carries them into the next input (tests/interrupts_resume.rs)."
+
+[[rule]]
+id = "STATE-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "state"
+scope = "1.0"
+fixtures = ["state-delta-unappliable-warns-and-keeps"]
+
+[[rule]]
+id = "STATE-12"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Acting on state is the application's. SDK: `state_as::<T>()` deserialises into the application's type and returns a `Result`."
+
+[[rule]]
+id = "STATE-13"
+keyword = "SHOULD NOT"
+party = "producer"
+class = "application"
+role = "n/a"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Only the agent knows what is secret. Documented."
+
+[[rule]]
+id = "STATE-14"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "state"
+scope = "1.0"
+fixtures = ["messages-snapshot-reconciles-by-id"]
+
+[[rule]]
+id = "ACT-01"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-02"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = ["activity-snapshot-then-delta"]
+
+[[rule]]
+id = "ACT-03"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-04"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = ["activity-replace-false-preserves"]
+
+[[rule]]
+id = "ACT-05"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-06"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-07"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-08"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-09"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-10"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-11"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-12"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = ["activity-delta-missing-target-tolerated"]
+
+[[rule]]
+id = "ACT-13"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-14"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = ["activity-delta-missing-target-tolerated"]
+
+[[rule]]
+id = "ACT-15"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-16"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-17"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "ACT-18"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = []
+restates = ["RUNIN-12"]
+
+[[rule]]
+id = "ACT-19"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "activity"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-01"
+keyword = "MAY"
+party = "consumer"
+class = "informative"
+role = "n/a"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+reason = "Presentation freedom. Reasoning arrives as distinct updates and messages, so an application can hide it."
+
+[[rule]]
+id = "REAS-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-03"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-04"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-05"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "reasoning"
+scope = "1.0"
+fixtures = ["reasoning-span-and-message"]
+reason = "MAY, both halves tested: a span holds several reasoning messages under their own ids and its id namespaces nothing, in the verifier (tests/reasoning_producer.rs, producer fixture valid-reasoning-span-and-encrypted) and the client (tests/reasoning_spans.rs)."
+
+[[rule]]
+id = "REAS-06"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "reasoning"
+scope = "1.0"
+fixtures = ["reasoning-message-wrong-role-fatal"]
+
+[[rule]]
+id = "REAS-07"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-08"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = ["reasoning-discipline-verified"]
+
+[[rule]]
+id = "REAS-09"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = ["reasoning-discipline-verified"]
+
+[[rule]]
+id = "REAS-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+reason = "Implicit consumer rule, tested: REASONING_END for an unopened span and REASONING_START reopening an open span fail the run (tests/reasoning_spans.rs), as does ending an already closed span (tests/claims_client.rs)."
+
+[[rule]]
+id = "REAS-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-12"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-13"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-14"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-15"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-16"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-17"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-18"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-19"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested: REASONING_ENCRYPTED_VALUE is accepted anywhere in an open run, opens nothing and leaves a chunk stream open in the verifier (tests/reasoning_producer.rs); the client attaches it to an open message without disturbing it (tests/reasoning_encrypted.rs)."
+
+[[rule]]
+id = "REAS-20"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-21"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = ["encrypted-value-unknown-entity-tolerated"]
+
+[[rule]]
+id = "REAS-22"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = ["encrypted-value-unknown-entity-tolerated"]
+
+[[rule]]
+id = "REAS-23"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "REAS-24"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "As IDX-10: the SDK redacts reasoning content in `Debug`, diagnostics and tracing; storage and display policy are the application's."
+
+[[rule]]
+id = "REAS-25"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "The SDK serialises `encryptedValue` only into outgoing run input and redacts it everywhere else (`Debug`, diagnostics, tracing). What application code does with a field it can read is documented."
+
+[[rule]]
+id = "REAS-26"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-01"
+keyword = "implicit"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-02"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-03"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-04"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested: a suspended invocation's id reappears in the continuing run, in the verifier (tests/subagents_producer.rs) and the client (tests/subagents_attribution.rs)."
+
+[[rule]]
+id = "SUB-05"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-06"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-07"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+tie_break = "A4: announce-before-attribute binds only a producer that announces; unannounced attribution is accepted. Basis: spec text, subagents.mdx:33-47; corpus `subagent-unannounced-attribution-accepted`."
+
+[[rule]]
+id = "SUB-08"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-09"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-10"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = ["run-finished-with-active-subagent-fatal"]
+
+[[rule]]
+id = "SUB-11"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = ["subagent-unannounced-attribution-accepted"]
+tie_break = "A4: announce-before-attribute binds only a producer that announces; unannounced attribution is accepted. Basis: spec text, subagents.mdx:33-47; corpus `subagent-unannounced-attribution-accepted`."
+
+[[rule]]
+id = "SUB-12"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = ["subagent-unannounced-attribution-accepted"]
+tie_break = "A4: announce-before-attribute binds only a producer that announces; unannounced attribution is accepted. Basis: spec text, subagents.mdx:33-47; corpus `subagent-unannounced-attribution-accepted`."
+
+[[rule]]
+id = "SUB-13"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-14"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-15"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-16"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-17"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-18"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = ["subagent-attribution-mismatch-fatal"]
+
+[[rule]]
+id = "SUB-19"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-20"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested: untagged continuations continue the opener's owner, for messages in the verifier (tests/subagents_producer.rs) and the client (tests/subagents_attribution.rs, also tool calls), and for reasoning, tool calls and activities (tests/claims_producer.rs, tests/claims_client.rs)."
+
+[[rule]]
+id = "SUB-21"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = ["subagent-attribution-mismatch-fatal"]
+reason = "Implicit, both halves tested: a continuation tagged with another owner is refused for reasoning messages, tool calls and activities in the verifier (tests/subagents_producer.rs), and for messages, spans, tool calls and activities in the client (tests/subagents_attribution.rs, corpus subagent-attribution-mismatch-fatal)."
+
+[[rule]]
+id = "SUB-22"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-23"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested: parent and subagent hold same-named steps, each closing its own, in the verifier (tests/subagents_producer.rs, producer fixture valid-steps-per-owner) and through the runner's step emitters (tests/claims_producer.rs); the client tracks steps per owner (tests/subagents_attribution.rs)."
+
+[[rule]]
+id = "SUB-24"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = ["subagent-attribution-mismatch-fatal"]
+
+[[rule]]
+id = "SUB-25"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-26"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-27"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: SubagentScope::start_subagent names the spawner in parentSubagentRunId (tests/claims_producer.rs) and the verifier accepts nesting (tests/subagents_producer.rs). Client: nested invocations naming an announced parent are accepted (tests/subagents_attribution.rs)."
+
+[[rule]]
+id = "SUB-28"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-29"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested: parallel invocations interleave their messages and chunk streams, tracked apart, in the verifier (tests/subagents_producer.rs) and the client (tests/subagents_attribution.rs)."
+
+[[rule]]
+id = "SUB-30"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-31"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-32"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-33"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "subagents"
+scope = "1.0"
+fixtures = ["run-finished-with-active-subagent-fatal"]
+
+[[rule]]
+id = "SUB-34"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "SUB-35"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "subagents"
+scope = "1.0"
+fixtures = []
+reason = "MAY, both halves tested. Server: a SubagentScope finished as suspended and an interrupt outcome with attributed and unattributed interrupts are emitted (tests/claims_producer.rs); the verifier accepts them, a suspended outcome with no interrupt ids included (tests/subagents_producer.rs, tests/claims_producer.rs). Client: interrupts keep their attribution (tests/subagents_attribution.rs)."
+
+[[rule]]
+id = "SUB-36"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "subagents"
+scope = "1.0"
+fixtures = ["subagent-finished-unstarted-fatal"]
+tie_break = "No explicit spec sentence. Corpus `subagent-finished-unstarted-fatal` pins it as fatal (tie-break step 2): a lifecycle terminal closes something that must be open."
+
+[[rule]]
+id = "PASS-01"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "passthrough"
+scope = "1.0"
+fixtures = ["raw-and-custom-pass-through", "custom-closes-chunk-stream-fatal", "raw-does-not-close-chunk-stream"]
+reason = "Implicit, both halves tested. Server: the runner sends RAW and CUSTOM as given inside the run (tests/passthrough_events.rs); the verifier keeps a chunk stream open across RAW and ends it at CUSTOM (tests/claims_producer.rs, producer fixture refuse-custom-closes-chunk-stream). Client: RAW and CUSTOM are standalone and change nothing (tests/passthrough_events.rs, corpus raw-*/custom-*)."
+tie_break = "A3: a lane is an owner: the parent agent, or one `subagentRunId`. Each lane holds at most one pending chunk stream, of any kind. Explicit message, tool-call (including TOOL_CALL_RESULT), step, state, CUSTOM and reasoning events close their own lane. RUN_STARTED, RUN_FINISHED, RUN_ERROR and MESSAGES_SNAPSHOT close all lanes. SUBAGENT_FINISHED/ERROR close that subagent's lane; an id-less terminal closes nothing. RAW, ACTIVITY_*, REASONING_ENCRYPTED_VALUE and SUBAGENT_STARTED close nothing. Basis: spec streaming.mdx:128-150, plus TS chunks/transform.ts:401-456 (verified)."
+
+[[rule]]
+id = "PASS-02"
+keyword = "REQUIRED"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "passthrough"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PASS-03"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "passthrough"
+scope = "1.0"
+fixtures = ["raw-does-not-close-chunk-stream"]
+
+[[rule]]
+id = "PASS-04"
+keyword = "SHOULD"
+party = "producer"
+class = "application"
+role = "n/a"
+area = "passthrough"
+scope = "1.0"
+fixtures = []
+reason = "Only the bridge knows whether a provider event has a standard translation. Documented in the server bridge guide."
+
+[[rule]]
+id = "PASS-05"
+keyword = "REQUIRED"
+party = "producer"
+class = "sdk-ownable"
+role = "both"
+area = "passthrough"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "PASS-06"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "passthrough"
+scope = "1.0"
+fixtures = ["raw-and-custom-pass-through"]
+
+[[rule]]
+id = "PASS-07"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "passthrough"
+scope = "1.0"
+fixtures = []
+reason = "Naming is the author's. SDK: `CustomEvent::vendor(prefix, name, value)` builder, and rustdoc reserves unprefixed names."
+
+[[rule]]
+id = "PASS-08"
+keyword = "MUST NOT"
+party = "producer"
+class = "application"
+role = "n/a"
+area = "passthrough"
+scope = "1.0"
+fixtures = []
+reason = "A semantic choice by the agent author, which no SDK can judge from a CUSTOM name. Documented."
+
+[[rule]]
+id = "PASS-09"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-assistable"
+role = "client"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "Acting on payloads is the application's. SDK: never renders or executes RAW/CUSTOM, never derives behaviour from them (PASS-03), and offers `CustomEvent::value_as::<T>()` and `RawEvent::event_as::<T>()`, returning `Result` with an error that never echoes the payload."
+
+[[rule]]
+id = "PASS-10"
+keyword = "SHOULD"
+party = "consumer"
+class = "application"
+role = "n/a"
+area = "security"
+scope = "1.0"
+fixtures = []
+reason = "A posture for application code toward RAW payloads, with nothing an SDK can add beyond PASS-09. Documented."
+
+[[rule]]
+id = "CHG-01"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "streaming"
+scope = "1.0"
+fixtures = ["first-chunk-missing-id-fatal", "first-tool-chunk-missing-name-fatal"]
+restates = ["STRM-11", "STRM-14", "STRM-15", "STRM-20"]
+
+[[rule]]
+id = "CHG-02"
+keyword = "MAY"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+restates = ["LIFE-08", "LIFE-25", "LIFE-26", "LIFE-27", "LIFE-28", "LIFE-29", "LIFE-30", "LIFE-31", "LIFE-32", "LIFE-33", "LIFE-34", "LIFE-35", "LIFE-36"]
+reason = "Restatement; the accounting rows are mostly sdk-assistable (TokenUsage builder)."
+
+[[rule]]
+id = "CHG-03"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "1.0"
+fixtures = []
+restates = ["LIFE-06", "TOOL-25", "TOOL-26"]
+
+[[rule]]
+id = "CHG-04"
+keyword = "MAY"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "run-input"
+scope = "1.0"
+fixtures = ["unknown-part-in-message-list"]
+
+[[rule]]
+id = "CHG-05"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "capabilities"
+scope = "1.0"
+fixtures = []
+
+[[rule]]
+id = "CHG-06"
+keyword = "implicit"
+party = "producer"
+class = "informative"
+role = "n/a"
+area = "lifecycle"
+scope = "1.0"
+fixtures = []
+reason = "Historical observation: an absent outcome means success, so pre-outcome producers conform. LIFE-05 tests the consumer behaviour it relies on."
+
+[[rule]]
+id = "SCHF-01"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "processing"
+scope = "1.0"
+fixtures = ["unknown-property-stripped"]
+
+[[rule]]
+id = "SCHF-02"
+keyword = "implicit"
+party = "both"
+class = "sdk-ownable"
+role = "both"
+area = "processing"
+scope = "1.0"
+fixtures = ["open-object-patch-op-extras"]
+restates = ["PROC-15", "SNAP-08"]
+
+[[rule]]
+id = "DRAFT-01"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5). Obligation is the agent's; SDK documents it."
+
+[[rule]]
+id = "DRAFT-02"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-03"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-04"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-05"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-06"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-07"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "reasoning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-08"
+keyword = "MUST NOT"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-09"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5). Obligation is the agent's; SDK documents it."
+
+[[rule]]
+id = "DRAFT-10"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-11"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+draft_fixtures = ["tool-result-empty-error-preserved"]
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-12"
+keyword = "SHOULD"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+draft_fixtures = ["tool-result-empty-error-preserved"]
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-13"
+keyword = "MUST NOT"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-14"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-assistable"
+role = "server"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5). Obligation is the agent's; SDK documents it."
+
+[[rule]]
+id = "DRAFT-15"
+keyword = "MUST"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+draft_fixtures = ["tool-result-empty-error-preserved"]
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-16"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+draft_fixtures = ["tool-result-error-survives-snapshot"]
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-17"
+keyword = "implicit"
+party = "consumer"
+class = "sdk-ownable"
+role = "client"
+area = "tools"
+scope = "draft-1.1"
+fixtures = []
+draft_fixtures = ["tool-result-error-cleared-by-correction"]
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-18"
+keyword = "MAY"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-19"
+keyword = "MUST"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
+
+[[rule]]
+id = "DRAFT-20"
+keyword = "SHOULD"
+party = "producer"
+class = "sdk-ownable"
+role = "server"
+area = "versioning"
+scope = "draft-1.1"
+fixtures = []
+reason = "Draft 1.1 rule; not part of the 1.0 gate. Upstream generates SDKs only from frozen versions (audit-1 M5)."
