@@ -82,7 +82,12 @@ impl StatePublisher {
         if self.diverged {
             return Some(self.snapshot_event(next.clone()));
         }
-        let delta = patch::diff(&self.baseline, next);
+        // The budget, once a delta was observed, already holds the baseline's
+        // node count: no need to walk it again.
+        let delta = match &self.budget {
+            Some(budget) => patch::diff_counted(&self.baseline, budget.nodes(), next),
+            None => patch::diff(&self.baseline, next),
+        };
         if delta.is_empty() {
             return None;
         }
