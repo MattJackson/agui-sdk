@@ -238,7 +238,9 @@ jobs:
         id: pkg
         run: |
           set -euo pipefail
-          cargo package --locked --workspace --no-verify
+          # Only the two published crates: the workspace also holds unpublished
+          # tooling (test-support, xtask) that cannot be packaged.
+          cargo package --locked --no-verify -p "$PRIMARY_CRATE" -p "$ALIAS_CRATE"
           for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
             f="target/package/${c}-${VERSION}.crate"
             test -f "$f" || { echo "::error::expected $f from the package step" >&2; exit 1; }
