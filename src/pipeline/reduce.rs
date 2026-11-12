@@ -982,7 +982,7 @@ impl Reducer {
         self.activity_budgets.remove(&id);
         // The replacement is the producer's: its id is no longer minted (its
         // charge goes with the old message's).
-        self.minted.remove(&id);
+        remove_from(&mut self.minted, &id);
         self.class_counts[class(&self.messages[i])] -= 1;
         self.class_counts[class(&message)] += 1;
         let bytes = message_bytes(&message);
@@ -1308,7 +1308,7 @@ impl Reducer {
                 if let Some(i) = self.assistant_at(parent) {
                     // Naming a carrier as a parent adopts its id: it is the
                     // producer's message from now on.
-                    if self.minted.remove(parent).is_some() {
+                    if remove_from(&mut self.minted, parent).is_some() {
                         self.charge_at(i, -signed(MINTED_SLOT));
                     }
                     return i;
@@ -1351,7 +1351,7 @@ impl Reducer {
     /// producer's message. The carrier keeps its position and calls; the
     /// run's id list follows the rename.
     fn release_minted(&mut self, id: &MessageId) {
-        let Some(run) = self.minted.remove(id) else {
+        let Some(run) = remove_from(&mut self.minted, id) else {
             return;
         };
         let Some(&i) = self.index.get(id) else {
@@ -1671,6 +1671,12 @@ impl Reducer {
             self.compact_from(first_dropped, keeps);
         }
 
+        // One growth of each table for the whole snapshot, not a rehash of
+        // every held id at each doubling.
+        self.index.reserve(appends.len());
+        self.messages.reserve(appends.len());
+        self.charged.reserve(appends.len());
+        self.run_ids.reserve(appends.len());
         for j in appends {
             self.push_message(snapshot[j].clone());
         }
@@ -1732,7 +1738,7 @@ impl Reducer {
                 self.history_growth = self.history_growth.saturating_sub(signed(charge));
                 if self.index.get(&id) == Some(&old) {
                     self.index.remove(&id);
-                    self.minted.remove(&id);
+                    remove_from(&mut self.minted, &id);
                     self.activity_budgets.remove(&id);
                 } else {
                     self.dup_dec(&id, class(&m));
@@ -1951,7 +1957,7 @@ struct ActivityBudgets {
 
 impl ActivityBudgets {
     fn remove(&mut self, id: &MessageId) {
-        if let Some(b) = self.map.remove(id) {
+        if let Some(b) = remove_from(&mut self.map, id) {
             self.nodes -= b.nodes();
         }
     }
@@ -2172,7 +2178,7 @@ fn patch_credit<'a>(
             } else if credited {
                 // Touched before: what the pre-patch content held here is
                 // already counted; what this patch wrote here is freed now.
-                if let Some(bytes) = written.remove(p) {
+                if let Some(bytes) = remove_from(&mut written, p) {
                     entries.push((p, bytes));
                 }
             }
@@ -2180,7 +2186,7 @@ fn patch_credit<'a>(
                 break 'ops;
             }
             if !credited {
-                moving = written.remove(p);
+                moving = remove_from(&mut written, p);
                 continue;
             }
             // What `op` leaves at `p`, if it is a value this patch charged
@@ -2218,7 +2224,7 @@ fn patch_credit<'a>(
                     written.insert(p, bytes);
                 }
                 None => {
-                    written.remove(p);
+                    remove_from(&mut written, p);
                 }
             }
         }
@@ -2516,6 +2522,23 @@ fn class(m: &Message) -> usize {
         Message::Activity(_) => 1,
         Message::Reasoning(_) => 2,
         _ => 0,
+    }
+}
+
+/// `map.remove(key)`, without hashing `key` when the map is empty: the
+/// side tables (minted carriers, activity budgets, a patch's written
+/// members) are empty in the usual case, and std's `remove`, unlike its
+/// `get`, hashes first.
+fn remove_from<K, Q, V, S>(map: &mut HashMap<K, V, S>, key: &Q) -> Option<V>
+where
+    K: std::borrow::Borrow<Q> + std::hash::Hash + Eq,
+    Q: std::hash::Hash + Eq + ?Sized,
+    S: std::hash::BuildHasher,
+{
+    if map.is_empty() {
+        None
+    } else {
+        map.remove(key)
     }
 }
 
