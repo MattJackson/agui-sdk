@@ -172,7 +172,8 @@ error_codes! {
     RequestTooLarge = "server.request_too_large", Server;
     /// Encoding an event for the wire failed.
     Encode = "server.encode", Server;
-    /// The client disconnected.
+    /// The run's stream is gone or the run has already ended; no more events
+    /// can be sent.
     Disconnected = "server.disconnected", Server;
     /// SDK-side JSON (de)serialization failed (typed views such as `state_as`).
     Json = "internal.json", Internal;

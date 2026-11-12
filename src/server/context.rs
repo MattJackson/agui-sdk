@@ -149,7 +149,8 @@ impl<S> RunContext<S> {
 
 impl<S: serde::Serialize> RunContext<S> {
     /// Sends the state change since the last publication: a `STATE_DELTA`
-    /// against the baseline the client holds (the input's state until the
+    /// against the baseline the client holds (the input's state, or the last
+    /// replayed run's snapshot under `run_with_replay`, until the agent's
     /// first snapshot, RUNIN-25, SNAP-07), or a snapshot when a delta would
     /// be larger. No event when nothing changed.
     ///

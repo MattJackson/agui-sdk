@@ -183,8 +183,9 @@ impl RunOutcome {
         }
     }
 
-    /// Failed, with a `RUN_ERROR` the agent wrote itself: its code, message
-    /// and usage are sent as given (LIFE-21). Use this, not `Err`, when the
+    /// Failed, with a `RUN_ERROR` the agent wrote itself: its code and
+    /// message are sent as given (LIFE-21); usage it leaves unset is filled
+    /// from what the run recorded with `record_usage`. Use this, not `Err`, when the
     /// client should see the details.
     #[must_use]
     pub fn failed(error: RunError) -> Self {

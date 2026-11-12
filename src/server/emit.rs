@@ -695,7 +695,8 @@ impl Emitter {
     /// expansion beyond the queue, sends none.
     ///
     /// [`ErrorCode::Cancelled`] or [`ErrorCode::Disconnected`]: the run was
-    /// cancelled or its stream is gone; nothing more is sent.
+    /// cancelled, has already ended, or its stream is gone; nothing more is
+    /// sent.
     pub async fn emit(&self, event: impl Into<Event>) -> Result<()> {
         self.send(event.into()).await
     }
