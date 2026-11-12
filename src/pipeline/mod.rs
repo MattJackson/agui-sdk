@@ -416,6 +416,10 @@ pub struct Processor {
     external_bookkeeping: usize,
 }
 
+/// An enforcement verdict, with the event's known wire type when it was read
+/// (even for a rejected event: the label for its diagnostics).
+type Enforced = (Result<Option<Event>>, Option<&'static str>);
+
 /// Byte patterns that mark a frame the compatibility boundary may need to
 /// rewrite: a retired `THINKING_*` event type, or legacy binary content.
 const RETIRED_THINKING: &[u8] = b"THINKING_";
@@ -678,11 +682,11 @@ impl Processor {
         {
             self.upgrade_and_enforce(frame, reporter)
         } else {
-            let enforced = self.enforcer.enforce_event_json(frame, reporter);
+            let enforced = self.enforcer.enforce_json_typed(frame, reporter);
             // The boundary did not see this frame, but its per-run state
             // (the names it mints, the notices it gave) must still follow
             // the runs, as it does on every other path.
-            if let Ok(Some(Event::RunStarted(started))) = &enforced {
+            if let (Ok(Some(Event::RunStarted(started))), _) = &enforced {
                 self.boundary.run_started(Some(started.run_id.as_str()));
             }
             enforced
@@ -690,23 +694,22 @@ impl Processor {
         self.finish_push(enforced, reporter, out)
     }
 
-    fn upgrade_and_enforce(
-        &mut self,
-        frame: &[u8],
-        reporter: &mut Reporter,
-    ) -> Result<Option<Event>> {
+    fn upgrade_and_enforce(&mut self, frame: &[u8], reporter: &mut Reporter) -> Enforced {
         // Budgets apply while the tree is built, not after (a marker can
         // be anywhere in a frame, so this path is the peer's to choose).
-        let mut value = self.enforcer.parse_frame(frame)?;
+        let mut value = match self.enforcer.parse_frame(frame) {
+            Ok(value) => value,
+            Err(err) => return (Err(err), None),
+        };
         if !self.boundary.upgrade(&mut value, reporter) {
-            return Ok(None);
+            return (Ok(None), None);
         }
         if let Some(shims) = &self.era {
             if !shims.upgrade_event(&mut value, reporter) {
-                return Ok(None);
+                return (Ok(None), None);
             }
         }
-        self.enforcer.enforce_event_value(value, reporter)
+        self.enforcer.enforce_value_typed(value, reporter)
     }
 
     /// Middleware path: one frame that has *already* been through the
@@ -726,7 +729,7 @@ impl Processor {
         out: &mut Vec<Processed>,
     ) -> Result<()> {
         self.check_live()?;
-        let enforced = self.enforcer.enforce_event_value(frame, reporter);
+        let enforced = self.enforcer.enforce_value_typed(frame, reporter);
         self.finish_push(enforced, reporter, out)
     }
 
@@ -744,7 +747,7 @@ impl Processor {
     /// the end of the event's diagnostics budget.
     fn finish_push(
         &mut self,
-        enforced: Result<Option<Event>>,
+        (enforced, subject): Enforced,
         reporter: &mut Reporter,
         out: &mut Vec<Processed>,
     ) -> Result<()> {
@@ -760,7 +763,9 @@ impl Processor {
                 Ok(())
             }
             Err(err) => {
-                reporter.end_event(None);
+                // A rejected event's diagnostics name its type when it was
+                // read, as an accepted event's do.
+                reporter.end_event(subject);
                 Err(err)
             }
         };

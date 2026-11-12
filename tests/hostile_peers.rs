@@ -2155,3 +2155,37 @@ fn a_raised_max_depth_is_clamped_to_a_stack_safe_ceiling() {
         .join()
         .unwrap();
 }
+
+/// The diagnostics of an event that enforcement then rejects still name the
+/// event's type, as those of an accepted event do: the warnings gathered
+/// before the fault and the per-event cap's summary alike.
+#[test]
+fn diagnostics_of_a_rejected_event_name_its_type() {
+    let _g = lock();
+    let frame = json!({"type": "TEXT_MESSAGE_CONTENT", "aa1": 1, "aa2": 2,
+                       "messageId": "m", "delta": 7});
+    for value_path in [false, true] {
+        let sink = Arc::new(CollectingSink::new());
+        let mut reporter = Reporter::new(sink.clone(), 1);
+        let mut p = Processor::new(PipelineConfig::default());
+        push(&mut p, &mut reporter, &started()).unwrap();
+        sink.take();
+        let mut out = Vec::new();
+        let r = if value_path {
+            p.push_value(frame.clone(), &mut reporter, &mut out)
+        } else {
+            p.push_json(frame.to_string().as_bytes(), &mut reporter, &mut out)
+        };
+        assert_eq!(r.map_err(|e| e.code()), Err(ErrorCode::InvalidValue));
+        let seen = sink.take();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        for d in &seen {
+            assert_eq!(
+                d.event_type,
+                Some(agui_sdk::EventType::TextMessageContent),
+                "value path {value_path}: {d:?}"
+            );
+            assert_eq!(d.scope, Scope::Event, "value path {value_path}: {d:?}");
+        }
+    }
+}

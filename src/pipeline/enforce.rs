@@ -149,17 +149,24 @@ impl Enforcer {
         frame: &[u8],
         reporter: &mut Reporter,
     ) -> Result<Option<Event>> {
-        self.check_frame_size(frame)?;
+        self.enforce_json_typed(frame, reporter).0
+    }
+
+    /// [`enforce_event_json`](Self::enforce_event_json), with the event's
+    /// known wire type when it was read, even if the event was then
+    /// rejected (the label for the rest of its diagnostics).
+    pub(crate) fn enforce_json_typed(
+        &self,
+        frame: &[u8],
+        reporter: &mut Reporter,
+    ) -> (Result<Option<Event>>, Option<&'static str>) {
+        if let Err(err) = self.check_frame_size(frame) {
+            return (Err(err), None);
+        }
         let opts = self.options();
         let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome = event_from_bytes::<Event>(frame, &opts, &mut findings);
-        flush(
-            findings,
-            reporter,
-            Scope::Event,
-            outcome.as_ref().ok().and_then(|o| o.1),
-        );
-        outcome.map(|o| o.0).map_err(event_error)
+        finish_event(outcome, findings, reporter)
     }
 
     /// Enforces one event that middleware produced, consuming the `Value`
@@ -175,16 +182,21 @@ impl Enforcer {
         frame: Value,
         reporter: &mut Reporter,
     ) -> Result<Option<Event>> {
+        self.enforce_value_typed(frame, reporter).0
+    }
+
+    /// [`enforce_event_value`](Self::enforce_event_value), with the event's
+    /// known wire type as [`enforce_json_typed`](Self::enforce_json_typed)
+    /// gives it.
+    pub(crate) fn enforce_value_typed(
+        &self,
+        frame: Value,
+        reporter: &mut Reporter,
+    ) -> (Result<Option<Event>>, Option<&'static str>) {
         let opts = self.options();
         let mut findings = Findings::for_reporter(opts.max_findings, reporter);
         let outcome = event_from_value::<Event>(frame, &opts, &mut findings);
-        flush(
-            findings,
-            reporter,
-            Scope::Event,
-            outcome.as_ref().ok().and_then(|o| o.1),
-        );
-        outcome.map(|o| o.0).map_err(event_error)
+        finish_event(outcome, findings, reporter)
     }
 
     /// Client side, typed input: a [`RunAgentInput`] carries no unknown
@@ -402,6 +414,7 @@ fn event_walk<T: DeserializeOwned>(
             RootTag::Unknown => (Shape::Union(event_union()), None),
             RootTag::Reroute => return Ok((Rooted::Reroute, None)),
         };
+        st.findings.subject = subject;
         Ok((st.run::<T>(shape)?, subject))
     }
 }
@@ -450,6 +463,7 @@ pub(crate) fn event_from_value<T: DeserializeOwned>(
         Some(Value::String(t)) if !t.is_empty() => event_union().variant(t).map(|v| v.0),
         Some(_) => return Err(Fault::not_an_event("`type` is not a non-empty string")),
     };
+    findings.subject = subject;
     match Tree::new(opts, findings).root(Shape::Union(event_union()), &mut frame)? {
         Verdict::Keep => Ok((
             Some(
@@ -549,6 +563,21 @@ fn report_root_drop(findings: &mut Findings, removal: Removal, event_type: Optio
             _ => removal.message(),
         }
     });
+}
+
+/// Reports an event's findings, labelled with its type when that was read
+/// (a rejected event's too), and returns the verdict with that type.
+fn finish_event(
+    outcome: std::result::Result<EventOutcome<Event>, Fault>,
+    findings: Findings,
+    reporter: &mut Reporter,
+) -> (Result<Option<Event>>, Option<&'static str>) {
+    let subject = match &outcome {
+        Ok(o) => o.1,
+        Err(_) => findings.subject,
+    };
+    flush(findings, reporter, Scope::Event, subject);
+    (outcome.map(|o| o.0).map_err(event_error), subject)
 }
 
 /// Hands findings to the reporter, then the summary for any beyond the cap.
