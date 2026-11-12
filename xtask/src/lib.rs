@@ -85,7 +85,13 @@ fn msrv_lock_with(root: &Path, cargo: &str) -> Result<(), String> {
         ));
     }
     let lock_path = root.join("Cargo.lock");
-    let original = std::fs::read(&lock_path).ok();
+    // Only a missing lockfile may be removed again on failure; any other read
+    // error stops before cargo touches the file.
+    let original = match std::fs::read(&lock_path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("cannot read {}: {e}", lock_path.display())),
+    };
     let Err(err) = update_lock(root, cargo, &lock_path) else {
         return Ok(());
     };
@@ -200,6 +206,42 @@ mod tests {
         let err = result.err().unwrap_or_default();
         assert!(err.contains("restoring Cargo.lock failed"), "{err}");
         assert!(!err.contains("left unchanged"), "{err}");
+        Ok(())
+    }
+
+    /// A stand-in cargo whose `update` fails without touching anything.
+    const FAKE_CARGO_FAIL: &str = "#!/bin/sh\n\
+        if [ \"$1\" = --version ]; then echo 'cargo 1.90.0 (x 2025-01-01)'; exit 0; fi\n\
+        exit 1\n";
+
+    #[test]
+    fn unreadable_lockfile_is_not_deleted() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = std::env::temp_dir().join(format!("xtask-msrv-perm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+        let cargo = tmp.join("fake-cargo");
+        std::fs::write(&cargo, FAKE_CARGO_FAIL).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        let lock = tmp.join("Cargo.lock");
+        std::fs::write(&lock, "version = 3\n").map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o000))
+            .map_err(|e| e.to_string())?;
+        if std::fs::read(&lock).is_ok() {
+            // Running with privileges that ignore file modes; nothing to test.
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Ok(());
+        }
+
+        let result = msrv_lock_with(&tmp, &cargo.to_string_lossy());
+        let still_there = lock.exists();
+        let _ = std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let err = result.err().unwrap_or_default();
+        assert!(still_there, "the unreadable Cargo.lock was deleted: {err}");
+        assert!(!err.contains("left unchanged"), "{err}");
+        assert!(err.contains("Cargo.lock"), "{err}");
         Ok(())
     }
 }
