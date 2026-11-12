@@ -1,0 +1,202 @@
+# Performance. Three jobs, one of which is a gate:
+#
+#   gate        Benches with allocation-count regression thresholds and
+#               linearity checks (time and allocations must grow no faster
+#               than linearly with input size). Throughput is measured and
+#               reported, not gated: no floor is recorded in budgets.toml. Runs whenever
+#               qa.yml runs (qa.yml calls this file), so the qa gate and the
+#               release path both enforce it. Also dispatchable on its own.
+#   flamegraph  Dispatch only. Profiles every bench target with
+#               cargo-flamegraph (perf) on Linux and uploads the SVGs.
+#   pgo         Dispatch only. Builds the bench harness with
+#               -Cprofile-generate, runs the benches to collect a profile,
+#               merges it with llvm-profdata, rebuilds with -Cprofile-use and
+#               reports the delta. It tells hot-spot work where the compiler
+#               could do better with better information; it is not a release
+#               step, because a library cannot ship a profile to its users.
+#
+# The policy behind the thresholds, and how to run each of these locally, is
+# docs/PERFORMANCE.md.
+#
+# Actions are pinned to a full commit SHA with the readable ref in a trailing
+# comment; see dev.yml's header for why, and for the no-`${{ }}`-in-`run:`
+# rule. No `continue-on-error` anywhere.
+
+name: perf
+
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Also run a profiling job: none, flamegraph, pgo or all"
+        required: true
+        type: choice
+        options: [none, flamegraph, pgo, all]
+        default: none
+
+concurrency:
+  # Distinct from the caller's group, so a qa run and a standalone dispatch do
+  # not cancel each other.
+  group: perf-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: allocations, linearity (throughput reported)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # proto_codec measures the upstream byte corpus as one of its loads; it
+      # lives in the pinned spec, fetched into .spec-cache/ (never committed).
+      - name: fetch the pinned upstream specification into .spec-cache/
+        run: cargo xtask spec-fetch
+      - name: bench gate
+        # One command, non-zero on any breach (benches/support/mod.rs):
+        #   - allocations per event, compared exactly with benches/budgets.toml
+        #     (deterministic; a case with no recorded budget fails);
+        #   - linearity from x1 to x8 input: allocations within 8 x 1.15, time
+        #     within 8 x 1.5 (a quadratic path fails by a wide margin);
+        #   - throughput is printed for each case but not gated: every
+        #     min_mb_per_s in budgets.toml is 0 (no floor recorded yet).
+        # `cargo bench` passes `--bench`, which selects the gated quick mode
+        # (x1 and x8); AGUI_BENCH_MODE=full adds x2 and x4.
+        env:
+          AGUI_BENCH_OUT: ${{ runner.temp }}/bench-results
+          # A missing spec cache is a failure, not a silently skipped load.
+          AGUI_REQUIRE_SPEC: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$AGUI_BENCH_OUT"
+          cargo bench --locked -p agui-sdk --benches
+      - name: keep the measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-results
+          path: ${{ runner.temp }}/bench-results/*.json
+          if-no-files-found: warn
+
+  flamegraph:
+    name: flamegraphs (every bench target)
+    # `inputs.profile` is empty when this file is called from qa.yml, so the
+    # profiling jobs only ever run from a manual dispatch.
+    if: inputs.profile == 'flamegraph' || inputs.profile == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: flamegraph@0.6.15
+      - name: install perf and allow unprivileged sampling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends linux-tools-common "linux-tools-$(uname -r)"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          sudo sysctl -w kernel.kptr_restrict=0
+      - name: profile each bench target
+        env:
+          # Symbols in release builds, so the graph names functions.
+          CARGO_PROFILE_BENCH_DEBUG: "true"
+        # Bench targets are discovered, so a new one is profiled the day it
+        # lands. `-- --bench` runs the harness in bench mode; for criterion
+        # benches, `--profile-time` would give a steadier sample.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/flamegraphs"
+          benches=$(cargo metadata --no-deps --format-version=1 --locked \
+            | jq -r '.packages[] | .name as $p | .targets[] | select(.kind | index("bench")) | "\($p):\(.name)"')
+          if [ -z "$benches" ]; then
+            echo "::error::no bench targets in the workspace" >&2; exit 1
+          fi
+          for pb in $benches; do
+            p=${pb%%:*}; b=${pb#*:}
+            echo "::group::$p / $b"
+            cargo flamegraph --locked -p "$p" --bench "$b" \
+              -o "$RUNNER_TEMP/flamegraphs/${p}-${b}.svg" -- --bench
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flamegraphs
+          path: ${{ runner.temp }}/flamegraphs/*.svg
+          if-no-files-found: error
+
+  pgo:
+    name: PGO delta (profile-generate, merge, profile-use)
+    if: inputs.profile == 'pgo' || inputs.profile == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - name: baseline, instrumented, optimised
+        # Three bench runs. The baseline and the profile-use run share one
+        # target dir, so a criterion harness prints "change: ..." against the
+        # baseline on its own; the instrumented run uses a separate target dir
+        # so its (slow, instrumented) timings never become the comparison.
+        # Logs are kept as an artifact either way.
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pgo"; mkdir -p "$out/data"
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          profdata="$(rustc --print sysroot)/lib/rustlib/${host}/bin/llvm-profdata"
+          test -x "$profdata" || { echo "::error::llvm-profdata not found at $profdata" >&2; exit 1; }
+
+          echo "::group::1/3 baseline"
+          cargo bench --workspace --locked 2>&1 | tee "$out/1-baseline.log"
+          echo "::endgroup::"
+
+          echo "::group::2/3 instrumented (profile-generate)"
+          RUSTFLAGS="-Cprofile-generate=$out/data" CARGO_TARGET_DIR="$RUNNER_TEMP/pgo-gen-target" \
+            cargo bench --workspace --locked 2>&1 | tee "$out/2-instrumented.log"
+          echo "::endgroup::"
+
+          "$profdata" merge -o "$out/merged.profdata" "$out/data"
+
+          echo "::group::3/3 optimised (profile-use)"
+          RUSTFLAGS="-Cprofile-use=$out/merged.profdata -Cllvm-args=-pgo-warn-missing-function" \
+            cargo bench --workspace --locked 2>&1 | tee "$out/3-pgo.log"
+          echo "::endgroup::"
+
+          {
+            echo "### PGO delta"
+            echo ""
+            echo "Lines reporting change against the baseline run (criterion format):"
+            echo ""
+            echo '```'
+            grep -E 'change:|time:' "$out/3-pgo.log" || echo "(no criterion-style change lines; compare 1-baseline.log and 3-pgo.log in the artifact)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pgo-logs
+          path: |
+            ${{ runner.temp }}/pgo/*.log
+          if-no-files-found: error

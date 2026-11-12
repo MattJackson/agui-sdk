@@ -1,0 +1,48 @@
+# Published-spec drift. `spec-fetch` (qa's spec-sync, fuzz and test jobs)
+# always downloads the pinned upstream commit and checks its hashes, so no
+# run of qa.yml can notice upstream republishing the 1.0 schema. This job
+# downloads the schema published at spec.lock's `schema_url`
+# (https://ag-ui.com/spec/1.0/schema.json) and fails unless it is
+# byte-identical to the pinned `schema_sha256`: the same comparison
+# `cargo xtask spec-bump` makes before pinning (`cargo xtask spec-published`,
+# xtask/src/fetch.rs).
+#
+# A red run is news, not breakage: upstream changed the published schema.
+# Review the change and pin the matching commit with `cargo xtask spec-bump`.
+#
+# Actions are pinned to a full commit SHA with the readable ref in a trailing
+# comment; see dev.yml's header for why, and for the no-`${{ }}`-in-`run:`
+# rule. No `continue-on-error` anywhere.
+
+name: spec drift
+
+on:
+  schedule:
+    # Daily, off the hour (GitHub delays cron runs that pile onto :00).
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: spec-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  published-schema:
+    name: published 1.0 schema matches the pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - name: compare https://ag-ui.com/spec/1.0/schema.json with spec.lock
+        run: cargo xtask spec-published

@@ -1,0 +1,308 @@
+# Release. Pushing a tag `vX.Y.Z` (on a commit that is on main) publishes
+# agui-sdk to crates.io, then the ag-ui-sdk alias crate, then opens a GitHub
+# Release whose body is that version's CHANGELOG.md section, with the packaged
+# .crate files, SLSA provenance and keyless cosign signatures attached.
+#
+# Nothing is published that has not just passed the full qa gate: the `verify`
+# job *calls qa.yml itself* on the tagged commit, so the release path re-runs
+# the OS matrix, the MSRV floor, spec-sync conformance, fuzz smoke, the perf
+# gate, packaging and semver-checks against exactly what ships.
+#
+# Every irreversible action is guarded by "does this already exist" (each
+# crate version on crates.io, the GitHub release), so re-running after a
+# partial failure is safe: a publish that succeeded is skipped and the rest
+# finishes.
+#
+# ---------------------------------------------------------------------------
+# AUTHENTICATION (one-time owner setup; full steps in docs/SETUP.md)
+# ---------------------------------------------------------------------------
+# Two ways, chosen automatically per run:
+#
+#   - If the repository secret CRATES_IO_TOKEN exists, it is used. crates.io
+#     Trusted Publishing can only be configured for a crate that already
+#     exists, so the very first release of each crate needs this token.
+#   - Otherwise crates.io Trusted Publishing (OIDC): GitHub mints a short-lived
+#     identity token for this workflow, in the `release` environment, and
+#     crates.io exchanges it for a ~30 minute publish token. Configure it on
+#     BOTH crates with: owner MattJackson, repository agui-sdk, workflow
+#     release.yml, environment release. Then delete CRATES_IO_TOKEN; nothing
+#     long-lived should stay behind.
+# ---------------------------------------------------------------------------
+#
+# Actions are pinned to a full commit SHA with the readable ref in a trailing
+# comment; see dev.yml's header for why, and for the no-`${{ }}`-in-`run:`
+# rule. No `continue-on-error` anywhere.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release mid-flight: `cargo publish` is not reversible. The
+  # called qa.yml does not cancel on this path either (its own group cancels
+  # only for branch pushes).
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  PRIMARY_CRATE: agui-sdk
+  ALIAS_CRATE: ag-ui-sdk
+
+jobs:
+  verify:
+    name: re-verify the full qa gate
+    # The same file the qa branch runs, called on the tagged commit. Re-running
+    # it rather than trusting an earlier green tick is what makes a tag safe to
+    # push: the tag might point at a commit qa never saw.
+    uses: ./.github/workflows/qa.yml
+    permissions:
+      contents: read
+    # Named one at a time rather than `secrets: inherit`, which would hand the
+    # called workflow everything this repository holds.
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  publish:
+    name: publish ${{ github.ref_name }}
+    needs: verify
+    runs-on: ubuntu-latest
+    # Gates the OIDC identity (crates.io's trusted-publisher entry names this
+    # environment) and lets the owner require a review click before publishing.
+    environment: release
+    timeout-minutes: 45
+    permissions:
+      # GitHub Release creation and asset upload.
+      contents: write
+      # SLSA build-provenance attestation for the packaged crates.
+      attestations: write
+      # OIDC: crates.io Trusted Publishing and keyless cosign signing.
+      id-token: write
+    # No secret is job-wide, and nothing in this job compiles dependency code:
+    # both publishes are `--no-verify`, and the verifying build ran token-free
+    # in qa.yml's `package` job (`needs: verify`; no secrets, no `id-token`).
+    # The registry token is handed only to the two publish steps. `id-token:
+    # write` is job-wide, so a step that compiled third-party code here could
+    # mint a publish token: the only cargo commands allowed in this file are
+    # `cargo publish` / `cargo package` with `--no-verify`. qa.yml's `lint`
+    # job fails on any other line that names cargo, but it cannot see cargo
+    # run indirectly (a script, `$CARGO`, an action); docs/DECISIONS.md D16.
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the "is this tag on main" check needs it.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      # No build cache on the publishing job: a restored ~/.cargo or target/
+      # is input to what gets published and signed (cache poisoning). The
+      # job builds from a clean checkout instead.
+
+      - name: the tag, the manifest and main agree
+        run: |
+          set -euo pipefail
+          if [ -z "${VERSION:-}" ]; then
+            echo "::error::qa.yml returned no version; refusing to release an unnamed thing" >&2
+            exit 1
+          fi
+          if [ "$TAG" != "v${VERSION}" ]; then
+            echo "::error::tag $TAG does not match the workspace version $VERSION" >&2
+            exit 1
+          fi
+          # Releases come from main only (dev -> qa -> main). A tag pushed on a
+          # dev or feature commit is refused, however green it is.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG points at a commit that is not on main" >&2
+            exit 1
+          fi
+
+      - name: what already exists (registry, release)
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # 404 means "not published yet", 200 means "already there". Anything
+        # else is crates.io being unhealthy, and guessing then either
+        # double-publishes or silently skips a crate, so stop.
+        run: |
+          set -euo pipefail
+          exists() {
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "User-Agent: agui-sdk release (https://github.com/MattJackson/agui-sdk)" \
+              "https://crates.io/api/v1/crates/$1/$VERSION")
+            case "$code" in
+              200) echo true ;;
+              404) echo false ;;
+              *)   echo "::error::crates.io answered $code for $1/$VERSION; refusing to guess" >&2; exit 1 ;;
+            esac
+          }
+          primary=$(exists "$PRIMARY_CRATE")
+          alias_=$(exists "$ALIAS_CRATE")
+          if gh release view "$TAG" >/dev/null 2>&1; then released=true; else released=false; fi
+          {
+            echo "primary_published=$primary"
+            echo "alias_published=$alias_"
+            echo "released=$released"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### release $TAG"
+            echo ""
+            echo "| thing | already exists |"
+            echo "| --- | --- |"
+            echo "| crates.io $PRIMARY_CRATE $VERSION | $primary |"
+            echo "| crates.io $ALIAS_CRATE $VERSION | $alias_ |"
+            echo "| GitHub release $TAG | $released |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: release notes from CHANGELOG.md
+        # A version with no CHANGELOG section, or one still dated TBD, is an
+        # unfinished bump; failing here, before anything irreversible, is the
+        # cheap place to find out.
+        # Written outside the checkout: `cargo publish` refuses a dirty tree.
+        run: |
+          set -euo pipefail
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { inside = 1; next }
+            inside && (/^## / || /^\[[^]]+\]:/) { exit }
+            inside { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/release-notes.md"; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section with content in it" >&2
+            exit 1
+          fi
+          dated=$(awk -v ver="$VERSION" 'index($0, "## [" ver "] - ") == 1 { print substr($0, length("## [" ver "] - ") + 1); exit }' CHANGELOG.md)
+          if ! [[ $dated =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]*$ ]]; then
+            echo "::error::CHANGELOG.md's '## [$VERSION]' heading is not dated YYYY-MM-DD (date: '$dated'); set the release date on dev before tagging" >&2
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/release-notes.md"
+
+      - name: is a CRATES_IO_TOKEN secret configured?
+        # Step `if:` cannot read `secrets`; the answer (never the value)
+        # travels as a step output.
+        id: secret
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          if [ -n "$CRATES_IO_TOKEN" ]; then present=true; else present=false; fi
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+
+      - name: mint a short-lived crates.io token (Trusted Publishing, OIDC)
+        id: auth
+        if: steps.secret.outputs.present == 'false' && (steps.state.outputs.primary_published == 'false' || steps.state.outputs.alias_published == 'false')
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      # agui-sdk first: ag-ui-sdk depends on it at this exact version, and cargo
+      # waits for the index to show agui-sdk before `publish` returns, so the
+      # second publish resolves against the first.
+      #
+      # `--no-verify`: a verifying publish compiles the package, running every
+      # dependency build script and proc-macro with CARGO_REGISTRY_TOKEN in
+      # its environment. The same commit was verify-built by qa.yml's
+      # `package` job (`cargo publish --dry-run --workspace --locked`), which
+      # holds no credential.
+      - name: cargo publish agui-sdk
+        if: steps.state.outputs.primary_published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN || steps.auth.outputs.token }}
+        run: cargo publish --locked --no-verify -p "$PRIMARY_CRATE"
+
+      - name: cargo publish ag-ui-sdk
+        if: steps.state.outputs.alias_published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN || steps.auth.outputs.token }}
+        run: cargo publish --locked --no-verify -p "$ALIAS_CRATE"
+
+      # ---- Signed, attested release artifacts --------------------------------
+      # crates.io publishes no signature over the bytes it holds, so the GitHub
+      # Release carries its own evidence: the exact .crate files, a SLSA
+      # provenance attestation binding them to this run and commit, and keyless
+      # cosign signatures. Verify with
+      #   gh attestation verify agui-sdk-<v>.crate --repo MattJackson/agui-sdk
+      - name: package both crates for signing; they must be what crates.io serves
+        # What is attested and signed must be the bytes crates.io holds, not
+        # merely a local re-package of the same commit: each local .crate is
+        # compared with the one crates.io serves before anything is signed.
+        id: pkg
+        run: |
+          set -euo pipefail
+          cargo package --locked --workspace --no-verify
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            f="target/package/${c}-${VERSION}.crate"
+            test -f "$f" || { echo "::error::expected $f from the package step" >&2; exit 1; }
+            served="$RUNNER_TEMP/served-${c}-${VERSION}.crate"
+            # The CDN can lag the index by a little after a publish.
+            curl -sS --fail --location --retry 10 --retry-delay 15 --retry-all-errors \
+              -H "User-Agent: agui-sdk release (https://github.com/MattJackson/agui-sdk)" \
+              -o "$served" "https://static.crates.io/crates/${c}/${c}-${VERSION}.crate"
+            local_sum=$(sha256sum "$f" | cut -d' ' -f1)
+            served_sum=$(sha256sum "$served" | cut -d' ' -f1)
+            if [ "$local_sum" != "$served_sum" ]; then
+              echo "::error::$c $VERSION: crates.io serves sha256 $served_sum, the local package is $local_sum; refusing to sign" >&2
+              exit 1
+            fi
+            echo "$c $VERSION: sha256 $served_sum matches crates.io" >> "$GITHUB_STEP_SUMMARY"
+            cp "$served" "$RUNNER_TEMP/${c}-${VERSION}.crate"
+            rm -f "$served"
+          done
+
+      - name: attest build provenance (SLSA)
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: ${{ runner.temp }}/*.crate
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: cosign-sign the crates (keyless) and stage assets
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          # An `.intoto.jsonl` asset is what OpenSSF Scorecard's
+          # Signed-Releases check looks for; the attestation store alone is
+          # invisible to it.
+          cp "$BUNDLE_PATH" "agui-sdk-${VERSION}.intoto.jsonl"
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            f="${c}-${VERSION}.crate"
+            cosign sign-blob --yes --bundle "$f.cosign.bundle" "$f"
+            # Verify what was just produced: a signature nobody watched verify
+            # is an unexercised path.
+            cosign verify-blob --bundle "$f.cosign.bundle" \
+              --certificate-identity-regexp '^https://github.com/MattJackson/agui-sdk/' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "$f"
+          done
+
+      - name: GitHub release
+        # --verify-tag so this can never invent a tag of its own. A version
+        # with a pre-release suffix (0.9.0-rc.1) is marked as a pre-release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          assets=(*.crate *.cosign.bundle *.intoto.jsonl)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          else
+            pre=()
+            case "$VERSION" in *-*) pre=(--prerelease) ;; esac
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file release-notes.md \
+              --verify-tag "${pre[@]}" \
+              "${assets[@]}"
+          fi
+          echo "Released $TAG: https://crates.io/crates/$PRIMARY_CRATE/$VERSION" >> "$GITHUB_STEP_SUMMARY"

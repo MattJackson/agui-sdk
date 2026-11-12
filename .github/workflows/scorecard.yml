@@ -1,0 +1,85 @@
+# OpenSSF Scorecard. Scores this repository's supply-chain posture — branch
+# protection, action pinning, token permissions, dangerous workflow patterns,
+# dependency update automation — and publishes the result so the README badge
+# resolves. It reads repository configuration and history and changes nothing
+# in the tree; there is no build here and nothing to break.
+#
+# This is not a code gate and deliberately does not run on push: Scorecard
+# scores the *repository*, not the commit, and almost every signal it reads
+# (branch protection rules, the age of the last release, whether Dependabot is
+# configured) can only change on a timescale of days. Weekly is therefore the
+# honest cadence, and `workflow_dispatch` covers the one case where waiting is
+# annoying — having just changed something Scorecard grades and wanting to see
+# the new score now.
+#
+# Scorecard only publishes results for runs on the default branch, so the
+# schedule below runs against main. A dispatch from another branch will still
+# analyse, but the published score is always main's.
+#
+# Actions are pinned to a full commit SHA with the readable ref in a trailing
+# comment; see dev.yml's header for why a tag is not an identity. Refresh a pin
+# with `gh api repos/<owner>/<repo>/commits/<ref> --jq .sha` — note that
+# `git ls-remote` on an annotated tag gives the tag object's hash, not the
+# commit's, and pinning that hash is an error. No `continue-on-error` anywhere:
+# a scoring run that is allowed to fail silently stops being a score.
+
+name: scorecard
+
+on:
+  schedule:
+    # Mondays, the same day as qa.yml's weekly run, so the week's supply-chain
+    # signals arrive together. Not on the hour —
+    # GitHub delays cron runs that pile onto :00, and an off-peak minute is the
+    # difference between "runs Monday morning" and "runs whenever there's room".
+    - cron: "27 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing at the top level; the one job below elevates exactly what it needs
+# and no other job inherits it.
+permissions: {}
+
+jobs:
+  analysis:
+    name: score and publish
+    runs-on: ubuntu-latest
+    # A full Scorecard run on a repository this size is a few minutes. Twenty
+    # means the API it depends on is wedged, and failing then beats holding a
+    # runner for GitHub's 6 hour default.
+    timeout-minutes: 20
+    permissions:
+      # Checkout.
+      contents: read
+      # Upload the SARIF to the code-scanning dashboard, which is where the
+      # per-check detail lives — the badge is only the headline number.
+      security-events: write
+      # Mint the OIDC token that proves to the OpenSSF API that this run really
+      # is this repository's workflow. Publishing is keyless because of this:
+      # there is no secret to rotate and none to leak.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Scorecard reads the repository, not a working copy, so it needs no
+          # credentials — and leaving GITHUB_TOKEN written into .git/config for
+          # the rest of the job is exactly the kind of thing Scorecard grades.
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # This is the line that makes the README badge work. `publish_results`
+          # sends the score to the public OpenSSF API that backs
+          # api.securityscorecards.dev; without it the analysis still runs and
+          # still uploads SARIF, but the badge renders "unknown" forever.
+          publish_results: true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: results.sarif

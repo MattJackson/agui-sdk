@@ -1,0 +1,98 @@
+# Fast gate: fmt, clippy (default and all features), tests, doctests and
+# cargo-deny on latest stable Linux. Runs on every push to dev and on every
+# pull request. The thorough gate (OS matrix, MSRV floor, rustdoc links,
+# spec-sync conformance, fuzz smoke, perf linearity, packaging, semver) lives
+# in qa.yml and runs on the qa branch, where completeness matters more than
+# speed. Nothing slow is allowed in here: this is the inner loop.
+#
+# Every third-party action is pinned to a full commit SHA (readable ref in a
+# trailing comment) rather than a tag or branch: a tag is not an identity,
+# since its owner can repoint it at different code at any time, and
+# dtolnay/rust-toolchain's `@stable` ref is a branch, which is the same problem
+# without even the pretence of stability. Refresh a pin with
+# `gh api repos/<owner>/<repo>/commits/<ref> --jq .sha`.
+#
+# No `${{ }}` inside any `run:` block, in any workflow here: values reach the
+# shell through `env:`, so nothing attacker-influenced (a branch name, a PR
+# title) can ever be spliced into a script. No `continue-on-error` anywhere:
+# every step is load-bearing.
+
+name: dev fast gate
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+
+concurrency:
+  group: dev-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint-and-test:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    # A normal run is a few minutes. Twenty means something is wedged (a hung
+    # test, a network stall), and failing then beats holding a runner for
+    # GitHub's 6 hour default.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Cargo.lock is committed, so every cargo invocation passes `--locked`:
+      # CI tests the exact dependency set that was reviewed, and a manifest
+      # edit that forgot to update the lockfile fails here instead of silently
+      # resolving something new.
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy, library alone with no features (deny warnings)
+        # Code behind a feature flag and code that is only compiled when the
+        # flag is *off* are different code, and `--all-features` alone never
+        # sees the second kind. The workspace runs below cannot see it either:
+        # crates/test-support enables client, server and proto on agui-sdk,
+        # and Cargo unifies that into every build that selects the workspace
+        # or compiles dev-dependencies. `--lib` on agui-sdk alone builds no
+        # dev-dependency (docs/DECISIONS.md D15). qa's `msrv-features` lints
+        # the library alone with each feature too.
+        run: cargo clippy --locked -p agui-sdk --lib --no-default-features -- -D warnings
+      - name: clippy, workspace (test harness enables client, server, proto; deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy, all features (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: test, workspace (the test harness enables client, server, proto)
+        run: cargo test --workspace --all-targets --locked
+      - name: test, all features
+        run: cargo test --workspace --all-targets --all-features --locked
+      - name: doctests
+        # `--all-targets` silently excludes doctests, and the public API is
+        # documented with runnable examples, so they need their own run.
+        run: cargo test --workspace --doc --all-features --locked
+
+  deny:
+    name: cargo-deny (advisories, licences, bans, sources)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-deny@0.20.2
+      # Policy is in deny.toml. Advisories are checked here as well as in qa
+      # because a new RustSec advisory against a dependency is exactly the
+      # kind of news that should reach the inner loop, not wait for a release.
+      - run: cargo deny --all-features check

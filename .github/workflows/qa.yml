@@ -1,0 +1,865 @@
+# Thorough gate. Runs on every push to qa (qa only ever advances by
+# fast-forwarding from a dev commit that already passed dev.yml), so this
+# workflow re-validates everything dev.yml checked and adds what dev.yml skips
+# for speed:
+#
+#   - the full test set on Linux, macOS and Windows on stable, corpus lanes
+#     included (each cell fetches the pinned spec and requires it), and the
+#     MSRV floor read from Cargo.toml (never hardcoded here): the core crate
+#     on the regenerated lock, every feature together on the committed lock,
+#     and the library alone with no features and with each feature by itself
+#     (checked at its floor and clippied, warnings denied) on the committed
+#     lock; native-tls, the documented exception (docs/DECISIONS.md D1), at
+#     its own 1.80 floor. Every test build also gets client, server and proto
+#     from the test harness (docs/DECISIONS.md D15);
+#   - rustdoc with warnings and dead intra-doc links as failures;
+#   - spec-sync: fetch the upstream AG-UI specification into .spec-cache/ and
+#     run the conformance suite against it (docs/CONFORMANCE.md);
+#   - a fuzz smoke run of every cargo-fuzz target;
+#   - TS interop: the pinned TypeScript client against this crate's server,
+#     and this crate's client against the pinned TypeScript encoder;
+#   - the perf gate from perf.yml: allocation-count regression thresholds
+#     and linearity checks, with throughput reported but not gated
+#     (docs/PERFORMANCE.md);
+#   - cargo-deny, a publish dry run of both crates, coverage, and
+#     cargo-semver-checks against what is already on crates.io.
+#
+# Green here is the release signal. release.yml calls this same file
+# (`workflow_call`) on the tagged commit before it publishes, so "what qa
+# proved" and "what release re-verified" cannot drift apart: there is exactly
+# one definition of the thorough gate and both paths run it.
+#
+# It also runs weekly on the default branch. Nothing in the tree changes, but
+# RustSec advisories against the dependency tree do. (spec-fetch always reads
+# the pinned upstream commit, so a weekly run cannot see upstream republish
+# the 1.0 schema; spec-drift.yml checks the published schema for that.)
+#
+# Actions are pinned to a full commit SHA with the readable ref in a trailing
+# comment; see dev.yml's header for why, and for the no-`${{ }}`-in-`run:`
+# rule. No `continue-on-error` anywhere: a check that may fail is not a check.
+
+name: qa full gate
+
+on:
+  push:
+    branches: [qa]
+  schedule:
+    # Mondays, off the hour (GitHub delays cron runs that pile onto :00).
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        description: >-
+          Codecov upload token. Optional: a caller that does not pass it simply
+          gets no upload. Declared here rather than relying on
+          `secrets: inherit`, which would hand this workflow every secret the
+          repository holds, on the release path of all places.
+        required: false
+    outputs:
+      version:
+        description: "The workspace version this run verified, read from Cargo.toml"
+        value: ${{ jobs.manifest.outputs.version }}
+      msrv:
+        description: "The rust-version this run tested against, read from Cargo.toml"
+        value: ${{ jobs.manifest.outputs.msrv }}
+
+concurrency:
+  group: qa-${{ github.workflow }}-${{ github.ref }}
+  # Superseding an outdated qa push is free; cancelling the verification half of
+  # an in-flight release is not, so only a branch push cancels. A workflow
+  # called from release.yml sees the caller's event (a push of a tag), so the
+  # ref type is what tells the two apart.
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+
+permissions:
+  contents: read
+
+# Every `run:` is a bash script (`set -euo pipefail`, `if !`, `$VAR`). The
+# Windows cells of `test` and `msrv` would otherwise run them under pwsh, the
+# Windows default, which cannot parse them. Git for Windows' bash is on every
+# hosted Windows runner; with `shell: bash` the runner also adds
+# `-eo pipefail` on every OS.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # The two published crates. ag-ui-sdk is a thin alias that re-exports
+  # agui-sdk; they are versioned in lockstep and released from one tag.
+  PRIMARY_CRATE: agui-sdk
+  ALIAS_CRATE: ag-ui-sdk
+
+jobs:
+  manifest:
+    name: read manifest (version, MSRV)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      msrv: ${{ steps.read.outputs.msrv }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - name: version and MSRV come from Cargo.toml, not from this file
+        id: read
+        # A hardcoded MSRV in CI is how a crate ends up testing a floor it no
+        # longer promises, or promising one it never tests. `rust-version` in
+        # Cargo.toml is the single declaration; this step hands it to the
+        # MSRV jobs, and checks the two other places that repeat it (the
+        # README badge and clippy.toml) still agree.
+        run: |
+          set -euo pipefail
+          meta=$(cargo metadata --no-deps --format-version=1 --locked)
+          pkg() { printf '%s' "$meta" | jq -r --arg n "$1" --arg f "$2" '.packages[] | select(.name == $n) | .[$f]'; }
+          version=$(pkg "$PRIMARY_CRATE" version)
+          msrv=$(pkg "$PRIMARY_CRATE" rust_version)
+          alias_version=$(pkg "$ALIAS_CRATE" version)
+          if [ -z "$version" ]; then
+            echo "::error::no package named $PRIMARY_CRATE in this workspace" >&2; exit 1
+          fi
+          if [ -z "$msrv" ] || [ "$msrv" = "null" ]; then
+            echo "::error::$PRIMARY_CRATE declares no rust-version, so there is no floor to test" >&2; exit 1
+          fi
+          # One tag releases both crates, so they must carry one version.
+          if [ "$alias_version" != "$version" ]; then
+            echo "::error::$ALIAS_CRATE is '$alias_version' but $PRIMARY_CRATE is '$version'; they release in lockstep" >&2
+            exit 1
+          fi
+          grep -q "MSRV-${msrv}-" README.md \
+            || { echo "::error::README MSRV badge does not say $msrv" >&2; exit 1; }
+          grep -q "^msrv = \"${msrv}\"" clippy.toml \
+            || { echo "::error::clippy.toml msrv does not say $msrv" >&2; exit 1; }
+          {
+            echo "version=$version"
+            echo "msrv=$msrv"
+          } >> "$GITHUB_OUTPUT"
+          echo "$PRIMARY_CRATE $version, MSRV $msrv" >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: fmt, clippy (latest stable), feature rows, badge claims, release guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo fmt --all --check
+      # Clippy runs on latest stable only, never on the MSRV toolchain: its
+      # lints track current idiom, not the floor. clippy.toml's `msrv` keeps it
+      # from suggesting APIs the floor does not have.
+      #
+      # The workspace run is not "default features": the test harness
+      # (agui-test-support) turns client, server and proto on for every target
+      # once test targets are built. The library alone, per feature, is linted
+      # in `msrv-features`.
+      - name: clippy, workspace (dev-deps turn on client, server, proto)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: msrv-features has a row for every feature
+        # The per-feature lanes (docs/DECISIONS.md D15) are a hand-written
+        # matrix, because each row names its floor toolchain. This keeps a new
+        # Cargo.toml feature from landing without one.
+        run: |
+          set -euo pipefail
+          features=$(cargo metadata --no-deps --format-version=1 --locked \
+            | jq -r --arg n "$PRIMARY_CRATE" '.packages[] | select(.name == $n) | .features | keys[] | select(. != "default")')
+          fail=0
+          for f in $features; do
+            if ! grep -Eq "^ *- \{ feature: \"$f\", rust: \"[0-9.]+\" \}" .github/workflows/qa.yml; then
+              echo "::error file=.github/workflows/qa.yml::msrv-features has no row for feature '$f'"; fail=1
+            fi
+          done
+          exit "$fail"
+      - name: release.yml compiles nothing next to its credentials
+        # The publish job holds the registry token and `id-token: write`, so
+        # any cargo command there that builds (a verifying publish or package,
+        # `--dry-run` included, or build, test, install, ...) would run
+        # dependency build scripts with them in reach. The verify build is
+        # this workflow's `package` job. This check reads every release.yml
+        # line except comments and `name:` keys, splits it at `&&`, `;`, `|`,
+        # `(` and backticks, and fails on each piece that contains the word
+        # `cargo` unless that piece is `cargo [+tc|-flag ...] publish|package
+        # ... --no-verify` with the subcommand on the same line. Anything it
+        # cannot read that way (a continuation line, a path-qualified cargo,
+        # a flag that takes a separate value before the subcommand) fails
+        # closed. It cannot see cargo run indirectly (a script file, `$CARGO`,
+        # an action). docs/DECISIONS.md D16.
+        run: |
+          set -euo pipefail
+          f=.github/workflows/release.yml
+          awk -v f="$f" '
+            /^[ \t]*#/ { next }
+            /^[ \t]*(-[ \t]+)?name:/ { next }
+            {
+              n = split($0, seg, /&&|[;|`(]/)
+              for (i = 1; i <= n; i++) {
+                s = seg[i]
+                if (s !~ /(^|[^A-Za-z0-9_.-])cargo([^A-Za-z0-9_-]|$)/) continue
+                if (s ~ /(^|[ \t]|run:)cargo([ \t]+("?\+[^ \t"]+"?|-[^ \t]+))*[ \t]+(publish|package)([ \t]|$)/ &&
+                    s ~ /[ \t]--no-verify([ \t]|$)/) continue
+                printf "::error file=%s,line=%d::release.yml may run cargo only as cargo publish/package with --no-verify; anything else can compile dependency build scripts next to the publish credentials (docs/DECISIONS.md D16)\n", f, NR
+                bad = 1
+              }
+            }
+            END { exit bad }
+          ' "$f"
+      - name: "`unsafe: forbidden` badge is still true"
+        # The README claims it for the published crates; this keeps the claim
+        # honest. Each must forbid unsafe code either with the crate-root
+        # attribute or through its manifest's `[lints.rust]` table (directly,
+        # or inherited with `[lints] workspace = true`).
+        run: |
+          set -euo pipefail
+          meta=$(cargo metadata --no-deps --format-version=1 --locked)
+          root=$(printf '%s' "$meta" | jq -r '.workspace_root')
+          fail=0
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            manifest=$(printf '%s' "$meta" | jq -r --arg n "$c" '.packages[] | select(.name == $n) | .manifest_path')
+            lib=$(printf '%s' "$meta" | jq -r --arg n "$c" '.packages[] | select(.name == $n) | .targets[] | select(.kind | index("lib")) | .src_path')
+            if grep -q '^#!\[forbid(unsafe_code)\]' "$lib"; then continue; fi
+            if grep -Eq '^unsafe_code *= *"forbid"' "$manifest"; then continue; fi
+            if grep -Eq '^workspace *= *true' "$manifest" \
+              && grep -Eq '^unsafe_code *= *"forbid"' "$root/Cargo.toml"; then continue; fi
+            echo "::error file=$lib::$c does not forbid unsafe_code"; fail=1
+          done
+          exit "$fail"
+
+  test:
+    name: test (${{ matrix.os }}, stable)
+    strategy:
+      # One red cell should not hide the others: the interesting question when
+      # Windows breaks is whether macOS broke too.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      # Full debug info for ~90 test binaries fills the hosted runner's disk
+      # (the ubuntu leg failed at link with no space left); line tables keep
+      # panic backtraces readable.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The corpus lanes exercise byte splitting and the decoders, where OS
+      # differences would show, so every cell fetches the pinned spec and
+      # requires it: without the cache they would be printed skips.
+      - name: fetch the pinned upstream specification into .spec-cache/
+        run: cargo xtask spec-fetch
+      # No clippy here: the `lint` job has run it already. What every cell has
+      # to prove is that it builds and passes, with the features the test
+      # harness unifies in (client, server, proto) and with all of them.
+      - name: test, workspace (the test harness enables client, server, proto)
+        env:
+          AGUI_REQUIRE_SPEC: "1"
+        run: cargo test --workspace --all-targets --locked
+      - name: test, all features
+        env:
+          AGUI_REQUIRE_SPEC: "1"
+        run: cargo test --workspace --all-targets --all-features --locked
+      - name: doctests
+        run: cargo test --workspace --doc --all-features --locked
+
+  msrv:
+    name: MSRV ${{ needs.manifest.outputs.msrv }} (${{ matrix.os }}, default features)
+    needs: manifest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Stable first, for `cargo xtask msrv-lock` (the fallback resolver needs
+      # cargo >= 1.84); the MSRV toolchain installed second is the default.
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: ${{ needs.manifest.outputs.msrv }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: msrv
+      # The floor promise covers the core crate with its default features: the
+      # protocol types and their serde (de)serialisation. Optional transports
+      # may need a newer compiler; those are tested at their own floor in the
+      # `msrv-features` job below and documented in README.md.
+      #
+      # The committed Cargo.lock is the MSRV lock (docs/API.md "MSRV"):
+      # lockfile `version = 3`, which cargo 1.75 reads, resolved with
+      # `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback` so every locked
+      # version builds on 1.75, except the native-tls-only openssl and
+      # openssl-sys, which are then raised to their advisory-clean releases
+      # (Rust 1.80; docs/DECISIONS.md D1). Regenerate it the same way here, so
+      # a release that newly satisfies the requirements but not the floor
+      # shows up; `msrv-lock` fails if the result is not lockfile v3.
+      - name: regenerate the MSRV lock (fallback resolver, lockfile v3)
+        run: cargo +stable xtask msrv-lock
+      - name: report drift from the committed lock
+        # Not a failure: the regenerated lock moves whenever a dependency
+        # publishes a compatible release. The committed lock is what the
+        # `msrv-all-features` job tests; this makes the gap visible. The
+        # fallback resolver always lowers openssl and openssl-sys to their
+        # 1.75 releases; that part of the diff is expected and must not be
+        # committed (it brings back RUSTSEC-2026-0474/0476/0477).
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- Cargo.lock; then
+            echo "::warning::the fallback-resolved lock differs from the committed Cargo.lock; consider committing 'cargo +stable xtask msrv-lock' (keeping openssl and openssl-sys at their advisory-clean versions)"
+            git diff --stat -- Cargo.lock
+          fi
+      # The library alone, with no features (`default = []`), warnings denied.
+      # `--lib` on one package builds no dev-dependency, so test-support's
+      # client, server and proto are not unified in (docs/DECISIONS.md D15),
+      # and `-D warnings` after `--` reaches agui-sdk only, so no dependency
+      # is rebuilt with different flags.
+      - name: check the library with no features, warnings denied
+        run: cargo rustc --locked -p "$PRIMARY_CRATE" --lib --no-default-features --profile check -- -D warnings
+      # The published crates only: xtask and test-support are development
+      # tooling and promise no floor. The build has no test target, so it is
+      # truly default features; the tests also get the test harness's client,
+      # server and proto.
+      - name: build, default features
+        run: cargo build --locked -p "$PRIMARY_CRATE" -p "$ALIAS_CRATE"
+      - name: test (the test harness enables client, server, proto)
+        run: cargo test --locked -p "$PRIMARY_CRATE" -p "$ALIAS_CRATE" --lib --tests
+
+  msrv-all-features:
+    name: ${{ matrix.name }}, committed lock
+    needs: manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # One toolchain per leg. Both on one runner (two full all-features debug
+    # builds side by side, plus the restored cache) ran it out of disk; split,
+    # each leg's target dir holds one toolchain's artifacts, and its cache
+    # stays its own.
+    env:
+      # Nothing here reads debug info, and dropping it roughly halves the
+      # size of every test binary and dependency rlib.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Cargo.toml and README promise the MSRV for every feature at once
+          # except native-tls.
+          - name: MSRV ${{ needs.manifest.outputs.msrv }}, every feature but native-tls
+            lane: msrv
+            rust: ${{ needs.manifest.outputs.msrv }}
+            exclude_feature: native-tls
+          # native-tls is the documented exception (docs/DECISIONS.md D1): the
+          # advisory-clean openssl / openssl-sys in the committed lock need
+          # Rust 1.80. Keep in step with the native-tls row of
+          # `msrv-features`, the table in src/lib.rs, README.md and
+          # docs/API.md "MSRV".
+          - name: every feature on the native-tls floor 1.80
+            lane: native-tls-floor
+            rust: "1.80"
+            exclude_feature: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: msrv-all-features-${{ matrix.lane }}
+      # The committed lock is the MSRV lock, so it is tested as committed:
+      # nothing regenerates it, and `--locked` fails if the manifest and the
+      # lock disagree. The feature list is read from Cargo.toml, so a new
+      # feature is covered the day it lands; every non-default feature, less
+      # this leg's exclusion, is what `--all-features` would enable.
+      - name: feature list
+        id: features
+        env:
+          RUST: ${{ matrix.rust }}
+          EXCLUDE: ${{ matrix.exclude_feature }}
+        run: |
+          set -euo pipefail
+          features=$(cargo "+$RUST" metadata --no-deps --format-version=1 --locked \
+            | jq -r --arg n "$PRIMARY_CRATE" --arg x "$EXCLUDE" '.packages[] | select(.name == $n) | .features | keys[]
+                | select(. != "default" and . != $x)' | paste -sd, -)
+          if [ -z "$features" ]; then
+            echo "::error::no features found for $PRIMARY_CRATE" >&2; exit 1
+          fi
+          echo "features=$features" >> "$GITHUB_OUTPUT"
+          echo "Rust $RUST features: $features" >> "$GITHUB_STEP_SUMMARY"
+      - name: check, committed lock
+        env:
+          RUST: ${{ matrix.rust }}
+          FEATURES: ${{ steps.features.outputs.features }}
+        run: cargo "+$RUST" check --locked --features "$FEATURES" -p "$PRIMARY_CRATE" -p "$ALIAS_CRATE"
+      - name: test, committed lock
+        env:
+          RUST: ${{ matrix.rust }}
+          FEATURES: ${{ steps.features.outputs.features }}
+        run: cargo "+$RUST" test --locked --features "$FEATURES" -p "$PRIMARY_CRATE" -p "$ALIAS_CRATE" --lib --tests
+
+  msrv-features:
+    name: feature floor (${{ matrix.feature || 'no features' }} on ${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each optional feature at the oldest toolchain it is promised to
+        # build on. A feature that builds on the core MSRV still gets a row,
+        # at that MSRV, so the promise is tested rather than implied.
+        #
+        # Rows mirror the feature table in src/lib.rs and the optional-feature
+        # list in Cargo.toml [features] (all 11 non-default features); every
+        # feature is promised at 1.75 except native-tls, at 1.80: its
+        # advisory-clean openssl needs it (docs/DECISIONS.md D1). README.md's
+        # MSRV section and docs/API.md "MSRV" say the same.
+        # A new feature, or a floor that rises, changes this list, the table in
+        # src/lib.rs and README.md together; the `lint` job fails if a
+        # Cargo.toml feature has no row here.
+        #
+        # The empty row is the library as a no-features user builds it:
+        # nothing else checks or lints it that way (the test harness turns
+        # client, server and proto on in every build with test targets). Its
+        # tests are the `msrv` job's, so it skips the test step.
+        include:
+          - { feature: "", rust: "1.75" }
+          - { feature: "client", rust: "1.75" }
+          - { feature: "rustls", rust: "1.75" }
+          - { feature: "rustls-native-roots", rust: "1.75" }
+          - { feature: "native-tls", rust: "1.80" }
+          - { feature: "server", rust: "1.75" }
+          - { feature: "stream", rust: "1.75" }
+          - { feature: "preserve-order", rust: "1.75" }
+          - { feature: "axum", rust: "1.75" }
+          - { feature: "proto", rust: "1.75" }
+          - { feature: "tracing", rust: "1.75" }
+          - { feature: "log", rust: "1.75" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Stable first, with clippy (clippy runs on latest stable only, see
+      # `lint`); the row's floor toolchain installed second is the default.
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: feature-${{ matrix.feature || 'none' }}-${{ matrix.rust }}
+      # The library alone with this one feature (docs/DECISIONS.md D15).
+      # crates/test-support enables client, server and proto on agui-sdk, and
+      # Cargo unifies that into every build that compiles dev-dependencies, so
+      # the test step below cannot show what this feature alone compiles.
+      # `--lib` on one package builds no dev-dependency, so code compiled only
+      # when another feature is off is seen with warnings denied.
+      # `cargo rustc -- -D warnings` denies warnings for agui-sdk only;
+      # RUSTFLAGS would change every dependency's fingerprint and rebuild
+      # them all for the test step.
+      - name: check the library with this feature alone at the floor, warnings denied
+        env:
+          FEATURE: ${{ matrix.feature }}
+        run: |
+          set -euo pipefail
+          cargo rustc --locked -p "$PRIMARY_CRATE" --lib --profile check --no-default-features ${FEATURE:+--features "$FEATURE"} -- -D warnings
+      - name: clippy (latest stable) of the library with this feature alone, warnings denied
+        env:
+          FEATURE: ${{ matrix.feature }}
+        run: |
+          set -euo pipefail
+          cargo +stable clippy --locked -p "$PRIMARY_CRATE" --lib --no-default-features ${FEATURE:+--features "$FEATURE"} -- -D warnings
+      # The test harness (agui-test-support, a dev-dependency) enables client,
+      # server and proto, and Cargo unifies those into every test build, so
+      # this tests the feature together with those three, not on its own.
+      - name: test with this feature on top of the test harness's client, server and proto
+        if: matrix.feature != ''
+        env:
+          FEATURE: ${{ matrix.feature }}
+        run: cargo test --locked -p "$PRIMARY_CRATE" --lib --tests --features "$FEATURE"
+
+  docs:
+    name: cargo doc (dead links are failures)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Rustdoc link rot is silent: a broken [`Type`] renders as plain text and
+      # docs.rs builds green. `-D warnings` implies the link lints; they are
+      # named so that reading the line tells you what it enforces.
+      RUSTDOCFLAGS: -D warnings -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo doc --workspace --no-deps --all-features --locked
+      # Always-on items link to feature-gated ones through docs.rs fallbacks
+      # (`cfg_attr(not(feature = ...), doc = "[link]: https://docs.rs/...")`);
+      # this keeps a partial-feature build free of broken links too. The
+      # library alone, with no features and with each feature on its own: a
+      # workspace build would unify in test-support's client, server and proto
+      # (docs/DECISIONS.md D15). The feature list is read from Cargo.toml, so
+      # a new feature is covered the day it lands.
+      - name: the library alone, no features and each feature
+        run: |
+          set -euo pipefail
+          cargo doc --locked --no-deps -p "$PRIMARY_CRATE" --no-default-features
+          features=$(cargo metadata --no-deps --format-version=1 --locked \
+            | jq -r --arg n "$PRIMARY_CRATE" '.packages[] | select(.name == $n) | .features | keys[] | select(. != "default")')
+          for f in $features; do
+            echo "::group::$f"
+            cargo doc --locked --no-deps -p "$PRIMARY_CRATE" --no-default-features --features "$f"
+            echo "::endgroup::"
+          done
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Tool versions are pinned like the actions: a new release lands by a
+      # reviewed change here, not silently on the next run.
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --all-features check
+
+  spec-sync:
+    name: spec-sync (upstream AG-UI spec conformance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+          # The drift check regenerates the tables through rustfmt.
+          components: rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: fetch the upstream specification into .spec-cache/
+        # The upstream schema, fixtures and proto definitions are the AG-UI
+        # project's material. They are fetched here, into a gitignored cache,
+        # and never committed or packaged (REUSE.toml, docs/CONFORMANCE.md).
+        #
+        # `spec.lock` pins the upstream commit and three SHA-256s: the GitHub
+        # archive, the extracted tree, and the schema (byte-identical to the
+        # published https://ag-ui.com/spec/1.0/schema.json). The fetch refuses
+        # any mismatch or an empty hash (docs/TEST-PLAN.md §2).
+        run: cargo xtask spec-fetch
+      - name: generated tables match the pinned spec
+        run: cargo xtask drift
+      - name: conformance suite against the fetched spec
+        # The corpus lanes (TEST-PLAN §3, §4) and the traceability gate (§5).
+        # AGUI_REQUIRE_SPEC=1 turns a missing cache from a skip into a
+        # failure, so this step cannot pass without the data; a cache for the
+        # wrong commit always fails.
+        env:
+          AGUI_REQUIRE_SPEC: "1"
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features -p agui-test-support
+          cargo test --locked --all-features \
+            --test corpus_streams --test corpus_values --test corpus_proto_bytes \
+            --test producer_fixtures --test traceability
+          cargo test --locked --workspace --all-features
+      - name: traceability gate, release form (nothing pending)
+        # docs/compliance/pending.toml: "The release gate runs with
+        # --no-pending". This job is the release gate's (release.yml calls
+        # this file), so nothing may remain pending here.
+        run: cargo run --locked -p agui-test-support --bin agui-trace -- gate --no-pending
+      - name: the cache never leaks into the tree
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files .spec-cache)" ]; then
+            echo "::error::.spec-cache/ is tracked by git; it must stay gitignored" >&2
+            exit 1
+          fi
+
+  fuzz:
+    name: fuzz smoke (every target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Per target. A smoke run, not a campaign: it proves every target still
+      # builds and survives a minute of mutation. Long runs belong elsewhere.
+      FUZZ_SECONDS: "60"
+      FUZZ_TOOLCHAIN: nightly-2026-11-01
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A dated nightly, so a fuzz run is reproducible and a nightly regression
+      # arrives by a reviewed bump of this line. Also named in FUZZ_TOOLCHAIN
+      # below, which the steps use; keep the two in step.
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: nightly-2026-11-01
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-fuzz@0.13.2
+      - name: seed the corpora from the pinned spec
+        # Stream fixtures, value documents and the protobuf byte corpus become
+        # starting inputs (crates/test-support/src/bin/agui-fuzz-seed.rs).
+        run: |
+          set -euo pipefail
+          cargo xtask spec-fetch
+          cargo run --locked -p agui-test-support --bin agui-fuzz-seed -- fuzz/corpus
+      - name: run every fuzz target
+        # Targets are discovered, not listed here, so a new target is covered
+        # the day it lands. Zero targets is a failure: the README and the
+        # assurance case both claim fuzzing.
+        run: |
+          set -euo pipefail
+          if [ ! -d fuzz ]; then
+            echo "::error::no fuzz/ directory; see docs/TEST-PLAN.md" >&2; exit 1
+          fi
+          targets=$(cargo "+$FUZZ_TOOLCHAIN" fuzz list)
+          if [ -z "$targets" ]; then
+            echo "::error::cargo fuzz list found no targets" >&2; exit 1
+          fi
+          # cargo-fuzz defaults `--target` to the triple it was itself built
+          # for. install-action ships a static musl build on Linux, so without
+          # this it builds for x86_64-unknown-linux-musl: no std for that
+          # target in the toolchain ("can't find crate for `core`"), and ASan
+          # refuses a statically linked libc. Build for the toolchain's host.
+          host=$(rustc "+$FUZZ_TOOLCHAIN" -vV | sed -n 's/^host: //p')
+          if [ -z "$host" ]; then
+            echo "::error::cannot read the host triple of $FUZZ_TOOLCHAIN" >&2; exit 1
+          fi
+          for t in $targets; do
+            echo "::group::fuzz $t"
+            cargo "+$FUZZ_TOOLCHAIN" fuzz run --target "$host" "$t" -- -max_total_time="$FUZZ_SECONDS"
+            echo "::endgroup::"
+          done
+      - name: keep the crash reproducer
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  perf:
+    name: perf gate
+    # Allocation-count and linearity thresholds (throughput is reported, not
+    # gated). Defined once in perf.yml, which also carries the dispatch-only
+    # flamegraph and PGO jobs (skipped when called from here).
+    # docs/PERFORMANCE.md is the policy.
+    uses: ./.github/workflows/perf.yml
+    permissions:
+      contents: read
+
+  ts-interop:
+    name: TS interop (pinned @ag-ui/client and @ag-ui/encoder)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.2"
+      - name: install the pinned TS packages (lockfile, no install scripts)
+        working-directory: interop/ts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: TS client vs Rust server over SSE; Rust client vs TS encoder over SSE and protobuf
+        # tests/interop_ts.rs: the TS HttpAgent (with its enforcement and
+        # verifyEvents) against this crate's server through the axum glue,
+        # and this crate's AgentClient against a run the TS encoder serves.
+        env:
+          AGUI_INTEROP: "1"
+        run: cargo test --locked --features client,axum --test interop_ts
+
+  package:
+    name: cargo package / publish --dry-run (both crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: nothing third-party or local-only goes into a .crate
+        # .spec-cache/ is gitignored, which cargo honours, so this cannot
+        # happen today. It is asserted rather than assumed because a mistaken
+        # `include` in a manifest would ship the AG-UI project's material
+        # under this crate's licence, and no build would notice.
+        run: |
+          set -euo pipefail
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            echo "::group::$c"
+            list=$(cargo package --list --locked -p "$c")
+            printf '%s\n' "$list"
+            echo "::endgroup::"
+            if printf '%s\n' "$list" | grep -Eq '^(\.spec-cache|fuzz|target|interop)/'; then
+              echo "::error::$c would package .spec-cache/, fuzz/, target/ or interop/" >&2
+              exit 1
+            fi
+            # The `include` allowlists ship the library source and the
+            # top-level docs only: no tests, benches, test keys or CI config.
+            if printf '%s\n' "$list" | grep -Eq '^(tests|benches|docs|xtask|crates|\.github|\.cargo|LICENSES)/|\.(key|pem)$'; then
+              echo "::error::$c would package repository-only material (tests, benches, keys, CI)" >&2
+              exit 1
+            fi
+          done
+      - name: publish dry run (whole workspace, in dependency order)
+        # `--workspace` packages agui-sdk and then verifies ag-ui-sdk against
+        # that local package, which is what makes a dry run of the alias
+        # possible before agui-sdk at this version exists on crates.io.
+        run: cargo publish --dry-run --workspace --locked
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - name: cargo llvm-cov
+        # The floor is a regression guard, not a target. Measured locally with
+        # `cargo llvm-cov --all-features --lib`: 38.25% of lines (lib unit
+        # tests only; the integration, corpus and doc tests that carry most of
+        # the coverage are not in that number). This workspace-wide run covers
+        # strictly more, so 33 (about 5 points under the lib-only figure) cannot
+        # flake. Raise it to about 5 under the workspace figure from the first
+        # green run of this job.
+        run: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 33 --lcov --output-path lcov.info
+      # Codecov is a second opinion and a history, not the gate. Skipped with an
+      # explanation (not `continue-on-error`) until the secret exists, so "not
+      # configured yet" and "failed and ignored" never look alike.
+      # The token is only in the environment of the one step that asks
+      # whether it exists, after every build script and test has run, and is
+      # passed to the upload as an input. Step `if:` cannot read `secrets`, so
+      # the answer travels as a step output.
+      - name: is a Codecov token configured?
+        id: codecov
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          if [ -n "$CODECOV_TOKEN" ]; then configured=true; else configured=false; fi
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+      - name: upload coverage to Codecov
+        if: steps.codecov.outputs.configured == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          disable_search: true
+          fail_ci_if_error: true
+      - name: Codecov upload skipped (no CODECOV_TOKEN)
+        if: steps.codecov.outputs.configured != 'true'
+        run: |
+          {
+            echo "### Codecov upload skipped"
+            echo ""
+            echo "Coverage ran; only the upload was skipped, because the repository has no"
+            echo "\`CODECOV_TOKEN\` secret. See docs/SETUP.md. No workflow change is needed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  semver:
+    name: cargo-semver-checks vs the published crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-semver-checks@0.51.0
+      - name: semver-check each crate that has a published baseline
+        # Before a crate's first release there is nothing to diff against and
+        # semver-checks can only error, so a crate with no published version
+        # is skipped by name. This is a guard, not `continue-on-error`: once a
+        # version exists the check is mandatory. Any crates.io answer other
+        # than 200 or 404 stops the job rather than guessing.
+        #
+        # Policy (README, "Versioning"): 0.9.x releases are mutually
+        # compatible. A change this check calls breaking does not ship as 0.9.x.
+        run: |
+          set -euo pipefail
+          for c in "$PRIMARY_CRATE" "$ALIAS_CRATE"; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "User-Agent: agui-sdk CI (https://github.com/MattJackson/agui-sdk)" \
+              "https://crates.io/api/v1/crates/$c")
+            case "$code" in
+              200) cargo semver-checks -p "$c" --all-features ;;
+              404) echo "$c: not on crates.io yet, no baseline" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+              *)   echo "::error::crates.io answered $code for $c; refusing to guess" >&2; exit 1 ;;
+            esac
+          done
+
+  gate:
+    name: qa gate
+    needs: [manifest, lint, test, msrv, msrv-all-features, msrv-features, docs, deny, spec-sync, fuzz, perf, ts-interop, package, coverage, semver]
+    # `always()` plus an explicit results check, rather than a bare `needs:`,
+    # so a cancelled or skipped upstream job reports as a red gate instead of a
+    # green-looking skip. This is the one check to require in the main branch
+    # ruleset (docs/SETUP.md; not on qa, where it runs only after the push).
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every qa job must have succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$NEEDS" | jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' | sort
+          printf '%s' "$NEEDS" | jq -e 'all(.[]; .result == "success")' >/dev/null
+          echo "qa gate green: agui-sdk is releasable from this commit" >> "$GITHUB_STEP_SUMMARY"

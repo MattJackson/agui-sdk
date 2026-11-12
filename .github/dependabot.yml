@@ -1,0 +1,29 @@
+# Version updates are monthly and grouped into one PR per ecosystem, onto dev,
+# so they go through the same dev -> qa -> main pipeline as any other change.
+# Security updates are separate (enable "Dependabot security updates" in the
+# repository settings, docs/SETUP.md) and arrive whenever an advisory does.
+version: 2
+updates:
+- package-ecosystem: cargo
+  directory: /
+  schedule:
+    interval: monthly
+  target-branch: dev
+  commit-message:
+    prefix: build
+    include: scope
+  groups:
+    cargo:
+      patterns:
+      - '*'
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: monthly
+  target-branch: dev
+  commit-message:
+    prefix: ci
+  groups:
+    actions:
+      patterns:
+      - '*'
