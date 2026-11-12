@@ -607,6 +607,9 @@ pub(crate) struct Dec {
     ents: Vec<[u32; 4]>,
     /// Scratch for duplicate detection in large structs.
     sort: Vec<u32>,
+    /// Array-index keys of the structs being emitted, (index, entry), used as
+    /// a stack like [`Dec::spans`].
+    idx: Vec<(u32, u32)>,
     defs: DefCache,
     /// Occurrence ranges of merged message fields ([`Src::Many`]), used as
     /// a stack: each merge pushes its ranges and truncates them when done.
@@ -828,6 +831,10 @@ impl Dec {
         if self.spans.capacity() > SCRATCH_KEEP_ENTRIES {
             self.spans.shrink_to(SCRATCH_KEEP_ENTRIES);
         }
+        self.idx.clear();
+        if self.idx.capacity() > SCRATCH_KEEP_ENTRIES {
+            self.idx.shrink_to(SCRATCH_KEEP_ENTRIES);
+        }
     }
 
     pub(crate) fn new() -> Self {
@@ -835,6 +842,7 @@ impl Dec {
             frames: Vec::new(),
             ents: Vec::new(),
             sort: Vec::new(),
+            idx: Vec::new(),
             defs: DefCache::new(),
             spans: Vec::new(),
             raw_max: usize::MAX,
@@ -1502,8 +1510,7 @@ impl Dec {
         let n = self.ents.len() - base;
         if n > 1 {
             if use_sorted_dup_check {
-                // Sort entry indices by key (stable, so equal keys stay in
-                // wire order); each run of equal keys keeps its first
+                // Sort entry indices by key (equal keys in wire order); each run of equal keys keeps its first
                 // position and takes its last value.
                 let mut order = std::mem::take(&mut self.sort);
                 order.clear();
@@ -1513,7 +1520,11 @@ impl Dec {
                     &buf[e[0] as usize..e[1] as usize]
                 }
                 let ents = &self.ents;
-                order.sort_by(|&a, &b| key(ents, root, a).cmp(key(ents, root, b)));
+                // Ties by position: the order a stable sort gives, with no
+                // merge buffer to allocate.
+                order.sort_unstable_by(|&a, &b| {
+                    key(ents, root, a).cmp(key(ents, root, b)).then(a.cmp(&b))
+                });
                 let mut g = 0;
                 while g < order.len() {
                     let mut h = g + 1;
@@ -1571,20 +1582,43 @@ impl Dec {
             // Validated in collect_entries.
             std::str::from_utf8(&root[e[0] as usize..e[1] as usize]).unwrap_or("")
         };
-        let mut idx: Vec<(u32, usize)> = Vec::new();
+        let mark = self.idx.len();
         for i in base..end {
             let e = self.ents[i];
             if e[0] != u32::MAX {
                 if let Some(ix) = array_index(key_of(e)) {
-                    idx.push((ix, i));
+                    self.idx.push((ix, i as u32));
                 }
             }
         }
+        let r = self.emit_ordered(root, base, end, mark, out, depth);
+        self.idx.truncate(mark);
+        r
+    }
+
+    /// [`emit_entries`](Self::emit_entries) once the index keys of
+    /// `ents[base..end]` are parked at `idx[mark..]`.
+    fn emit_ordered<O: Out>(
+        &mut self,
+        root: &[u8],
+        base: usize,
+        end: usize,
+        mark: usize,
+        out: &mut O,
+        depth: usize,
+    ) -> Result<()> {
+        let key_of = |e: [u32; 4]| -> &str {
+            // Validated in collect_entries.
+            std::str::from_utf8(&root[e[0] as usize..e[1] as usize]).unwrap_or("")
+        };
+        let top = self.idx.len();
+        let any_index = top > mark;
         out.begin_obj();
-        if !idx.is_empty() {
-            idx.sort_by_key(|p| p.0);
-            for &(_, i) in &idx {
-                let e = self.ents[i];
+        if any_index {
+            // Indices are distinct: duplicate keys are already collapsed.
+            self.idx[mark..].sort_unstable_by_key(|p| p.0);
+            for at in mark..top {
+                let e = self.ents[self.idx[at].1 as usize];
                 self.entry(root, e, key_of(e), out, depth)?;
             }
         }
@@ -1594,7 +1628,7 @@ impl Dec {
                 continue;
             }
             let k = key_of(e);
-            if !idx.is_empty() && array_index(k).is_some() {
+            if any_index && array_index(k).is_some() {
                 continue;
             }
             self.entry(root, e, k, out, depth)?;

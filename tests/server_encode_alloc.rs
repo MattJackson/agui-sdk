@@ -91,6 +91,81 @@ fn protobuf_encoding_allocates_nothing_in_steady_state() {
     assert_eq!(n, 0);
 }
 
+/// The fewest allocations `f` makes in one of several windows of 100 calls,
+/// once warmed up.
+#[cfg(feature = "proto")]
+fn quietest_window(mut f: impl FnMut()) -> u64 {
+    for _ in 0..3 {
+        f();
+    }
+    assert!(
+        alloc::installed(),
+        "the counting allocator is not installed"
+    );
+    (0..5)
+        .map(|_| {
+            alloc::measure(|| {
+                for _ in 0..100 {
+                    f();
+                }
+            })
+            .1
+            .total()
+        })
+        .min()
+        .unwrap_or(u64::MAX)
+}
+
+/// The protobuf codec's open-JSON paths a warm codec takes without
+/// allocating, as its docs say: array-index keys (JS order puts them
+/// first), escaped keys and enum spellings, and objects large enough to be
+/// deduplicated by sorting, in both directions.
+#[cfg(feature = "proto")]
+#[test]
+fn protobuf_open_json_allocates_nothing_in_steady_state() {
+    use agui_sdk::proto::decode::decode_event_json;
+    use agui_sdk::proto::encode::{encode_json, encode_value};
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let wide: String = (0..40).map(|i| format!(r#","k\u0030{i}":{i}"#)).collect();
+    let texts = [
+        r#"{"type":"STATE_SNAPSHOT","snapshot":{"b":1,"0":2,"a":{"1":null}}}"#.to_owned(),
+        r#"{"type":"STATE_SNAPSHOT","snapshot":{"\u0061":1,"\u0030":2,"a":3}}"#.to_owned(),
+        format!(r#"{{"type":"STATE_SNAPSHOT","snapshot":{{"7":0{wide},"k\u00300":1}}}}"#),
+        r#"{"type":"STATE_DELTA","delta":[{"op":"\u0061dd","path":"/a","value":1}]}"#.to_owned(),
+    ];
+    let mut failures = Vec::new();
+    let mut out = Vec::new();
+    for text in &texts {
+        let n = quietest_window(|| {
+            out.clear();
+            encode_json(text.as_bytes(), &mut out).unwrap();
+        });
+        if n != 0 {
+            failures.push(format!("encode_json {text}: {n}"));
+        }
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let n = quietest_window(|| {
+            out.clear();
+            encode_value(&value, &mut out).unwrap();
+        });
+        if n != 0 {
+            failures.push(format!("encode_value {text}: {n}"));
+        }
+        out.clear();
+        encode_json(text.as_bytes(), &mut out).unwrap();
+        let frame = out.clone();
+        let mut json = String::new();
+        let n = quietest_window(|| {
+            json.clear();
+            decode_event_json(&frame, &mut json).unwrap();
+        });
+        if n != 0 {
+            failures.push(format!("decode_event_json {text}: {n}"));
+        }
+    }
+    assert!(failures.is_empty(), "allocations per 100: {failures:#?}");
+}
+
 #[test]
 fn ndjson_encoding_allocates_nothing_in_steady_state() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

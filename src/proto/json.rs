@@ -66,9 +66,122 @@ impl<'a> JStr<'a> {
     pub fn eq_str(&self, s: &str) -> bool {
         match *self {
             JStr::Plain(p) => p == s,
-            JStr::Escaped(_) => self.cow() == s,
+            JStr::Escaped(raw) => raw.len() >= s.len() && self.bytes().eq(s.bytes()),
         }
     }
+
+    /// The value's UTF-8 bytes, escapes expanded as they are reached, with
+    /// no allocation.
+    #[inline]
+    pub fn bytes(&self) -> ValueBytes<'a> {
+        let (raw, escaped) = match *self {
+            JStr::Plain(s) => (s, false),
+            JStr::Escaped(raw) => (raw, true),
+        };
+        ValueBytes {
+            b: raw.as_bytes(),
+            i: 0,
+            escaped,
+            pend: [0; 4],
+            at: 0,
+            n: 0,
+        }
+    }
+
+    /// The value, borrowed or expanded into `buf`; `None` if it does not fit.
+    pub fn in_buf<'b>(&self, buf: &'b mut [u8]) -> Option<&'b str>
+    where
+        'a: 'b,
+    {
+        match *self {
+            JStr::Plain(s) => Some(s),
+            JStr::Escaped(_) => {
+                let mut n = 0;
+                for c in self.bytes() {
+                    *buf.get_mut(n)? = c;
+                    n += 1;
+                }
+                // Pieces are slices of valid UTF-8 or encoded chars.
+                std::str::from_utf8(&buf[..n]).ok()
+            }
+        }
+    }
+}
+
+/// The bytes of a [`JStr`]'s value ([`JStr::bytes`]).
+#[derive(Clone, Debug)]
+pub struct ValueBytes<'a> {
+    b: &'a [u8],
+    i: usize,
+    escaped: bool,
+    /// The rest of an expanded escape's UTF-8 encoding.
+    pend: [u8; 4],
+    at: u8,
+    n: u8,
+}
+
+impl Iterator for ValueBytes<'_> {
+    type Item = u8;
+
+    #[inline]
+    fn next(&mut self) -> Option<u8> {
+        if self.at < self.n {
+            let c = self.pend[self.at as usize];
+            self.at += 1;
+            return Some(c);
+        }
+        let &c = self.b.get(self.i)?;
+        if c != b'\\' || !self.escaped {
+            self.i += 1;
+            return Some(c);
+        }
+        let (ch, next) = unescape_at(self.b, self.i);
+        self.i = next;
+        self.n = ch.encode_utf8(&mut self.pend).len() as u8;
+        self.at = 1;
+        Some(self.pend[0])
+    }
+}
+
+/// The character the escape at `b[i]` (a backslash, in validated text)
+/// stands for, and the index after it. A lone surrogate is U+FFFD, as a JS
+/// `TextEncoder` would make it.
+#[inline]
+fn unescape_at(b: &[u8], mut i: usize) -> (char, usize) {
+    let c = b[i + 1];
+    i += 2;
+    let ch: char = match c {
+        b'"' => '"',
+        b'\\' => '\\',
+        b'/' => '/',
+        b'b' => '\u{8}',
+        b'f' => '\u{c}',
+        b'n' => '\n',
+        b'r' => '\r',
+        b't' => '\t',
+        _ => {
+            // 'u'
+            let hi = hex4(&b[i..i + 4]);
+            i += 4;
+            if (0xD800..0xDC00).contains(&hi)
+                && i + 6 <= b.len()
+                && b[i] == b'\\'
+                && b[i + 1] == b'u'
+            {
+                let lo = hex4(&b[i + 2..i + 6]);
+                if (0xDC00..0xE000).contains(&lo) {
+                    i += 6;
+                    let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
+                    char::from_u32(cp).unwrap_or('\u{FFFD}')
+                } else {
+                    '\u{FFFD}'
+                }
+            } else {
+                char::from_u32(hi).unwrap_or('\u{FFFD}')
+            }
+        }
+    };
+    (ch, i)
 }
 
 /// Expands escapes in validated raw string text, handing out pieces.
@@ -85,39 +198,8 @@ fn unescape_pieces(raw: &str, mut f: impl FnMut(&[u8])) {
         if run < i {
             f(&b[run..i]);
         }
-        let c = b[i + 1];
-        i += 2;
-        let ch: char = match c {
-            b'"' => '"',
-            b'\\' => '\\',
-            b'/' => '/',
-            b'b' => '\u{8}',
-            b'f' => '\u{c}',
-            b'n' => '\n',
-            b'r' => '\r',
-            b't' => '\t',
-            _ => {
-                // 'u'
-                let hi = hex4(&b[i..i + 4]);
-                i += 4;
-                if (0xD800..0xDC00).contains(&hi)
-                    && i + 6 <= b.len()
-                    && b[i] == b'\\'
-                    && b[i + 1] == b'u'
-                {
-                    let lo = hex4(&b[i + 2..i + 6]);
-                    if (0xDC00..0xE000).contains(&lo) {
-                        i += 6;
-                        let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
-                        char::from_u32(cp).unwrap_or('\u{FFFD}')
-                    } else {
-                        '\u{FFFD}'
-                    }
-                } else {
-                    char::from_u32(hi).unwrap_or('\u{FFFD}')
-                }
-            }
-        };
+        let (ch, next) = unescape_at(b, i);
+        i = next;
         let mut buf = [0u8; 4];
         f(ch.encode_utf8(&mut buf).as_bytes());
         run = i;
@@ -195,6 +277,13 @@ pub trait JNode<'a>: Copy {
     fn member_count(self) -> usize;
     /// The `i`-th object member.
     fn member(self, i: usize) -> (JStr<'a>, Self);
+    /// The value of the member with key `k` (the last, if repeated).
+    fn get(self, k: &str) -> Option<Self> {
+        self.members()
+            .filter(|(m, _)| m.eq_str(k))
+            .last()
+            .map(|(_, v)| v)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +492,9 @@ impl<'a> JNode<'a> for &'a serde_json::Value {
     }
     fn member_count(self) -> usize {
         serde_json::Value::as_object(self).map_or(0, |o| o.len())
+    }
+    fn get(self, k: &str) -> Option<Self> {
+        serde_json::Value::as_object(self).and_then(|o| o.get(k))
     }
     fn member(self, i: usize) -> (JStr<'a>, Self) {
         // Positional access is O(i) on a map; the encoder only uses it for
@@ -1236,6 +1328,33 @@ mod tests {
         js.write_to(&mut v);
         assert_eq!(js.len(), v.len());
         String::from_utf8(v).unwrap()
+    }
+
+    /// `bytes`, `eq_str` and `in_buf` read the same value `cow` builds, for
+    /// every kind of escape (lone surrogates included), without allocating.
+    #[test]
+    fn value_bytes_match_the_expanded_value() {
+        for src in [
+            r#""plain""#,
+            r#""a\"b\\c\/d\b\f\n\r\t""#,
+            r#""\u0030\u00e9\u4e2d""#,
+            r#""x\ud83d\ude00y""#,
+            r#""\ud83d""#,
+            r#""\ude00z\ud83dq""#,
+        ] {
+            let mut sc = Scratch::default();
+            let t = parse(src, &mut sc).unwrap();
+            let js = t.root().as_str();
+            let want = js.cow().into_owned();
+            assert_eq!(js.bytes().collect::<Vec<u8>>(), want.as_bytes(), "{src}");
+            assert!(js.eq_str(&want), "{src}");
+            assert!(!js.eq_str(&format!("{want}!")), "{src}");
+            let mut buf = [0u8; 64];
+            assert_eq!(js.in_buf(&mut buf), Some(want.as_str()), "{src}");
+            if matches!(js, JStr::Escaped(_)) {
+                assert_eq!(js.in_buf(&mut [0u8; 1][..0]), None, "{src}");
+            }
+        }
     }
 
     #[test]
