@@ -55,6 +55,7 @@
 //! not have; a stale pending entry (the half is covered now: delete it); a
 //! tag naming an unknown or ungated row; a half tagged only in files other
 //! than its mapped one; an unqualified tag for a `both` row in a shared file;
+//! a `covers(<half>)` tag for a half the row does not have;
 //! docs evidence on a non-assistable row; a `covers` tag (in `tests/` or
 //! `src/`) that is not on a `#[test]` function that runs: one marked
 //! `#[ignore]`, one under a `#[cfg]` other than `test` or features, or one
@@ -988,6 +989,21 @@ pub fn analyze(inputs: &Inputs, mode: Mode) -> Report {
                         None
                     }
                 };
+                if let (Some(h), Some(_)) = (tag_half, t.half) {
+                    // Once per tag: an explicit `covers(<half>)` for a half
+                    // the row does not have proves nothing. (An unqualified
+                    // tag in a one-sided file is only a cross-reference.)
+                    if !halves.contains(&h) && half == halves[0] {
+                        problems.push(format!(
+                            "{}:{}: covers({}) for {}, which has no {} half",
+                            t.file,
+                            t.line,
+                            h.as_str(),
+                            t.id,
+                            h.as_str()
+                        ));
+                    }
+                }
                 if tag_half != Some(half) {
                     continue;
                 }
@@ -1434,6 +1450,24 @@ scope = "1.0"
         assert!(has(&p, "BBB-01 (client): no covering test"), "{p:?}");
         assert!(has(&p, "BBB-01 (server): no covering test"), "{p:?}");
         assert!(has(&p, "write covers(client) or covers(server)"), "{p:?}");
+    }
+
+    #[test]
+    fn a_tag_for_a_half_the_row_lacks_is_a_problem() {
+        let f = Fixture::new("missing-half");
+        f.write("tests/a_client.rs", FULL_CLIENT);
+        f.write("tests/a_producer.rs", FULL_SERVER);
+        // CCC-01 is a server-only row: a client half does not exist.
+        f.write(
+            "tests/basic_events.rs",
+            &format!("{SHARED}\n/// covers(client): CCC-01\n#[test]\nfn x() {{}}\n"),
+        );
+        let p = f.problems(Mode::NoPending);
+        assert!(
+            has(&p, "covers(client) for CCC-01, which has no client half"),
+            "{p:?}"
+        );
+        assert_eq!(p.len(), 1, "{p:?}");
     }
 
     #[test]
