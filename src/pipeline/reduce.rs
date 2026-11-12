@@ -49,10 +49,12 @@
 //! handle, the next event is moved into that allocation instead of a new
 //! one. Streaming a message therefore costs no allocation per delta beyond
 //! the text's amortized growth. If the application still holds the update,
-//! a fresh `Arc` is made, as for every other event. Events that carry a
-//! payload (snapshots, results, custom and raw events) are never retained,
-//! so the application's handle to them stays unique and
-//! `Arc::try_unwrap` on it succeeds once the reducer has let go.
+//! a fresh `Arc` is made, as for every other event. Other events that carry
+//! a payload (`MESSAGES_SNAPSHOT`, results, custom and raw events) are never
+//! retained, so the application's handle to them stays unique and
+//! `Arc::try_unwrap` on it succeeds. A `STATE_SNAPSHOT` is the exception: it
+//! is held as the state until the next state change (above), so
+//! `Arc::try_unwrap` on it fails until then.
 
 //!
 //! # Choices the spec leaves to the consumer
@@ -336,9 +338,10 @@ pub struct Reducer {
     calls: HashMap<ToolCallId, CallSlot>,
     /// The last content delta's target: `index`'s own key and the position
     /// it maps to, so a run of deltas to one message hashes its id once.
-    /// Cleared by every event that is not a content delta (see
-    /// [`keeps_hot_targets`]): only those leave `index` and `messages` as
-    /// they were.
+    /// Cleared by every event except the plain appends [`keeps_hot_targets`]
+    /// lists (`TEXT_MESSAGE_CONTENT`, `REASONING_MESSAGE_CONTENT`,
+    /// `TOOL_CALL_ARGS`): only those leave `index` and `messages` as they
+    /// were. Chunk forms clear it too, as they can open or rename messages.
     hot_message: Option<(MessageId, usize)>,
     /// As `hot_message`, for the last `TOOL_CALL_ARGS` target in `calls`.
     hot_call: Option<(ToolCallId, CallSlot)>,
