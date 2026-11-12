@@ -324,8 +324,13 @@ impl StreamBody {
     }
 
     fn rearm(&mut self) {
-        if let Some((every, sleep)) = &mut self.keepalive {
-            sleep.as_mut().reset(tokio::time::Instant::now() + *every);
+        let Some((every, sleep)) = &mut self.keepalive else {
+            return;
+        };
+        match tokio::time::Instant::now().checked_add(*every) {
+            Some(at) => sleep.as_mut().reset(at),
+            // Beyond any reachable instant: the keep-alive never fires.
+            None => self.keepalive = None,
         }
     }
 }
