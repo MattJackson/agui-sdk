@@ -22,8 +22,8 @@
 //! * `required` (Validation §6.5.3) lists names that must be present; every
 //!   other declared property is optional.
 //! * `default` and `contentEncoding` are annotations (Validation §9.2,
-//!   §8.3): they never change what validates, and are recorded only as
-//!   documentation.
+//!   §8.3): they never change what validates. `default` is recorded as
+//!   documentation; `contentEncoding` is ignored.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};

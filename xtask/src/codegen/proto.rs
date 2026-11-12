@@ -482,17 +482,30 @@ fn json_name(snake: &str) -> String {
     out
 }
 
-/// Resolves a type name used inside `scope` (protobuf scoping: innermost
-/// enclosing scope first).
+/// Resolves a type name used inside `scope` (protobuf scoping: a relative
+/// name is looked up innermost enclosing scope first; a fully-qualified
+/// name, with a leading `.`, from the outermost scope only).
 fn resolve(type_name: &str, scope: &str, set: &ProtoSet) -> Result<String, String> {
     if let Some((_, kind)) = SCALARS.iter().find(|(n, _)| *n == type_name) {
         return Ok((*kind).to_owned());
     }
-    let package_prefix = set.package.as_deref().map(|p| format!(".{p}."));
-    let bare = match &package_prefix {
-        Some(prefix) if type_name.starts_with(prefix.as_str()) => &type_name[prefix.len()..],
-        _ => type_name,
-    };
+    if type_name.starts_with('.') {
+        let package_prefix = match set.package.as_deref() {
+            Some(p) => format!(".{p}."),
+            None => ".".to_owned(),
+        };
+        let bare = type_name
+            .strip_prefix(package_prefix.as_str())
+            .ok_or_else(|| format!("unknown type {type_name:?}"))?;
+        if set.messages.iter().any(|m| m.name == bare) {
+            return Ok(format!("Message({})", screaming_snake(bare)));
+        }
+        if set.enums.iter().any(|e| e.name == bare) {
+            return Ok(format!("Enum({})", screaming_snake(bare)));
+        }
+        return Err(format!("unknown type {type_name:?}"));
+    }
+    let bare = type_name;
     let mut scope = scope.to_owned();
     loop {
         let candidate = if scope.is_empty() {
@@ -567,16 +580,18 @@ pub fn render(
     // declaration whose number space it belongs to (the key minus its last
     // segment and any lowercase oneof segments, as upstream's freeze groups
     // keys). A slot whose declaration is gone has no table entry to go in.
-    let owners: BTreeMap<&str, Vec<i64>> = set
+    // Each owner carries its live numbers and whether it is an enum (whose
+    // numbers are i32) or a message (whose numbers are field numbers).
+    let owners: BTreeMap<&str, (bool, Vec<i64>)> = set
         .messages
         .iter()
         .map(|m| {
             let live = m.fields.iter().map(|f| i64::from(f.number)).collect();
-            (m.name.as_str(), live)
+            (m.name.as_str(), (false, live))
         })
         .chain(set.enums.iter().map(|e| {
             let live = e.values.iter().map(|v| i64::from(v.1)).collect();
-            (e.name.as_str(), live)
+            (e.name.as_str(), (true, live))
         }))
         .collect();
     let mut retired_by_owner: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
@@ -584,9 +599,19 @@ pub fn render(
         if used.contains(key.as_str()) {
             continue;
         }
-        let Some((owner, live)) = owners.get_key_value(freeze_group(key)) else {
+        let Some((owner, (is_enum, live))) = owners.get_key_value(freeze_group(key)) else {
             continue;
         };
+        let in_range = if *is_enum {
+            i32::try_from(number).is_ok()
+        } else {
+            u32::try_from(number).is_ok_and(|n| {
+                (1..=MAX_FIELD_NUMBER).contains(&n) && !RESERVED_FIELD_NUMBERS.contains(&n)
+            })
+        };
+        if !in_range {
+            return Err(format!("{key} = {number} is out of range"));
+        }
         if live.contains(&number) {
             return Err(format!(
                 "{key} = {number} is retired, but {owner} still uses {number}"
@@ -639,7 +664,7 @@ pub fn render(
 
     let mut out = String::new();
     out.push_str(&header(
-        "the .proto files and spec/1.0/proto-freeze.txt",
+        &format!("the .proto files and {}", super::FREEZE_FILE),
         commit,
     ));
     out.push_str(MODULE_DOC.trim_start());
@@ -1014,7 +1039,7 @@ pub fn enumeration(name: &str) -> Option<EnumId> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_freeze, render};
+    use super::{parse, parse_freeze, render, resolve};
 
     fn gen(proto: &str, freeze: &str) -> Result<String, String> {
         let set = parse(&[("t.proto".to_owned(), proto.to_owned())])?;
@@ -1106,5 +1131,39 @@ mod tests {
     fn missing_syntax_is_refused() {
         let err = refused("message M { string a = 1; }\n", "M.a = 1\n");
         assert!(err.contains("syntax"), "{err}");
+    }
+
+    #[test]
+    fn leading_dot_name_resolves_from_the_root_not_the_enclosing_scope() -> Result<(), String> {
+        let proto = "syntax = \"proto3\";\npackage ag_ui;\n\
+                     message Foo { string x = 1; }\n\
+                     message A { message Foo { string y = 1; } }\n";
+        let set = parse(&[("t.proto".to_owned(), proto.to_owned())])?;
+        assert_eq!(resolve(".ag_ui.Foo", "A", &set)?, "Message(FOO)");
+        assert_eq!(resolve("Foo", "A", &set)?, "Message(A_FOO)");
+        assert_eq!(resolve(".ag_ui.A.Foo", "A", &set)?, "Message(A_FOO)");
+        assert!(resolve(".other.Foo", "A", &set).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn out_of_range_retired_numbers_are_refused() {
+        for (proto, freeze) in [
+            (
+                "syntax = \"proto3\";\nmessage M { reserved -1; string a = 1; }\n",
+                "M.a = 1\nM.b = -1\n",
+            ),
+            (
+                "syntax = \"proto3\";\nmessage M { reserved 536870912; string a = 1; }\n",
+                "M.a = 1\nM.b = 536870912\n",
+            ),
+            (
+                "syntax = \"proto3\";\nenum E { E_A = 0; reserved 2147483648; }\n",
+                "E.E_A = 0\nE.E_B = 2147483648\n",
+            ),
+        ] {
+            let err = refused(proto, freeze);
+            assert!(err.contains("out of range"), "{err}");
+        }
     }
 }

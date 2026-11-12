@@ -147,6 +147,7 @@ fn fetch_into(
         .map(Path::to_path_buf)
         .ok_or("spec cache directory has no parent directory")?;
     std::fs::create_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+    sweep_scratch(&base);
     let archive = base.join(format!(".archive-{commit}-{}.tar.gz", std::process::id()));
     let result = download(&lock.archive_url(commit)?, &archive)
         .and_then(|()| install_archive(lock, commit, expected, published_schema, &archive, &dest));
@@ -267,6 +268,7 @@ pub fn spec_bump(root: &Path, commit: &str) -> Result<(), String> {
 fn published_schema_hash(root: &Path, lock: &Lock) -> Result<String, String> {
     let scratch = root.join(".spec-cache");
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    sweep_scratch(&scratch);
     let published = scratch.join(format!(".published-{}.json", std::process::id()));
     let hash = download(&lock.schema_url, &published)
         .and_then(|()| sha256::file_hex(&published).map_err(|e| e.to_string()));
@@ -319,8 +321,8 @@ fn run(cmd: &mut Command, name: &str) -> Result<(), String> {
 }
 
 /// Moves `staging` to `dest`, replacing any existing `dest`. The old `dest`
-/// is moved aside first and put back if `staging` cannot be moved in, so a
-/// failure never leaves no cache at all.
+/// is moved aside first and put back if `staging` cannot be moved in; if
+/// even that fails, the error names where the previous cache remains.
 fn replace_dir(staging: &Path, dest: &Path) -> Result<(), String> {
     let name = dest
         .file_name()
@@ -335,12 +337,56 @@ fn replace_dir(staging: &Path, dest: &Path) -> Result<(), String> {
     };
     if let Err(e) = std::fs::rename(staging, dest) {
         if had_old {
-            let _ = std::fs::rename(&old, dest);
+            if let Err(e2) = std::fs::rename(&old, dest) {
+                return Err(format!(
+                    "{}: {e}; restoring the previous cache also failed ({e2}); it remains at {}",
+                    dest.display(),
+                    old.display()
+                ));
+            }
         }
         return Err(format!("{}: {e}", dest.display()));
     }
     let _ = remove(&old);
     Ok(())
+}
+
+/// Best-effort removal of the scratch entries (`.archive-*`, `.staging-*`,
+/// `.old-*`, `.published-*`) that an earlier run killed mid-fetch left in
+/// `base`. Each name ends in its run's pid; the current run's are left alone.
+fn sweep_scratch(base: &Path) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if ![".archive-", ".staging-", ".old-", ".published-"]
+            .iter()
+            .any(|p| name.starts_with(p))
+        {
+            continue;
+        }
+        let stem = name
+            .strip_suffix(".tar.gz")
+            .or_else(|| name.strip_suffix(".json"))
+            .unwrap_or(name);
+        let pid = stem
+            .rsplit_once('-')
+            .and_then(|(_, pid)| pid.parse::<u32>().ok());
+        if pid.map_or(true, |pid| pid == me) {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn remove(path: &Path) -> Result<(), String> {
@@ -447,6 +493,48 @@ mod tests {
         assert_eq!(stamp.trim(), old, "pinned cache stamp was replaced");
         assert!(sentinel, "pinned cache was replaced");
         assert_eq!(lock_after, lock_text, "spec.lock changed");
+        Ok(())
+    }
+
+    #[test]
+    fn scratch_left_by_an_interrupted_run_is_swept() -> Result<(), String> {
+        let ws = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let lock_text = std::fs::read_to_string(ws.join(lock::FILE)).map_err(|e| e.to_string())?;
+        // Connection refused: fast and deterministic.
+        let lock_text =
+            lock::set_string(&lock_text, "schema_url", "https://127.0.0.1:1/schema.json")?;
+        let lock = Lock::parse(&lock_text)?;
+        let tmp = std::env::temp_dir().join(format!("xtask-sweep-{}", std::process::id()));
+        let _ = remove(&tmp);
+        let base = tmp.join(".spec-cache");
+        let commit = "2".repeat(40);
+        // pid 1 is never an xtask run.
+        let stale_dirs = [format!(".staging-{commit}-1"), format!(".old-{commit}-1")];
+        let stale_files = [
+            format!(".archive-{commit}-1.tar.gz"),
+            ".published-1.json".to_owned(),
+        ];
+        let kept = [commit.clone(), ".staging-notapid".to_owned()];
+        for d in stale_dirs.iter().chain(&kept) {
+            std::fs::create_dir_all(base.join(d)).map_err(|e| e.to_string())?;
+        }
+        for f in &stale_files {
+            std::fs::write(base.join(f), "x").map_err(|e| e.to_string())?;
+        }
+
+        let result = published_schema_hash(&tmp, &lock);
+
+        let left: Vec<String> = stale_dirs
+            .iter()
+            .chain(&stale_files)
+            .filter(|n| base.join(n).exists())
+            .cloned()
+            .collect();
+        let kept_ok = kept.iter().all(|n| base.join(n).exists());
+        let _ = remove(&tmp);
+        assert!(result.is_err());
+        assert!(left.is_empty(), "stale scratch survived: {left:?}");
+        assert!(kept_ok, "a non-scratch entry was removed");
         Ok(())
     }
 
