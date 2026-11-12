@@ -1,7 +1,13 @@
 //! The bench harness (TEST-PLAN §9, docs/PERFORMANCE.md). No criterion.
 //!
-//! Every bench binary installs the counting allocator, declares its cases and
-//! hands control to [`Bench::finish`], which exits non-zero on any breach:
+//! A bench built on this harness installs the counting allocator, declares
+//! its cases and hands control to [`Bench::finish`], which exits non-zero on
+//! any breach. Five bench binaries run their own harness instead
+//! (`pipeline_linearity`, `protocol_types`, `proto_codec`, `server_runner`,
+//! `http_transport`, each documented in its header); they follow the same
+//! modes (gated only with `--bench`) but not the gates below.
+//!
+//! The harness gates:
 //!
 //! * **allocations per event** (hard, exact): the *marginal* count between
 //!   the smallest and largest size, so fixed setup costs cancel and what is
@@ -22,8 +28,8 @@
 //!   `time_linearity` for that range and add `time_scales = [a, b]`: two
 //!   more sizes (fractions of the base allowed) whose time ratio is held to
 //!   `[gate] time_scales_linearity`, its own bound: 8 × 2 = ×16 for ×8
-//!   input, where `[gate] time_linearity`'s ×12 flaked at ×12.15 on CI, and
-//!   a quadratic is still ×64 (docs/PERFORMANCE.md, "Time linearity and the
+//!   input, where the former bound of ×12 flaked at ×12.15 on CI, and a
+//!   quadratic is still ×64 (docs/PERFORMANCE.md, "Time linearity and the
 //!   cache").
 //! * **throughput floor** (hard, loose, optional): `min_mb_per_s` catches
 //!   cliffs, not drift. Unset floors only print.
@@ -127,7 +133,7 @@ fn load_budgets() -> Budgets {
     };
     let gate = doc.get("gate").and_then(toml::Value::as_table);
     let alloc_lin = num(gate.and_then(|g| g.get("alloc_linearity"))).unwrap_or(1.15);
-    let time_lin = num(gate.and_then(|g| g.get("time_linearity"))).unwrap_or(1.5);
+    let time_lin = num(gate.and_then(|g| g.get("time_linearity"))).unwrap_or(2.0);
     let time_scales_lin = num(gate.and_then(|g| g.get("time_scales_linearity"))).unwrap_or(2.0);
     let mut budgets = BTreeMap::new();
     if let Some(cases) = doc.get("case").and_then(toml::Value::as_table) {

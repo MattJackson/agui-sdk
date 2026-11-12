@@ -399,19 +399,26 @@ type TagLine = Result<(Option<Half>, Vec<String>), String>;
 fn parse_tag_line(line: &str) -> Option<TagLine> {
     let rest = line.trim_start().strip_prefix("///")?.trim_start();
     let rest = rest.strip_prefix("covers")?;
+    let malformed = || Some(Err(format!("malformed covers line: {}", line.trim())));
     let (half, rest) = if let Some(q) = rest.strip_prefix('(') {
-        let (q, after) = q.split_once(')')?;
+        // `covers(` is an attempted tag: a missing `)` or `:` is a problem,
+        // not prose.
+        let Some((q, after)) = q.split_once(')') else {
+            return malformed();
+        };
         match Half::parse(q.trim()) {
-            Some(h) => (Some(h), after),
+            Some(h) => match after.strip_prefix(':') {
+                Some(rest) => (Some(h), rest),
+                None => return malformed(),
+            },
             None => return Some(Err(format!("unknown qualifier covers({q})"))),
         }
     } else {
-        (None, rest)
+        (None, rest.strip_prefix(':')?)
     };
-    let rest = rest.strip_prefix(':')?;
     let ids: Vec<String> = rest.split(',').map(|s| s.trim().to_owned()).collect();
     if ids.is_empty() || ids.iter().any(|id| !is_row_id(id)) {
-        return Some(Err(format!("malformed covers line: {}", line.trim())));
+        return malformed();
     }
     Some(Ok((half, ids)))
 }
@@ -599,8 +606,9 @@ fn relative(root: &Path, path: &Path) -> String {
 }
 
 /// Every `covers` tag in the `.rs` files under `dirs`, with paths relative
-/// to `root`. Malformed tags are returned as problems, as are tags in `src/`
-/// that are not on a test function.
+/// to `root`. Malformed tags are returned as problems, as are tags that are
+/// not on a `#[test]` function that runs (not `#[ignore]`d, not under an
+/// unvouched `#[cfg]`).
 pub fn scan_tags(root: &Path, dirs: &[&Path]) -> (Vec<Tag>, Vec<String>) {
     let mut files = Vec::new();
     for dir in dirs {
@@ -1703,6 +1711,23 @@ scope = "1.0"
         assert!(has(
             &f.problems(Mode::Pending),
             "must be on a #[test] function"
+        ));
+    }
+
+    #[test]
+    fn a_qualified_tag_missing_its_paren_or_colon_is_malformed() {
+        for line in ["/// covers(client: LIFE-41", "/// covers(client) LIFE-41"] {
+            assert!(
+                matches!(parse_tag_line(line), Some(Err(ref e)) if e.contains("malformed covers line")),
+                "{line}: {:?}",
+                parse_tag_line(line)
+            );
+        }
+        // Prose that merely starts with the word is not a tag.
+        assert_eq!(parse_tag_line("/// covers the rest of the run"), None);
+        assert!(matches!(
+            parse_tag_line("/// covers(client): LIFE-41"),
+            Some(Ok((Some(Half::Client), _)))
         ));
     }
 

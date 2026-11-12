@@ -385,7 +385,9 @@ async fn read_body<S: AsyncRead + Unpin>(
             let size_text = std::str::from_utf8(&rest[..line_end]).map_err(|_| invalid("size"))?;
             let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16)
                 .map_err(|_| invalid("size"))?;
-            let need = line_end + 2 + size + 2;
+            let need = (line_end + 4)
+                .checked_add(size)
+                .ok_or_else(|| invalid("size"))?;
             fill(stream, &mut rest, need).await?;
             captured
                 .body
@@ -731,5 +733,37 @@ impl SilentServer {
     /// The bound address.
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_chunked(raw: &[u8]) -> std::io::Result<Vec<u8>> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap_or_else(|e| panic!("runtime: {e}"));
+        let mut captured = Captured {
+            headers: vec![("Transfer-Encoding".into(), "chunked".into())],
+            ..Captured::default()
+        };
+        let mut stream = raw;
+        rt.block_on(read_body(&mut stream, &mut captured, Vec::new()))?;
+        Ok(captured.body)
+    }
+
+    #[test]
+    fn a_chunked_body_is_dechunked() {
+        let body = read_chunked(b"3\r\nabc\r\n0\r\n\r\n").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(body, b"abc");
+    }
+
+    #[test]
+    fn a_chunk_size_that_overflows_is_invalid_data() {
+        let e = read_chunked(b"ffffffffffffffff\r\nabc\r\n")
+            .map(|_| ())
+            .expect_err("an overflowing chunk size must be refused");
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
     }
 }

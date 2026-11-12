@@ -1,6 +1,7 @@
-//! SseDecoder over arbitrary bytes and chunking. Invariants: no panic; an
-//! event over the limit is an error, never buffered without bound; the same
-//! events (and the same first error) regardless of chunking.
+//! SseDecoder over arbitrary bytes and chunking. Invariants: no panic; no
+//! event over the limit is returned; the same events (and the same first
+//! error) regardless of chunking. That buffering stays bounded is covered by
+//! the unit and hostile-peer tests, not here.
 #![no_main]
 
 use agui_sdk::client::transport::sse::SseDecoder;

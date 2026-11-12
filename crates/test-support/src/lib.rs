@@ -5,8 +5,10 @@
 //!   visible skip (a failure under `AGUI_REQUIRE_SPEC=1`); a cache for the
 //!   wrong commit is always a failure. Nothing from upstream is vendored.
 //! * [`corpus`]: discovers the stream, value and protobuf-byte corpora,
-//!   checks each against its upstream `MANIFEST.txt` in both directions, and
-//!   reports counts without pinning them.
+//!   checks the stream and value corpora against their upstream
+//!   `MANIFEST.txt` in both directions (the byte corpus, which has none, by
+//!   pairing each case with a valid value document), and reports counts
+//!   without pinning them.
 //! * [`oracle`]: runs a stream fixture through the client pipeline and judges
 //!   the result against the fixture's `expect` block. Unknown expectation keys
 //!   fail closed.

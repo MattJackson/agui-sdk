@@ -1,7 +1,9 @@
-//! Corpus discovery. Each corpus is enumerated from its directory, checked
-//! against its upstream `MANIFEST.txt` in both directions, and its size is
-//! printed. An empty corpus in a present cache is a failure: a lane over zero
-//! items proves nothing.
+//! Corpus discovery. Each corpus is enumerated from its directory and its
+//! size is printed. The stream and value corpora are checked against their
+//! upstream `MANIFEST.txt` in both directions; the protobuf-byte corpus has
+//! none, and is checked by pairing each `.bin` with a valid value document.
+//! An empty corpus in a present cache is a failure: a lane over zero items
+//! proves nothing.
 //!
 //! The `*_in` functions take an explicit directory and return every problem;
 //! the convenience functions use the spec cache, print the counts, skip (with

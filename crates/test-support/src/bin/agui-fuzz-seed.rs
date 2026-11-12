@@ -6,9 +6,11 @@
 //! cargo run -p agui-test-support --bin agui-fuzz-seed -- fuzz/corpus
 //! ```
 //!
-//! Input formats match the targets in `fuzz/fuzz_targets/`:
-//! byte streams for the decoders, single JSON documents for enforcement and
-//! admission, `document \0 operations` for the patch target.
+//! Input formats match the targets in `fuzz/fuzz_targets/`: a chunk-size
+//! byte then the byte stream for the chunking targets (`sse_decoder`,
+//! `pipeline_json`, `proto_frames`), the bare message for `proto_decode`,
+//! single JSON documents for enforcement and admission,
+//! `document \0 operations` for the patch target.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -51,6 +53,16 @@ fn frame(payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The input of a target that reads its chunk size from the first byte
+/// (`fuzz_targets/common.rs`, `chunking`): `0xFF` (chunks of 256 bytes),
+/// then `body`.
+fn chunked(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + 1);
+    out.push(0xFF);
+    out.extend_from_slice(body);
+    out
+}
+
 fn to_vec(v: &Value) -> Vec<u8> {
     serde_json::to_vec(v).unwrap_or_default()
 }
@@ -83,6 +95,33 @@ fn patch_seeds(stream: &[Value]) -> Vec<(usize, Vec<u8>)> {
     out
 }
 
+/// A seed input: target, file name, bytes.
+type SeedInput = (&'static str, String, Vec<u8>);
+
+/// The seeds one corpus stream yields, in each target's input format.
+fn stream_seeds(name: &str, stream: &[Value]) -> Vec<SeedInput> {
+    let sse = sse_body(stream);
+    let mut out = vec![
+        ("sse_decoder", name.to_owned(), chunked(&sse)),
+        ("pipeline_json", name.to_owned(), chunked(&sse)),
+    ];
+    for (i, event) in stream.iter().enumerate() {
+        out.push(("enforce_event", format!("{name}-{i}"), to_vec(event)));
+    }
+    for (i, bytes) in patch_seeds(stream) {
+        out.push(("patch_apply", format!("{name}-{i}"), bytes));
+    }
+    out
+}
+
+/// The seeds one protobuf case yields, in each target's input format.
+fn proto_seeds(name: &str, bytes: &[u8]) -> Vec<SeedInput> {
+    vec![
+        ("proto_decode", name.to_owned(), bytes.to_vec()),
+        ("proto_frames", name.to_owned(), chunked(&frame(bytes))),
+    ]
+}
+
 fn seed(out: &Path) -> std::io::Result<usize> {
     let mut s = Seeder {
         out: out.to_path_buf(),
@@ -99,14 +138,8 @@ fn seed(out: &Path) -> std::io::Result<usize> {
     }
 
     for f in &streams {
-        let sse = sse_body(f.stream());
-        s.put("sse_decoder", &f.name, &sse)?;
-        s.put("pipeline_json", &f.name, &sse)?;
-        for (i, event) in f.stream().iter().enumerate() {
-            s.put("enforce_event", &format!("{}-{i}", f.name), &to_vec(event))?;
-        }
-        for (i, bytes) in patch_seeds(f.stream()) {
-            s.put("patch_apply", &format!("{}-{i}", f.name), &bytes)?;
+        for (target, name, bytes) in stream_seeds(&f.name, f.stream()) {
+            s.put(target, &name, &bytes)?;
         }
     }
     for d in &values {
@@ -141,8 +174,9 @@ fn seed(out: &Path) -> std::io::Result<usize> {
         }
     }
     for p in &protos {
-        s.put("proto_decode", &p.name, &p.bytes)?;
-        s.put("proto_frames", &p.name, &frame(&p.bytes))?;
+        for (target, name, bytes) in proto_seeds(&p.name, &p.bytes) {
+            s.put(target, &name, &bytes)?;
+        }
     }
     for (i, at) in [
         "2026-11-10T12:00:00Z",
@@ -190,6 +224,43 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunking_targets_get_their_body_after_the_size_byte() {
+        // A copy of `fuzz/fuzz_targets/common.rs` `chunking`: the fuzz crate
+        // is outside the workspace, so it cannot be called from here. Keep the
+        // two in step; if the size-byte convention there changes, this copy
+        // and `chunked` must change with it.
+        fn chunking(data: &[u8]) -> (usize, &[u8]) {
+            match data.split_first() {
+                Some((first, rest)) => (usize::from(*first) + 1, rest),
+                None => (1, data),
+            }
+        }
+        // The encodings `seed` writes, not `chunked` on its own: a target
+        // handed its raw body would lose the body's first byte to `chunking`.
+        let stream = vec![json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"})];
+        let sse = sse_body(&stream);
+        let mut seen = 0;
+        for (target, _, input) in stream_seeds("s", &stream) {
+            if target == "sse_decoder" || target == "pipeline_json" {
+                let (size, body) = chunking(&input);
+                assert_eq!(body, sse.as_slice(), "{target}");
+                assert_eq!(size, 256, "{target}");
+                seen += 1;
+            }
+        }
+        let message = b"\x0a\x03abc";
+        for (target, _, input) in proto_seeds("p", message) {
+            if target == "proto_frames" {
+                let (size, body) = chunking(&input);
+                assert_eq!(body, frame(message).as_slice(), "{target}");
+                assert_eq!(size, 256, "{target}");
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 3, "every chunking target is seeded");
+    }
 
     #[test]
     fn later_deltas_are_seeded_against_the_applied_state() {

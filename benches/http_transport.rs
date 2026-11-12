@@ -8,7 +8,8 @@
 //! splits the body, so it is
 //! informational, not gated: the decoders' exact budgets are gated by
 //! `sse_decode` and `proto_decode`. A run fails only if a stream does not
-//! arrive whole, or if time grows super-linearly from ×1 to ×8 input.
+//! arrive whole, or if time grows from ×1 to ×8 input by more than 8 ×
+//! `[gate] time_linearity` of `benches/budgets.toml`.
 //!
 //! `cargo bench --bench http_transport` measures; without `--bench` (as under
 //! `cargo test --benches`) it does one small smoke pass.
@@ -88,6 +89,7 @@ fn measure(
 fn main() {
     let measuring = std::env::args().any(|a| a == "--bench");
     let (scales, passes): (&[usize], usize) = if measuring { (&[1, 8], 9) } else { (&[1], 1) };
+    let time_linearity = support::gate_time_linearity();
     let mut failures = Vec::new();
     type Case = (
         &'static str,
@@ -123,7 +125,7 @@ fn main() {
         }
         if let (Some(first), Some(last)) = (points.first(), points.last()) {
             let k = (last.0 / first.0) as f64;
-            if k > 1.0 && last.1 / first.1 > k * 1.5 {
+            if k > 1.0 && last.1 / first.1 > k * time_linearity {
                 failures.push(format!(
                     "http_transport/{name}: time grew ×{:.2} for ×{k} input: super-linear",
                     last.1 / first.1

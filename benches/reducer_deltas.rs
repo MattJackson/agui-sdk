@@ -11,6 +11,8 @@
 
 mod support;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use agui_sdk::diagnostics::{NullSink, Reporter};
@@ -19,6 +21,9 @@ use agui_sdk::Event;
 use agui_test_support::alloc::AllocStats;
 use serde_json::json;
 use support::{Bench, CountingAllocator, Work};
+
+/// What `one_message_held` leaves behind: the reducer and the kept updates.
+type Held = (Reducer, Vec<Arc<Event>>);
 
 #[global_allocator]
 static ALLOC: CountingAllocator = CountingAllocator;
@@ -91,7 +96,13 @@ fn main() {
         100_000,
         |deltas| {
             let (start, content, bytes) = inputs(deltas);
+            // `run` parks the reducer and the kept updates here so their
+            // O(n) drop happens in the next untimed `prepare`, not in the
+            // timed region.
+            let parked: Rc<RefCell<Option<Held>>> = Rc::default();
+            let park = Rc::clone(&parked);
             let prepare = move || {
+                drop(park.borrow_mut().take());
                 let mut reducer = Reducer::new();
                 let mut reporter = Reporter::new(Arc::new(NullSink), 256);
                 reducer.apply(start.clone(), &mut reporter);
@@ -110,6 +121,7 @@ fn main() {
                     kept.push(reducer.apply(e, &mut reporter).event);
                 }
                 std::hint::black_box(&kept);
+                *parked.borrow_mut() = Some((reducer, kept));
                 Work { events, bytes }
             };
             (prepare, run)

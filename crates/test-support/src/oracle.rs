@@ -196,6 +196,10 @@ fn input_messages(fixture: &StreamFixture) -> Result<Vec<agui_sdk::message::Mess
 /// request, so `request` and `requestAbsentPaths` are unobservable on it.
 pub fn observe(fixture: &StreamFixture, way: Way) -> Observed {
     let mut observed = Observed::new();
+    if let Some(e) = unrecognised_pin(fixture) {
+        observed.outcome = Outcome::Harness(e);
+        return observed;
+    }
     let config = pipeline_config(fixture);
     let era = config.legacy_peer;
     let per_event = config.limits.max_diagnostics_per_event;
@@ -261,6 +265,26 @@ pub fn observe(fixture: &StreamFixture, way: Way) -> Observed {
     observed
 }
 
+/// A `client.maxProtocolVersion` that is not a string, or names neither a
+/// pre-versioning era nor a protocol version: the fixture cannot be run as
+/// written, so the lanes report a harness error instead of running it against
+/// the current peer.
+fn unrecognised_pin(fixture: &StreamFixture) -> Option<String> {
+    let raw = fixture.document.pointer("/client/maxProtocolVersion")?;
+    let Some(v) = raw.as_str() else {
+        return Some(format!(
+            "harness: client.maxProtocolVersion {raw} is not a string"
+        ));
+    };
+    if LegacyEra::parse(v).is_some() || agui_sdk::version::ProtocolVersion::parse(v).is_some() {
+        None
+    } else {
+        Some(format!(
+            "harness: client.maxProtocolVersion {v:?} is neither a legacy era nor a protocol version"
+        ))
+    }
+}
+
 /// The peer the client is pinned to: `client.maxProtocolVersion` as a
 /// pre-versioning era when it names one, else as a versioned peer, else
 /// current.
@@ -293,6 +317,10 @@ pub async fn observe_client(fixture: &StreamFixture, delivery: Delivery) -> Obse
     use agui_sdk::client::{AgentClient, RunRequest};
 
     let mut observed = Observed::new();
+    if let Some(e) = unrecognised_pin(fixture) {
+        observed.outcome = Outcome::Harness(e);
+        return observed;
+    }
     let history = match input_messages(fixture) {
         Ok(h) => h,
         Err(e) => {
@@ -584,6 +612,9 @@ fn check_key(key: &str, want: &Value, obs: &Observed) -> Result<(), String> {
         },
         "requestAbsentPaths" => {
             let request = obs.request.as_ref().ok_or("no request was observed")?;
+            if !request.is_object() {
+                return Err(format!("the request is not a JSON object: {request}"));
+            }
             let paths = string_list(want, key)?;
             let present: Vec<&str> = paths
                 .into_iter()
@@ -714,6 +745,73 @@ mod tests {
         match judge_expect(&expect(e.clone()), &observed(), &JudgeOptions::new()) {
             Ok(_) => panic!("{e} should fail"),
             Err(p) => assert!(p.iter().any(|l| l.contains(needle)), "{e}: {p:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_peer_pin_is_a_harness_error() {
+        let fixture = StreamFixture {
+            name: "bad-pin".to_owned(),
+            path: std::path::PathBuf::new(),
+            document: json!({
+                "client": {"maxProtocolVersion": "not-a-version"},
+                "stream": [],
+                "expect": {"outcome": "completed"}
+            }),
+        };
+        for way in [Way::Json, Way::Value] {
+            let observed = observe(&fixture, way);
+            assert!(
+                matches!(&observed.outcome, Outcome::Harness(e) if e.contains("not-a-version")),
+                "{:?}",
+                observed.outcome
+            );
+        }
+        let observed = observe_client_blocking(&fixture, Delivery::Frames);
+        assert!(
+            matches!(&observed.outcome, Outcome::Harness(e) if e.contains("not-a-version")),
+            "{:?}",
+            observed.outcome
+        );
+    }
+
+    #[test]
+    fn a_non_string_peer_pin_is_a_harness_error() {
+        for pin in [json!(0.1), json!(null), json!({"v": "0.1"})] {
+            let fixture = StreamFixture {
+                name: "non-string-pin".to_owned(),
+                path: std::path::PathBuf::new(),
+                document: json!({
+                    "client": {"maxProtocolVersion": pin},
+                    "stream": [],
+                    "expect": {"outcome": "completed"}
+                }),
+            };
+            for way in [Way::Json, Way::Value] {
+                let observed = observe(&fixture, way);
+                assert!(
+                    matches!(&observed.outcome, Outcome::Harness(e) if e.contains("not a string")),
+                    "{pin}: {:?}",
+                    observed.outcome
+                );
+            }
+            let observed = observe_client_blocking(&fixture, Delivery::Frames);
+            assert!(
+                matches!(&observed.outcome, Outcome::Harness(e) if e.contains("not a string")),
+                "{pin}: {:?}",
+                observed.outcome
+            );
+        }
+    }
+
+    #[test]
+    fn request_absent_paths_needs_a_json_request() {
+        let mut o = observed();
+        o.request = Some(Value::String("not json".into()));
+        let e = expect(json!({"requestAbsentPaths": ["threadId"]}));
+        match judge_expect(&e, &o, &JudgeOptions::new()) {
+            Ok(_) => panic!("a non-object request must not satisfy requestAbsentPaths"),
+            Err(p) => assert!(p.iter().any(|l| l.contains("not a JSON object")), "{p:?}"),
         }
     }
 

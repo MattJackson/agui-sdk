@@ -92,7 +92,8 @@ pub enum CacheStatus {
     Stale {
         /// The pinned commit.
         expected: String,
-        /// What the stamp says (empty when there is none).
+        /// What the stamp says (empty when there is none, a bracketed
+        /// `<unreadable stamp: ..>` when it cannot be read).
         found: String,
         /// The cache root.
         path: PathBuf,
@@ -112,9 +113,11 @@ pub fn locate_in(workspace: &Path, env_dir: Option<&Path>, commit: &str) -> Cach
             path,
         };
     }
-    let found = std::fs::read_to_string(path.join(STAMP_FILE))
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_default();
+    let found = match std::fs::read_to_string(path.join(STAMP_FILE)) {
+        Ok(s) => s.trim().to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => format!("<unreadable stamp: {e}>"),
+    };
     if found == commit {
         CacheStatus::Ready(path)
     } else {
@@ -278,5 +281,20 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&ws);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn an_unreadable_stamp_says_why() {
+        let ws = scratch("unreadable");
+        // A directory where the stamp file should be: reading it fails with
+        // something other than NotFound.
+        std::fs::create_dir_all(ws.join(STAMP_FILE)).unwrap_or_else(|e| panic!("{e}"));
+        match locate_in(&ws, Some(&ws), SHA) {
+            CacheStatus::Stale { found, .. } => {
+                assert!(found.contains("unreadable"), "{found:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

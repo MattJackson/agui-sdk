@@ -10,8 +10,34 @@ use std::process::ExitCode;
 
 use agui_test_support::traceability::{analyze, progress_markdown, Inputs, Mode};
 
+const USAGE: &str = "usage: agui-trace <gate [--no-pending] | progress [--out FILE] [--check]>";
+
+/// Whether every argument after the subcommand is one it knows (`--out`
+/// takes a value), so a misspelt flag is refused rather than ignored.
+fn known_flags(command: &str, rest: &[String]) -> bool {
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match (command, a.as_str()) {
+            ("gate", "--no-pending") | ("progress", "--check") => {}
+            ("progress", "--out") => {
+                if it.next().is_none() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(command) = args.first() {
+        if !known_flags(command, &args[1..]) {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    }
     let inputs = Inputs::repo();
     match args.first().map(String::as_str) {
         Some("gate") => {
@@ -70,8 +96,33 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("usage: agui-trace <gate [--no-pending] | progress [--out FILE] [--check]>");
+            eprintln!("{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::known_flags;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn known_flags_accepts_each_command_s_own_flags() {
+        assert!(known_flags("gate", &args(&[])));
+        assert!(known_flags("gate", &args(&["--no-pending"])));
+        assert!(known_flags("progress", &args(&["--check"])));
+        assert!(known_flags("progress", &args(&["--out", "F", "--check"])));
+    }
+
+    #[test]
+    fn known_flags_refuses_unknown_misspelt_or_incomplete_flags() {
+        assert!(!known_flags("gate", &args(&["--no-pendng"])));
+        assert!(!known_flags("gate", &args(&["--check"])));
+        assert!(!known_flags("progress", &args(&["--no-pending"])));
+        assert!(!known_flags("progress", &args(&["--out"])));
     }
 }
