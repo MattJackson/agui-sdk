@@ -676,13 +676,27 @@ struct PendingDoc {
 ///
 /// Invalid TOML or a half listed twice.
 pub fn pending(path: &Path) -> Result<Vec<Pending>, Vec<String>> {
+    let (out, problems) = pending_lenient(path);
+    if problems.is_empty() {
+        Ok(out)
+    } else {
+        Err(problems)
+    }
+}
+
+/// [`pending`], keeping the valid entries alongside the problems: a half
+/// listed twice is reported once and its first listing still counts, so the
+/// other pending halves are not also reported as uncovered.
+fn pending_lenient(path: &Path) -> (Vec<Pending>, Vec<String>) {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(vec![format!("{}: {e}", path.display())]),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
+        Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };
-    let doc: PendingDoc =
-        toml::from_str(&text).map_err(|e| vec![format!("{}: {e}", path.display())])?;
+    let doc: PendingDoc = match toml::from_str(&text) {
+        Ok(d) => d,
+        Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
+    };
     let mut out = Vec::new();
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
@@ -695,11 +709,7 @@ pub fn pending(path: &Path) -> Result<Vec<Pending>, Vec<String>> {
             out.push(Pending { id, half });
         }
     }
-    if problems.is_empty() {
-        Ok(out)
-    } else {
-        Err(problems)
-    }
+    (out, problems)
 }
 
 /// What covers a half.
@@ -780,10 +790,8 @@ pub fn analyze(inputs: &Inputs, mode: Mode) -> Report {
             return report;
         }
     };
-    let pending_list = pending(&inputs.pending).unwrap_or_else(|p| {
-        problems.extend(p);
-        Vec::new()
-    });
+    let (pending_list, pending_problems) = pending_lenient(&inputs.pending);
+    problems.extend(pending_problems);
     // A missing file means no overrides; an unreadable or invalid one is a
     // problem (the stream lane panics on it), not silently "none".
     let overridden: BTreeSet<String> = match std::fs::read_to_string(&inputs.overrides) {
@@ -1367,6 +1375,22 @@ scope = "1.0"
             let got: Vec<_> = got.iter().map(|p| (p.id.as_str(), p.half)).collect();
             assert_eq!(got, want, "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_duplicate_pending_entry_keeps_the_rest_of_the_list() {
+        let f = Fixture::new("pending-dup");
+        f.write("tests/a_client.rs", FULL_CLIENT);
+        f.write("tests/basic_events.rs", SHARED);
+        // BBB-01's server half is legitimately pending, but listed twice.
+        f.write(
+            "docs/compliance/pending.toml",
+            "server = [\"BBB-01\", \"BBB-01\"]\n",
+        );
+        let p = f.problems(Mode::Pending);
+        assert!(has(&p, "BBB-01 (server) is listed twice"), "{p:?}");
+        assert!(!has(&p, "not listed as pending"), "{p:?}");
+        assert_eq!(p.len(), 1, "{p:?}");
     }
 
     #[test]
