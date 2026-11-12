@@ -876,22 +876,25 @@ impl Cost<'_> {
 
 /// With `preserve-order`, each `remove` of an object member shifts the later
 /// members, which [`apply`] charges to the walk budget. When that would cost
-/// more than rebuilding the object, the delta replaces it whole (and
+/// more than rebuilding the object, the delta replaces it whole (`None`; and
 /// [`diff`] replaces the whole document when the delta as a whole would cost
 /// more than the default limits allow), so the crate never emits a delta its
 /// own default limits refuse for the state alone (a client's activity
-/// content shares the node ceiling, see the module docs). Always `false`
-/// without `preserve-order` (removal is O(log n) there).
+/// content shares the node ceiling, see the module docs). Otherwise returns
+/// what the removals' shifts will cost, which `diff_into` charges before it
+/// descends into the kept members: the probe here visits fewer nodes than
+/// that, so it is paid for too, and the walk cap stops the descent. Always
+/// `Some(0)` without `preserve-order` (removal is O(log n) there).
 #[cfg(feature = "preserve-order")]
-fn removals_too_costly(
+fn removal_shifts(
     before: &serde_json::Map<String, Value>,
     after: &serde_json::Map<String, Value>,
-) -> bool {
+) -> Option<usize> {
     let removed = before.keys().filter(|k| !after.contains_key(*k)).count();
     let shifts = removed.saturating_mul(engine::remove_shift(before.len()));
     // Cheap exit: rebuilding costs at least one unit per member.
     if shifts <= before.len() {
-        return false;
+        return Some(shifts);
     }
     // Rebuilding costs `before.len()` plus the nodes of `after`: count them
     // only as far as that could still be cheaper than `shifts`.
@@ -899,18 +902,18 @@ fn removals_too_costly(
     for v in after.values() {
         match walk::count_displaced(v, remaining) {
             Some(n) if n < remaining => remaining -= n,
-            _ => return false,
+            _ => return Some(shifts),
         }
     }
-    true
+    None
 }
 
 #[cfg(not(feature = "preserve-order"))]
-fn removals_too_costly(
+fn removal_shifts(
     _: &serde_json::Map<String, Value>,
     _: &serde_json::Map<String, Value>,
-) -> bool {
-    false
+) -> Option<usize> {
+    Some(0)
 }
 
 fn diff_into(
@@ -925,14 +928,17 @@ fn diff_into(
     }
     match (before, after) {
         (Value::Object(b), Value::Object(a)) => {
-            if removals_too_costly(b, a) {
+            let Some(shifts) = removal_shifts(b, a) else {
                 cost.add(path, walk::count(after), walk::count(before), 0);
                 out.push(PatchOperation::replace(
                     JsonPointer(path.clone()),
                     after.clone(),
                 ));
                 return;
-            }
+            };
+            // Each `remove` below shifts the later members: charged here, up
+            // front, so a delta already over the walk cap stops now.
+            cost.walk = cost.walk.saturating_add(shifts);
             let len = path.len();
             for (key, old) in b {
                 if cost.over() {
@@ -942,7 +948,7 @@ fn diff_into(
                 match a.get(key) {
                     Some(new) => diff_into(old, new, path, out, cost),
                     None => {
-                        cost.add(path, 0, walk::count(old), engine::remove_shift(b.len()));
+                        cost.add(path, 0, walk::count(old), 0);
                         // `apply` also credits the member's key text as it
                         // removes it, without walking it.
                         cost.freed = cost.freed.saturating_add(walk::text_units(key.len()));

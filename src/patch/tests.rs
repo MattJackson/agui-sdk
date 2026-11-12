@@ -624,6 +624,45 @@ fn object_removals_are_charged() {
     assert!(e.index <= 2 * 4_000_000 * 16 / N + 4, "late: {}", e.index);
 }
 
+/// `diff` charges an object's member removals before it descends into the
+/// members it keeps, so once they alone pass the walk cap it stops there
+/// instead of walking (and probing) every deeper level first.
+#[cfg(feature = "preserve-order")]
+#[test]
+fn diff_charges_removals_before_descending() {
+    const M: usize = 400;
+    let mut before = serde_json::Map::new();
+    // `a` is too big for rebuilding the object to be cheaper.
+    let pad = vec![0; 2 * M * M];
+    before.insert("a".into(), json!({"x": 1, "pad": pad}));
+    for i in 0..M {
+        before.insert(format!("k{i}"), json!(0));
+    }
+    let before = Value::Object(before);
+    let after = json!({"a": {"x": 2, "pad": pad}});
+    let shifts = M * engine::remove_shift(M + 1);
+    let mut cost = Cost {
+        walk: 0,
+        limit: shifts - 1,
+        added: 0,
+        freed: 0,
+        headroom: usize::MAX,
+        over_ceiling: false,
+        grew_past: false,
+        path_bytes: 0,
+        path_check: PATH_CHECK_FLOOR,
+        paths_too_big: false,
+        after: &after,
+    };
+    let mut out = Vec::new();
+    diff_into(&before, &after, &mut String::new(), &mut out, &mut cost);
+    assert!(cost.over());
+    assert!(
+        out.iter().all(|op| op.path.as_str() != "/a/x"),
+        "descended into /a: {out:?}"
+    );
+}
+
 /// A missing key is `PathNotFound` however much budget is left.
 #[cfg(feature = "preserve-order")]
 #[test]
