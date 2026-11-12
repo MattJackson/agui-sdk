@@ -155,7 +155,8 @@ impl<S: serde::Serialize> RunContext<S> {
     ///
     /// # Errors
     ///
-    /// As [`Emitter::emit`].
+    /// [`ErrorCode::Json`]: the state could not be serialized; nothing is
+    /// sent and the run continues. Otherwise as [`Emitter::emit`].
     pub async fn publish_state(&mut self) -> Result<()> {
         let next = self.state_value()?;
         self.emitter.send_state(next, false).await
@@ -166,7 +167,8 @@ impl<S: serde::Serialize> RunContext<S> {
     ///
     /// # Errors
     ///
-    /// As [`Emitter::emit`].
+    /// [`ErrorCode::Json`]: the state could not be serialized; nothing is
+    /// sent and the run continues. Otherwise as [`Emitter::emit`].
     pub async fn resync_state(&mut self) -> Result<()> {
         let next = self.state_value()?;
         self.emitter.send_state(next, true).await
