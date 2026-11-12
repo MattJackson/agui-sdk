@@ -75,7 +75,7 @@ pub(super) enum Error {
     /// A tag carries a wire type that does not exist (6, 7) or an unmatched
     /// end-group.
     InvalidWireType(u8),
-    /// A tag carries field number 0.
+    /// A tag carries field number 0 or one above 2^29 - 1.
     InvalidFieldNumber,
     /// A string field is not valid UTF-8.
     InvalidUtf8,
@@ -112,7 +112,7 @@ impl fmt::Display for Error {
             Error::Truncated => f.write_str("protobuf message truncated"),
             Error::InvalidVarint => f.write_str("malformed varint"),
             Error::InvalidWireType(t) => write!(f, "invalid wire type {t}"),
-            Error::InvalidFieldNumber => f.write_str("field number 0"),
+            Error::InvalidFieldNumber => f.write_str("invalid field number"),
             Error::InvalidUtf8 => f.write_str("string field is not valid UTF-8"),
         }
     }

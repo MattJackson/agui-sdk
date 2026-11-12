@@ -15,6 +15,9 @@ pub const EGROUP: u8 = 4;
 /// Wire type: 32-bit.
 pub const I32: u8 = 5;
 
+/// The largest protobuf field number.
+const MAX_FIELD_NUMBER: u64 = (1 << 29) - 1;
+
 /// Bytes a varint encoding of `v` takes.
 #[inline]
 pub fn varint_len(v: u64) -> usize {
@@ -121,10 +124,8 @@ impl<'a> Reader<'a> {
         let t = self.varint()?;
         let wt = (t & 7) as u8;
         let n = t >> 3;
-        if n == 0 {
-            return Err(Error::InvalidFieldNumber);
-        }
-        if n > u32::MAX as u64 {
+        // Protobuf field numbers are 1..=2^29 - 1.
+        if n == 0 || n > MAX_FIELD_NUMBER {
             return Err(Error::InvalidFieldNumber);
         }
         Ok((n as u32, wt))

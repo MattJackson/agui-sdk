@@ -139,6 +139,46 @@ mod tests {
     use crate::pipeline::Limits;
     use std::sync::Arc;
 
+    /// The `Event` envelope of `json`, with `extra` appended to the arm's
+    /// body (its length prefix rewritten).
+    fn envelope_with(json: &str, extra: &[u8]) -> Vec<u8> {
+        use super::super::wire::{put_varint, Reader};
+        let mut bytes = Vec::new();
+        crate::proto::encode::encode_json(json.as_bytes(), &mut bytes).unwrap();
+        let f = Reader::new(&bytes).next_field().unwrap().unwrap();
+        let mut body = bytes[f.start..f.end].to_vec();
+        body.extend_from_slice(extra);
+        let mut out = Vec::new();
+        put_varint(&mut out, u64::from(f.number) << 3 | 2);
+        put_varint(&mut out, body.len() as u64);
+        out.extend_from_slice(&body);
+        out
+    }
+
+    const RUN_STARTED: &str = r#"{"type":"RUN_STARTED","threadId":"t","runId":"r"}"#;
+
+    /// A field number above protobuf's maximum (2^29 - 1) is malformed
+    /// bytes (PB-18), not an unknown field to skip (PB-15).
+    #[test]
+    fn a_field_number_above_the_protobuf_maximum_is_malformed() {
+        use super::super::wire::put_varint;
+        let tagged = |n: u64| {
+            let mut extra = Vec::new();
+            put_varint(&mut extra, n << 3);
+            extra.push(1);
+            envelope_with(RUN_STARTED, &extra)
+        };
+        assert!(matches!(
+            decode_event(&tagged((1 << 29) - 1)),
+            Ok(Decoded::Event(_))
+        ));
+        for n in [1u64 << 29, 1 << 30, u64::from(u32::MAX), 1 << 40] {
+            let e = decode_event(&tagged(n)).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtoFraming, "field {n}");
+            assert!(!e.to_string().contains("field number 0"), "{e}");
+        }
+    }
+
     /// proto-1: the decoder's entry budget is the count the tree enforcer
     /// applies, so it refuses exactly what enforcement would, at the same N.
     #[test]
