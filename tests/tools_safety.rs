@@ -212,6 +212,34 @@ fn a_tool_advertised_by_the_request_counts_as_advertised() {
     assert!(call.is_advertised());
 }
 
+/// A tool the last run's request advertised still counts after the thread
+/// is snapshotted and restored, as it did before the restart.
+#[test]
+fn a_request_advertised_tool_survives_a_snapshot() {
+    let mut frames = vec![run_started("t1", "r1")];
+    frames.extend(tool_call(
+        "tc1",
+        "transfer",
+        r#"{"to":"a","amount":1}"#,
+        "m1",
+    ));
+    frames.push(run_finished("t1", "r1"));
+    let client = AgentClient::with_transport(mock(frames)).build().unwrap();
+    let mut thread = client.thread_with_id("t1");
+    block_on(thread.run_and_absorb(RunRequest::new().run_id("r1").tool(transfer_tool()))).unwrap();
+    let saved = serde_json::to_string(&thread.snapshot()).unwrap();
+    let restored = Thread::restore(client, serde_json::from_str(&saved).unwrap());
+    let call = restored
+        .approve(&ToolCallId::from("tc1"), DecidedBy::User { user_id: None })
+        .unwrap();
+    assert!(call.is_advertised());
+    assert!(call.check_args_subset().is_ok());
+    // A snapshot written before the field existed still reads.
+    let mut old: Value = serde_json::from_str(&saved).unwrap();
+    old.as_object_mut().unwrap().remove("runTools");
+    let _: agui_sdk::client::ThreadSnapshot = serde_json::from_value(old).unwrap();
+}
+
 /// Serves the first run's frames, then fails (or stalls) every later open.
 #[derive(Clone)]
 struct ThenFails {
