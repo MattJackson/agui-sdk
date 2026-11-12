@@ -1614,3 +1614,28 @@ fn first_text_on_a_minted_parent_warns_on_owner_disagreement() {
         Some("S")
     );
 }
+
+/// An activity's patch budget is keyed by the history's own copy of the
+/// id, not the delta's (D25: one `Arc` per id).
+#[test]
+fn activity_budget_shares_the_index_id() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "ACTIVITY_SNAPSHOT", "messageId": "x", "activityType": "t", "content": {}}),
+    );
+    // Other ids push `x` out of the decoder's recent-id cache, so the
+    // delta's id is a separate allocation.
+    for i in 0..8 {
+        h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": format!("y{i}")}));
+    }
+    h.push(
+        json!({"type": "ACTIVITY_DELTA", "messageId": "x", "activityType": "t",
+        "patch": [{"op": "add", "path": "/k", "value": 1}]}),
+    );
+    let (held, _) = h.r.index.get_key_value(&id("x")).unwrap();
+    let (budget, _) = h.r.activity_budgets.map.get_key_value(&id("x")).unwrap();
+    assert!(std::ptr::eq(
+        held.as_str().as_ptr(),
+        budget.as_str().as_ptr()
+    ));
+}

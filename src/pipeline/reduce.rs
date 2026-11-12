@@ -1873,8 +1873,10 @@ impl Reducer {
     }
 
     fn activity_delta(&mut self, e: &ActivityDelta, reporter: &mut Reporter) -> Option<MessageId> {
-        let i = match self.index.get(&e.message_id) {
-            Some(&i) if matches!(self.messages[i], Message::Activity(_)) => i,
+        // `index`'s own key: the budget keeps no id alive that the history
+        // does not already hold (D25).
+        let (key, i) = match self.index.get_key_value(&e.message_id) {
+            Some((key, &i)) if matches!(self.messages[i], Message::Activity(_)) => (key.clone(), i),
             // ACT-12..ACT-14: skipped with a warning, never invented, never fatal.
             _ => {
                 report_missing_activity(reporter, EventType::ActivityDelta);
@@ -1908,7 +1910,7 @@ impl Reducer {
             patch_credit(&content, &e.patch, self.credit_bank)
         };
         let budgets = &mut self.activity_budgets;
-        let budget = match budgets.map.entry(e.message_id.clone()) {
+        let budget = match budgets.map.entry(key) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 let b = PatchBudget::for_document(&content, limits);
