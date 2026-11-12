@@ -420,6 +420,7 @@ fn pointer_index(s: &str) -> Option<usize> {
 }
 
 /// The serialized size of `value`, counted without building it.
+#[cfg(any(feature = "server", test))]
 pub(crate) fn wire_bytes<T: Serialize + ?Sized>(value: &T) -> usize {
     struct Count(usize);
     impl std::io::Write for Count {
