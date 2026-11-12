@@ -1214,6 +1214,52 @@ mod failure_injection {
         Ok(RunOutcome::success())
     }
 
+    /// A send the transformers expand past the queue's capacity ends the run
+    /// with `server.queue_overflow` (the property test below only checks
+    /// that some valid terminal arrives).
+    #[test]
+    fn an_expansion_past_the_queue_capacity_is_a_queue_overflow() {
+        let mut config = RunnerConfig::default();
+        config.queue_capacity = 2;
+        let runner = Runner::new(agent(|ctx| async move {
+            let _ = ctx.emitter().custom("x:expand", json!(1)).await;
+            Ok(RunOutcome::success())
+        }))
+        .config(config)
+        .diagnostic_sink(agui_sdk::diagnostics::NullSink)
+        .transformer(|| Faulty {
+            armed: false,
+            at: 0,
+            seen: 0,
+            expand: 3,
+        });
+        let events = run(&runner, input());
+        assert_one_valid_run(&events);
+        assert_eq!(
+            run_error(&events).code.as_deref(),
+            Some("server.queue_overflow")
+        );
+    }
+
+    /// A panicking transformer ends the run with `agent.panicked`.
+    #[test]
+    fn a_transformer_panic_is_an_agent_panic() {
+        let runner = Runner::new(agent(|ctx| async move {
+            let _ = ctx.emitter().say("a").await;
+            Ok(RunOutcome::success())
+        }))
+        .diagnostic_sink(agui_sdk::diagnostics::NullSink)
+        .transformer(|| Faulty {
+            armed: true,
+            at: 1,
+            seen: 0,
+            expand: 1,
+        });
+        let events = run(&runner, input());
+        assert_one_valid_run(&events);
+        assert_eq!(run_error(&events).code.as_deref(), Some("agent.panicked"));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
