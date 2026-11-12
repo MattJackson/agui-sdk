@@ -44,9 +44,10 @@ const ASSEMBLY_KEEP_BYTES: usize = 64 * 1024;
 /// [`next_frame`](Self::next_frame). A frame that lies inside one chunk is
 /// returned as a slice of that chunk (no copy); only a frame split across
 /// chunks is assembled, into a buffer whose capacity is reused once the
-/// previous assembled frame has been dropped; a buffer that grew past 64 KiB
-/// goes with its frame instead, so one large frame does not keep its memory
-/// held after it is dropped.
+/// previous assembled frame has been dropped. A buffer that grew past 64 KiB
+/// is kept only while frames that large keep arriving: the next frame within
+/// 64 KiB releases it, so one large frame does not hold its memory for the
+/// life of the stream.
 ///
 /// The length prefix is checked against the limit as soon as its four bytes
 /// are buffered, before any payload is assembled; an oversized frame is an
@@ -72,6 +73,11 @@ pub struct FrameDecoder {
     /// `assembly` instead of queued, so a peer sending one byte per chunk
     /// costs the frame's bytes, not a handle per byte.
     pending: Option<usize>,
+    /// Length of the last assembled frame. The assembly keeps a handle on
+    /// that frame's allocation so the next assembly reuses it once the frame
+    /// is dropped; after a frame over [`ASSEMBLY_KEEP_BYTES`] the handle is
+    /// let go at the next frame within it.
+    held: usize,
 }
 
 impl FrameDecoder {
@@ -84,6 +90,7 @@ impl FrameDecoder {
             buffered: 0,
             assembly: BytesMut::new(),
             pending: None,
+            held: 0,
         }
     }
 
@@ -118,6 +125,12 @@ impl FrameDecoder {
         let Some(len) = self.header()? else {
             return Ok(None);
         };
+        if self.held > ASSEMBLY_KEEP_BYTES && len <= ASSEMBLY_KEEP_BYTES {
+            // A large earlier frame's allocation is not needed for this one:
+            // let it go with that frame instead of holding it for the stream.
+            self.assembly = BytesMut::new();
+            self.held = 0;
+        }
         if self.buffered - HEADER < len {
             // Incomplete: move what is queued into the assembly buffer and
             // take the rest of the frame there as it arrives.
@@ -162,17 +175,13 @@ impl FrameDecoder {
         Ok(Some(self.assembled()))
     }
 
-    /// The assembled frame. A buffer within [`ASSEMBLY_KEEP_BYTES`] is
-    /// shared with the frame and reclaimed once the frame is dropped; a larger
-    /// one is handed to the frame outright, so it is freed with the frame and
-    /// not held for the life of the stream.
+    /// The assembled frame, sharing the assembly allocation: once the frame
+    /// is dropped the next assembly reclaims it without allocating. A large
+    /// allocation is released at the next frame within
+    /// [`ASSEMBLY_KEEP_BYTES`] (see `next_frame`).
     fn assembled(&mut self) -> Chunk {
-        let frame = if self.assembly.capacity() > ASSEMBLY_KEEP_BYTES {
-            std::mem::take(&mut self.assembly)
-        } else {
-            self.assembly.split()
-        };
-        Chunk::from_bytes(frame.freeze())
+        self.held = self.assembly.len();
+        Chunk::from_bytes(self.assembly.split().freeze())
     }
 
     /// Whether bytes of an incomplete frame are buffered. At end of body this
@@ -298,9 +307,10 @@ mod tests {
         assert!(first.is_some());
     }
 
-    /// A large assembled frame owns its buffer outright: the decoder keeps no
-    /// reference to it, so once the frame is dropped the memory is freed even
-    /// if every later frame arrives whole and never touches the assembly.
+    /// A large assembled frame's buffer is released at the next small frame:
+    /// the decoder then holds no reference to it, so once the frame is dropped
+    /// the memory is freed even if every later frame arrives whole and never
+    /// touches the assembly.
     #[test]
     fn a_large_assembled_frame_does_not_pin_its_buffer() {
         let payload = vec![5u8; 1024 * 1024];
@@ -315,13 +325,38 @@ mod tests {
         }
         let frame = frame.unwrap().into_bytes();
         assert_eq!(frame.len(), payload.len());
+        d.push(Chunk::copy_from_slice(&bytes[bytes.len() - 5..]));
+        assert_eq!(&d.next_frame().unwrap().unwrap()[..], b"x");
         assert!(
             frame.is_unique(),
             "the decoder still references the frame's buffer"
         );
-        assert_eq!(d.assembly.capacity(), 0);
-        d.push(Chunk::copy_from_slice(&bytes[bytes.len() - 5..]));
-        assert_eq!(&d.next_frame().unwrap().unwrap()[..], b"x");
+    }
+
+    /// Until the next frame arrives, the decoder keeps its handle on a large
+    /// assembled frame's buffer, so consecutive large frames reuse one
+    /// allocation once each is dropped (the proto_codec bench gates framing
+    /// at zero allocations per frame).
+    #[test]
+    fn a_large_frame_keeps_its_buffer_for_the_next_large_frame() {
+        let payload = vec![7u8; 256 * 1024];
+        let bytes = stream(&[&payload, &payload]);
+        let mut d = FrameDecoder::new(DEFAULT_MAX_FRAME_BYTES);
+        let mut frames = 0;
+        for piece in bytes.chunks(4096) {
+            d.push(Chunk::copy_from_slice(piece));
+            if let Some(f) = d.next_frame().unwrap() {
+                assert_eq!(f.len(), payload.len());
+                frames += 1;
+                if frames == 1 {
+                    assert!(
+                        !f.into_bytes().is_unique(),
+                        "the decoder gave up the buffer the next large frame reuses"
+                    );
+                }
+            }
+        }
+        assert_eq!(frames, 2);
     }
 
     #[test]
