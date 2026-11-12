@@ -54,7 +54,9 @@
 //!   `max(factor × nodes before, floor)` is refused without re-walking it.
 //!   Whatever that allows, no patch takes a document past the absolute
 //!   [`PatchLimits::max_nodes`], so repeated small patches cannot compound
-//!   the growth ([`PatchErrorReason::NodeCeilingExceeded`]).
+//!   the growth ([`PatchErrorReason::NodeCeilingExceeded`]). A document
+//!   already above it (a text-heavy snapshot) takes only patches that do
+//!   not grow it.
 //! * **Pointer parsing** borrows from the operation and allocates only when a
 //!   segment contains `~0`/`~1` escapes.
 
@@ -457,7 +459,8 @@ pub struct PatchLimits {
     /// as with a larger ceiling.
     pub min_nodes: usize,
     /// Absolute ceiling on node units, whatever the growth allowance: a patch
-    /// never leaves a document larger ([`PatchErrorReason::NodeCeilingExceeded`]).
+    /// never leaves a document larger ([`PatchErrorReason::NodeCeilingExceeded`]),
+    /// and never grows one that is already above it.
     /// The [`Reducer`](crate::pipeline::reduce::Reducer) applies it to the
     /// state and every patched activity content together, and the
     /// [`Processor`](crate::pipeline::Processor) ends the stream with

@@ -1235,3 +1235,40 @@ fn diff_removal_over_the_ceiling_stays_a_delta() {
     );
     assert!(run(&before, &patch).unwrap() == after);
 }
+
+/// A document already above its ceiling (a text-heavy snapshot, or state
+/// whose share the activity content shrank) still takes a delta that does
+/// not grow it; only growth past where it started is refused.
+#[test]
+fn a_document_over_the_ceiling_takes_deltas_that_do_not_grow_it() {
+    let doc = json!({"a": (0..10).collect::<Vec<u32>>(), "b": (0..20).collect::<Vec<u32>>()});
+    let at_ten = PatchLimits {
+        max_depth: 128,
+        growth_factor: 1,
+        min_nodes: 1,
+        max_nodes: 10,
+    };
+    let mut d = doc.clone();
+    let mut b = PatchBudget::for_document(&d, at_ten);
+    let start = b.nodes();
+    assert!(start > 10);
+    let p = ops(json!([{"op": "replace", "path": "/a", "value": 0}]));
+    apply(&mut d, &p, &mut b).unwrap();
+    assert_eq!(b.nodes(), count(&d));
+    assert!(b.nodes() < start);
+    let p = ops(json!([{"op": "replace", "path": "/b/0", "value": 7}]));
+    apply(&mut d, &p, &mut b).unwrap();
+    // Growth past where the patch started is still refused at the ceiling.
+    let before = d.clone();
+    let p = ops(json!([{"op": "add", "path": "/c", "value": [1, 2]}]));
+    let e = apply(&mut d, &p, &mut b).unwrap_err();
+    assert_eq!(e.reason, PatchErrorReason::NodeCeilingExceeded);
+    assert_eq!(d, before);
+    // Net-zero within one patch: replace frees room the add then uses.
+    let p = ops(json!([
+        {"op": "replace", "path": "/b", "value": 0},
+        {"op": "add", "path": "/c", "value": [1, 2]}
+    ]));
+    apply(&mut d, &p, &mut b).unwrap();
+    assert_eq!(b.nodes(), count(&d));
+}

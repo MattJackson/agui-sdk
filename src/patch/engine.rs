@@ -388,8 +388,12 @@ impl<'p, 'd> Engine<'p, 'd> {
             nodes,
             settled: 0,
             partial: 0,
-            node_cap: caps.nodes,
-            ceiling: caps.ceiling,
+            // A document already above a limit (a text-heavy snapshot, or a
+            // ceiling lowered by other documents' growth) may still take a
+            // patch that does not grow it: only growth past where the patch
+            // started is refused (docs/DECISIONS.md D14).
+            node_cap: caps.nodes.max(nodes),
+            ceiling: caps.ceiling.max(nodes),
             walked: 0,
             walk_cap: caps.walk,
             max_depth: caps.depth,
