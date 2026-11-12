@@ -445,18 +445,36 @@ impl RunDriver {
         };
 
         // The reducer keeps the whole history, activity messages included;
-        // the peer gets the sendable part (RUNIN-12, ACT-18).
-        let history = input.messages.clone();
-        let state = input.state.clone().unwrap_or_else(empty_object);
-        input.messages.retain(|m| m.role() != Role::Activity);
+        // the peer gets the sendable part (RUNIN-12, ACT-18). Only a history
+        // holding activity messages is copied; otherwise the input's
+        // messages and state move to the reducer once the input is sent.
+        let full_history = if input.messages.iter().any(|m| m.role() == Role::Activity) {
+            let history = input.messages.clone();
+            input.messages.retain(|m| m.role() != Role::Activity);
+            Some(history)
+        } else {
+            None
+        };
         input.protocol_version = match legacy {
             Some(_) => None,
             None => Some(crate::PROTOCOL_VERSION.to_owned()),
         };
-        let enforcer = Enforcer::new(limits);
 
-        let thread_id = input.thread_id.clone();
-        let run_id = input.run_id.clone();
+        let request = RequestParts {
+            thread_id: input.thread_id.clone(),
+            run_id: input.run_id.clone(),
+            headers,
+            cancel: self.cancel.clone(),
+            sink: Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>,
+            max_frame_bytes: limits.max_frame_bytes,
+            max_container_entries: limits.max_container_entries,
+        };
+        let sent = self.send(&input, &config, legacy, request, open);
+
+        // Built whether or not sending succeeded, so the handle's history
+        // and state read the same either way.
+        let history = full_history.unwrap_or_else(|| std::mem::take(&mut input.messages));
+        let state = input.state.take().unwrap_or_else(empty_object);
         self.processor = Some(
             Processor::with_history(
                 PipelineConfig {
@@ -466,22 +484,28 @@ impl RunDriver {
                 history,
                 state,
             )
-            .expecting(thread_id.clone(), run_id.clone()),
+            .expecting(input.thread_id, input.run_id),
         );
-        let era = legacy.map(EraShims::new);
-        let request = RequestParts {
-            thread_id,
-            run_id,
-            headers,
-            cancel: self.cancel.clone(),
-            sink: Arc::clone(&self.sink) as Arc<dyn DiagnosticSink>,
-            max_frame_bytes: limits.max_frame_bytes,
-            max_container_entries: limits.max_container_entries,
-        };
+        sent
+    }
 
+    /// Encodes the input and opens the exchange, directly or through the
+    /// middleware chain. The processor is not built yet: nothing is polled
+    /// here.
+    fn send(
+        &mut self,
+        input: &RunAgentInput,
+        config: &ClientConfig,
+        legacy: Option<crate::version::LegacyEra>,
+        request: RequestParts,
+        open: Open,
+    ) -> Result<()> {
+        let limits = config.limits;
+        let enforcer = Enforcer::new(limits);
+        let era = legacy.map(EraShims::new);
         if config.middleware.is_empty() {
             // Upgrade, era downgrade, enforcement, one serialization.
-            let body = outgoing::encode_input(&input, era.as_ref(), &enforcer, &mut self.reporter);
+            let body = outgoing::encode_input(input, era.as_ref(), &enforcer, &mut self.reporter);
             self.reporter.end_event(None);
             let body = body?;
             self.boundary = Some(Boundary::new());
@@ -491,9 +515,8 @@ impl RunDriver {
             // The typed check first, so middleware never sees a malformed
             // input; then upgrade and era downgrade. Enforcement runs again
             // on what middleware hands on (`upstream`).
-            enforcer.check_outgoing_input(&input, &mut self.reporter)?;
-            let value =
-                outgoing::prepare_value(to_value(&input)?, era.as_ref(), &mut self.reporter);
+            enforcer.check_outgoing_input(input, &mut self.reporter)?;
+            let value = outgoing::prepare_value(to_value(input)?, era.as_ref(), &mut self.reporter);
             self.reporter.end_event(None);
             let innermost = upstream(
                 open,
