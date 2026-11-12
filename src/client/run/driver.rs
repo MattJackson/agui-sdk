@@ -180,6 +180,9 @@ pub(in crate::client) struct RunDriver {
     last_ids: Option<(ThreadId, RunId)>,
     /// The last run's terminal, and the requested run's.
     terminals: Terminals,
+    /// A failure of a frame some of whose events were already applied: it
+    /// concludes the run once those events are delivered.
+    pending_error: Option<Error>,
     state_override: Option<Value>,
     messages_override: Option<Vec<Message>>,
     report: Option<RunReport>,
@@ -234,6 +237,7 @@ impl RunDriver {
             started: false,
             last_ids: None,
             terminals: Terminals::default(),
+            pending_error: None,
             state_override: None,
             messages_override: None,
             report: None,
@@ -302,6 +306,9 @@ impl RunDriver {
             if let Some(processed) = self.ready.pop_front() {
                 return Poll::Ready(Some(self.deliver(processed)));
             }
+            if let Some(err) = self.pending_error.take() {
+                return Poll::Ready(Some(Err(self.conclude_err(err))));
+            }
             if self.sink.observer_panicked.load(Ordering::Relaxed) {
                 return Poll::Ready(Some(Err(self.conclude_err(observer_panicked()))));
             }
@@ -344,14 +351,33 @@ impl RunDriver {
                     } else {
                         transport_panicked
                     };
+                    let mut panicked = false;
                     let polled = catch_unwind(AssertUnwindSafe(|| stream.poll_next(cx)))
-                        .unwrap_or_else(|_| Poll::Ready(Some(Err(fallback()))));
+                        .unwrap_or_else(|_| {
+                            panicked = true;
+                            Poll::Ready(Some(Err(fallback())))
+                        });
                     match polled {
                         Poll::Ready(Some(Ok(frame))) => {
                             frames += 1;
                             if let Err(err) = self.push(frame) {
-                                return Poll::Ready(Some(Err(self.conclude_err(err))));
+                                if self.ready.is_empty() {
+                                    return Poll::Ready(Some(Err(self.conclude_err(err))));
+                                }
+                                // Events of this frame were applied before
+                                // it failed: deliver them, then fail.
+                                self.pending_error = Some(err);
                             }
+                        }
+                        // After the requested run's terminal, a failing
+                        // transport ends the stream as a dropped connection
+                        // does: the terminal stands (transports/index.mdx).
+                        Poll::Ready(Some(Err(err)))
+                            if !panicked
+                                && self.terminals.requested_concluded()
+                                && ends_the_stream(err.code()) =>
+                        {
+                            return Poll::Ready(self.end_of_stream().map(Err));
                         }
                         Poll::Ready(Some(Err(err))) => {
                             return Poll::Ready(Some(Err(self.conclude_err(err))))
@@ -382,13 +408,18 @@ impl RunDriver {
         }
     }
 
-    /// The run's token is cancelled. Before any terminal event, the run ends
-    /// with `run.cancelled`. Once the run's terminal has been received, the
+    /// The run's token is cancelled. Before the requested run's terminal
+    /// event, the run ends with `run.cancelled` (an earlier run's terminal
+    /// on a replayed stream does not count). Once it has been received, the
     /// server's verdict wins: the events already received are still
     /// delivered (`None` here) and the run concludes as that terminal says,
-    /// without reading the transport any further.
+    /// without reading the transport any further. A failure already pending
+    /// (`pending_error`) is the run's verdict and is surfaced instead.
     fn cancelled_now(&mut self) -> Option<Option<Result<RunUpdate>>> {
-        if self.terminals.last.is_none() {
+        if let Some(err) = self.pending_error.take() {
+            return Some(Some(Err(self.conclude_err(err))));
+        }
+        if !self.terminals.requested_concluded() {
             return Some(Some(Err(self.conclude_err(cancelled_error()))));
         }
         if !self.ready.is_empty() {
@@ -615,6 +646,14 @@ impl RunDriver {
         self.phase = Phase::Done;
         self.cancelled = None;
         self.ready.clear();
+        // A panic in the final poll (a diagnostic raised there) fails the
+        // run: observers are told the same failure the caller gets.
+        let outcome = match outcome {
+            Ok(()) if self.sink.observer_panicked.load(Ordering::Relaxed) => {
+                Err(observer_panicked())
+            }
+            outcome => outcome,
+        };
         match outcome {
             Ok(()) => {
                 let report = self.build_report(None);
@@ -784,6 +823,11 @@ struct Terminals {
 }
 
 impl Terminals {
+    /// The last run ended, and so did the requested run.
+    fn requested_concluded(&self) -> bool {
+        self.last.is_some() && (self.last_is_requested || self.requested.is_some())
+    }
+
     /// `last` is about to be replaced: keep it if it is the requested run's.
     fn keep_requested(&mut self) {
         if std::mem::take(&mut self.last_is_requested) {
@@ -803,6 +847,16 @@ fn notify(
         panicked |= catch_unwind(AssertUnwindSafe(|| observer.on_finish(result, run))).is_err();
     }
     panicked
+}
+
+/// Transport failures that, once the requested run's terminal arrived, end
+/// the stream rather than fail the run (a timeout, a read error, a body cut
+/// inside the next event). Framing and protocol errors still fail it.
+fn ends_the_stream(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::Timeout | ErrorCode::IdleTimeout | ErrorCode::StreamRead | ErrorCode::Truncated
+    )
 }
 
 fn cancelled_error() -> Error {
