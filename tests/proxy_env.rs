@@ -184,7 +184,10 @@ fn the_environment_is_read_only_when_asked() {
 
 /// Under CGI (`REQUEST_METHOD` set) the uppercase `HTTP_PROXY` can come from
 /// a client's `Proxy:` request header ("httpoxy"), so it is ignored; the
-/// lowercase `http_proxy` still applies.
+/// lowercase `http_proxy` still applies. Not on Windows: its environment
+/// names are case-insensitive, so `HTTP_PROXY` and `http_proxy` are one
+/// variable there and the two cannot be told apart.
+#[cfg(not(windows))]
 #[test]
 fn uppercase_http_proxy_is_ignored_under_cgi() {
     let _env = EnvGuard::lock();
