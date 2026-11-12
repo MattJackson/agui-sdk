@@ -133,9 +133,12 @@ shows up as a budget breach rather than a slow drift:
   verifier remember the last content or argument delta's target (the
   table's own key, compared by pointer first) and forget it on any other
   event, so the next delta to the same item skips the SipHash lookup.
-- **A closed item keeps no slack.** `*_END` shrinks the text or arguments
-  it closes, so the history holds what `max_history_bytes` charges for it
-  (one shrinking reallocation per END, in the budgets above).
+- **A closed small item keeps no slack.** `*_END` shrinks the text or
+  arguments it closes when their buffer is at most 128 KiB, so the history
+  holds what `max_history_bytes` charges for it (one shrinking reallocation
+  per END, in the budgets above). Larger text keeps its growth slack, which
+  is not resident (D14), so reopening a large item and appending to it does
+  not copy the whole text again.
 - **A finding nobody receives is not built.** With a `NullSink`
   (`DiagnosticSink::enabled` is `false`) or past the reporter's cap, the
   enforcer counts a stripped member without building its pointer and

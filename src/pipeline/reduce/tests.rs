@@ -325,7 +325,7 @@ fn duplicate_result_id_replaces_in_place() {
     assert_eq!(h.history().as_array().unwrap().len(), 2);
 }
 
-/// pipeline-verify-3: per-run call sets inflated by one run are dropped, not
+/// D25: per-run call sets inflated by one run are dropped, not
 /// cleared at O(capacity), once later runs are small.
 #[test]
 fn oversized_run_call_sets_are_dropped_after_a_small_run() {
@@ -357,6 +357,8 @@ fn oversized_run_call_sets_are_dropped_after_a_small_run() {
     ] {
         assert!(set.capacity() <= floor, "capacity {}", set.capacity());
     }
+    let started = h.r.run_calls.started.capacity();
+    assert!(started <= floor, "started capacity {started}");
 }
 
 /// A result whose message id equals a parentless call's id (the id its
@@ -482,7 +484,7 @@ fn a_carrier_from_an_earlier_run_gives_its_id_up() {
     assert!(h.codes().is_empty());
 }
 
-/// pipeline-verify-1 (amendment A): a restored `[Assistant x, Tool x]` history
+/// A restored `[Assistant x, Tool x]` history
 /// indexes the earlier message.
 #[test]
 fn restored_id_clash_keeps_the_index_on_the_earlier_message() {
@@ -990,7 +992,7 @@ fn snapshot_refused_at_work_bound_changes_nothing() {
     assert_eq!(h.r.messages(), &before[..], "history untouched");
 }
 
-/// Security audit S1: a patch's credit never exceeds
+/// D14 (security S1): a patch's credit never exceeds
 /// what the content it frees was charged, so add/remove cycles cannot drain
 /// the charge for content that is still held.
 #[test]
@@ -1053,7 +1055,7 @@ fn add_remove_cycles_never_drain_the_snapshot_charge() {
     assert!(h.codes().is_empty());
 }
 
-/// Security audit S1: what an `add` charges for the slot it fills, the
+/// D14 (security S1): what an `add` charges for the slot it fills, the
 /// matching `remove` (or `move` out) credits back, so a producer that
 /// toggles a member, renames one, or keeps a rolling log holds its charge
 /// steady instead of drifting it up to a false `processing.limit`.
@@ -1294,11 +1296,14 @@ fn run_ids_stay_the_history_tail_after_dropping_a_duplicate() {
 #[test]
 fn remembered_delta_targets_follow_moves_and_drops() {
     let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "x"}));
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "x"}));
     h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "a"}));
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "1"}));
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "2"}));
     assert!(h.r.hot_message.is_some());
-    // Reordered by a snapshot: `a` moves to position 1.
+    // Moved by a snapshot: `x` is dropped, so `a` moves from position 1 to
+    // 0, and `b` is appended after it.
     h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
         {"id": "b", "role": "user", "content": "u"},
         {"id": "a", "role": "assistant", "content": "12"},
@@ -1306,6 +1311,13 @@ fn remembered_delta_targets_follow_moves_and_drops() {
     assert!(h.r.hot_message.is_none());
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "3"}));
     h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a", "delta": "4"}));
+    assert_eq!(
+        h.history(),
+        json!([
+            {"id": "a", "role": "assistant", "content": "1234"},
+            {"id": "b", "role": "user", "content": "u"},
+        ])
+    );
     // Dropped by a snapshot: the next delta has no target.
     h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
         {"id": "b", "role": "user", "content": "u"},
@@ -1478,4 +1490,183 @@ fn pointer_lookup_answers_as_serde_json_does() {
     for p in pointers {
         assert_eq!(crate::json::pointer(&doc, p), doc.pointer(p), "{p:?}");
     }
+}
+
+/// Ending a large message or call keeps its growth slack: a reopen then
+/// appends without reallocating the whole text, so START/CONTENT/END cycles
+/// on a held large message cost O(delta), not O(held). Small text still
+/// drops its slack (D14).
+#[test]
+fn ending_large_text_keeps_growth_slack() {
+    let mut h = H::new();
+    let chunk = "x".repeat(1000);
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m"}));
+    h.push(
+        json!({"type": "TOOL_CALL_START", "toolCallId": "c", "toolCallName": "f",
+        "parentMessageId": "m"}),
+    );
+    for _ in 0..200 {
+        h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "m", "delta": chunk}));
+        h.push(json!({"type": "TOOL_CALL_ARGS", "toolCallId": "c", "delta": chunk}));
+    }
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "m"}));
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c"}));
+    let Message::Assistant(a) = &h.r.messages()[0] else {
+        panic!("not an assistant message");
+    };
+    let text = a.content.as_ref().unwrap();
+    assert!(text.capacity() > text.len(), "text slack dropped");
+    let args = &a.tool_calls.as_ref().unwrap()[0].function.arguments;
+    assert!(args.capacity() > args.len(), "argument slack dropped");
+
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "s"}));
+    h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "s", "delta": "abc"}));
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "s"}));
+    let Message::Assistant(s) = &h.r.messages()[1] else {
+        panic!("not an assistant message");
+    };
+    let text = s.content.as_ref().unwrap();
+    assert_eq!(text.capacity(), text.len());
+}
+
+/// A snapshot that drops most of a large history releases the storage the
+/// dropped messages were charged for (their slots and index entries).
+#[test]
+fn snapshot_dropping_most_history_releases_tables() {
+    let floor = crate::pipeline::RETAIN_FLOOR;
+    let mut h = H::new();
+    h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}));
+    for i in 0..5000 {
+        h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": format!("m{i}")}));
+        h.push(
+            json!({"type": "TOOL_CALL_START", "toolCallId": format!("c{i}"),
+            "toolCallName": "f", "parentMessageId": format!("m{i}")}),
+        );
+    }
+    h.push(json!({"type": "MESSAGES_SNAPSHOT", "messages": [
+        {"id": "m0", "role": "assistant", "content": ""}
+    ]}));
+    assert_eq!(h.r.messages().len(), 1);
+    for (name, capacity) in [
+        ("messages", h.r.messages.capacity()),
+        ("charged", h.r.charged.capacity()),
+        ("run_ids", h.r.run_ids.capacity()),
+        ("index", h.r.index.capacity()),
+        ("calls", h.r.calls.capacity()),
+    ] {
+        assert!(capacity <= floor, "{name} capacity {capacity}");
+    }
+}
+
+/// A run's pending-call buffer is released when the next run starts.
+#[test]
+fn pending_buffer_is_released_at_the_next_run() {
+    let mut h = H::new();
+    h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r1"}));
+    for i in 0..2000 {
+        let c = format!("c{i}");
+        h.push(json!({"type": "TOOL_CALL_START", "toolCallId": c, "toolCallName": "f"}));
+        h.push(json!({"type": "TOOL_CALL_END", "toolCallId": c}));
+    }
+    h.push(json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r1"}));
+    assert_eq!(h.r.pending.len(), 2000);
+    h.push(json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r2"}));
+    assert_eq!(h.r.pending.capacity(), 0);
+}
+
+/// Text deltas aimed at an activity message store nothing, so they report
+/// no change and charge nothing.
+#[test]
+fn text_deltas_on_an_activity_message_change_nothing() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "ACTIVITY_SNAPSHOT", "messageId": "a1", "activityType": "t", "content": {}}),
+    );
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "a1"}));
+    let held = h.r.history_growth;
+    let c = h.push(json!({"type": "TEXT_MESSAGE_CONTENT", "messageId": "a1", "delta": "xyz"}));
+    assert_eq!(c.message, None);
+    assert_eq!(h.r.history_growth, held);
+}
+
+/// An untagged call reopened under a subagent-owned parent inherits the
+/// parent's owner, as the verifier gives it, so the reopen agrees.
+#[test]
+fn untagged_call_reopen_under_owned_parent_agrees() {
+    let mut h = H::new();
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "subagentRunId": "A"}));
+    h.push(json!({"type": "TEXT_MESSAGE_END", "messageId": "m1", "subagentRunId": "A"}));
+    for _ in 0..2 {
+        h.push(
+            json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+            "parentMessageId": "m1"}),
+        );
+        h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}));
+    }
+    assert!(h.codes().is_empty());
+}
+
+/// An untagged call under an owned non-assistant parent sits on a carrier
+/// minted with its own (absent) owner, so it inherits nothing and its
+/// reopen agrees.
+#[test]
+fn untagged_call_reopen_under_owned_reasoning_parent_agrees() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "REASONING_MESSAGE_START", "messageId": "r1", "role": "reasoning",
+        "subagentRunId": "A"}),
+    );
+    h.push(json!({"type": "REASONING_MESSAGE_END", "messageId": "r1", "subagentRunId": "A"}));
+    for _ in 0..2 {
+        h.push(
+            json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+            "parentMessageId": "r1"}),
+        );
+        h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1"}));
+    }
+    assert!(h.codes().is_empty());
+}
+
+/// The first text for a message a tool call minted under its parent id
+/// warns when its owner disagrees with the minted message's.
+#[test]
+fn first_text_on_a_minted_parent_warns_on_owner_disagreement() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "f",
+        "parentMessageId": "m1", "subagentRunId": "S"}),
+    );
+    h.push(json!({"type": "TOOL_CALL_END", "toolCallId": "c1", "subagentRunId": "S"}));
+    assert!(h.codes().is_empty());
+    h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": "m1"}));
+    assert_eq!(h.codes(), ["stream.conflicting_reopen"]);
+    assert_eq!(
+        h.r.messages()[0].subagent_run_id().map(|s| s.as_str()),
+        Some("S")
+    );
+}
+
+/// An activity's patch budget is keyed by the history's own copy of the
+/// id, not the delta's (D25: one `Arc` per id).
+#[test]
+fn activity_budget_shares_the_index_id() {
+    let mut h = H::new();
+    h.push(
+        json!({"type": "ACTIVITY_SNAPSHOT", "messageId": "x", "activityType": "t", "content": {}}),
+    );
+    // Other ids push `x` out of the decoder's recent-id cache, so the
+    // delta's id is a separate allocation.
+    for i in 0..8 {
+        h.push(json!({"type": "TEXT_MESSAGE_START", "messageId": format!("y{i}")}));
+    }
+    h.push(
+        json!({"type": "ACTIVITY_DELTA", "messageId": "x", "activityType": "t",
+        "patch": [{"op": "add", "path": "/k", "value": 1}]}),
+    );
+    let (held, _) = h.r.index.get_key_value(&id("x")).unwrap();
+    let (budget, _) = h.r.activity_budgets.map.get_key_value(&id("x")).unwrap();
+    assert!(std::ptr::eq(
+        held.as_str().as_ptr(),
+        budget.as_str().as_ptr()
+    ));
 }

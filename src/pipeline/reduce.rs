@@ -38,7 +38,9 @@
 //! become part of the history (`MESSAGES_SNAPSHOT` messages, tool result
 //! content, activity content, metadata) and operation values patched into a
 //! document are copied once, because [`Reducer::messages`] lends `&[Message]`
-//! while the shared event keeps its own payload for the application.
+//! while the shared event keeps its own payload for the application. So are
+//! the run outcome's `RUN_FINISHED` interrupts and `RUN_FINISHED` or
+//! `RUN_ERROR` usage, held until the next `RUN_STARTED`.
 //!
 //! The `Arc` itself is recycled on the streaming hot path. After a content
 //! delta (`TEXT_MESSAGE_CONTENT`, `REASONING_MESSAGE_CONTENT`,
@@ -269,7 +271,11 @@ impl RunCalls {
     /// Empties the bookkeeping for the next run, keeping the capacity unless
     /// a table is far larger than the run that just used it.
     fn clear(&mut self) {
-        self.started.clear();
+        if super::oversized(self.started.capacity(), self.started.len()) {
+            self.started = Vec::new();
+        } else {
+            self.started.clear();
+        }
         super::reset_set(&mut self.started_set);
         super::reset_set(&mut self.ended);
         super::reset_set(&mut self.answered);
@@ -554,8 +560,10 @@ impl Reducer {
     }
 
     /// Applies one verified event, taking ownership of it. Returns the event,
-    /// now shared with the reducer, and what it changed. No payload is cloned
-    /// here (see the module docs for when a copy-on-write copy can happen).
+    /// now shared with the reducer, and what it changed. The event itself is
+    /// not cloned; the payloads the module docs list (what becomes history,
+    /// patched values, a run's interrupts and usage) are copied once (see
+    /// the module docs also for when a copy-on-write copy can happen).
     ///
     /// The returned `Arc` reuses the previous content delta's allocation
     /// when the application has already dropped that update, so a stream of
@@ -733,7 +741,7 @@ impl Reducer {
                     // The arguments are complete: drop the growth slack, as
                     // `extend_message` does at TEXT_MESSAGE_END.
                     if let Some(call) = self.call_mut(slot) {
-                        call.function.arguments.shrink_to_fit();
+                        shrink(&mut call.function.arguments);
                     }
                     changes.message = self.extend_call(slot, "", &e.metadata);
                 } else {
@@ -887,7 +895,8 @@ impl Reducer {
         self.history_growth = self
             .history_growth
             .saturating_sub(signed(std::mem::take(&mut self.pending_bytes)));
-        self.pending.clear();
+        // `finish_run` builds a fresh list, so this one's buffer is not reused.
+        self.pending = Vec::new();
         self.interrupts.clear();
         self.usage.clear();
     }
@@ -1055,22 +1064,31 @@ impl Reducer {
             return self.put_message(new_text_message(&opening));
         };
         let message = &mut self.messages[i];
-        if let Message::Assistant(a) = message {
-            if a.content.is_none() && opening.role == TextMessageRole::Assistant {
-                // First text for a message minted by a tool call.
+        let agrees = match message {
+            Message::Assistant(a)
+                if a.content.is_none() && opening.role == TextMessageRole::Assistant =>
+            {
+                // First text for a message minted by a tool call: a missing
+                // name is filled, an established name or owner is kept.
                 a.content = Some(String::new());
                 let mut added = 0;
-                if a.name.is_none() {
-                    a.name = opening.name.map(str::to_owned);
-                    added = opening.name.map_or(0, str::len);
-                }
+                let agrees = match a.name.as_deref() {
+                    None => {
+                        a.name = opening.name.map(str::to_owned);
+                        added = opening.name.map_or(0, str::len);
+                        true
+                    }
+                    Some(name) => Some(name) == opening.name,
+                } && a.subagent_run_id.as_ref() == opening.owner;
                 self.charge_at(i, signed(added));
-                return i;
+                agrees
             }
-        }
-        let agrees = role_matches(message, opening.role)
-            && message_name(message) == opening.name
-            && message_owner(message) == opening.owner;
+            _ => {
+                role_matches(message, opening.role)
+                    && message_name(message) == opening.name
+                    && message_owner(message) == opening.owner
+            }
+        };
         if !agrees {
             reporter.report(|| {
                 Diagnostic::new(
@@ -1133,14 +1151,22 @@ impl Reducer {
             return None;
         };
         let message = &mut self.messages[i];
+        if matches!(message, Message::Activity(_)) {
+            // An activity message has no text: the delta stores nothing
+            // (the reopen was already reported), only metadata merges.
+            let n = merge_into(metadata_mut(message), metadata);
+            self.charge_at(i, n);
+            return metadata.as_ref().map(|_| id.clone());
+        }
         if !delta.is_empty() {
             append_text(message, delta);
         } else if matches!(
             event_type,
             EventType::TextMessageEnd | EventType::ReasoningMessageEnd
         ) {
-            // The text is complete: drop the growth slack, so the history
-            // holds what it is charged for (D14). Charges are unchanged.
+            // The text is complete: drop the growth slack of small text, so
+            // the history holds what it is charged for (D14). Charges are
+            // unchanged.
             shrink_text(message);
         }
         let n = merge_into(metadata_mut(message), metadata);
@@ -1247,7 +1273,18 @@ impl Reducer {
         let parent_differs = opening
             .parent
             .is_some_and(|p| self.resolve_parent(opening.id, p) != Some(slot.message));
-        let owner_differs = message_owner(held) != opening.owner;
+        // An untagged call inherits its parent message's owner, as the
+        // verifier gives it, but only when the call sits in that parent: a
+        // call under a non-assistant parent sits on a carrier minted with the
+        // call's own owner.
+        let owner = opening.owner.or_else(|| {
+            opening
+                .parent
+                .and_then(|p| self.index.get(p))
+                .filter(|&&i| i == slot.message)
+                .and_then(|&i| message_owner(&self.messages[i]))
+        });
+        let owner_differs = message_owner(held) != owner;
         let name_differs = self
             .call(slot)
             .is_some_and(|c| c.function.name != opening.name);
@@ -1696,6 +1733,7 @@ impl Reducer {
         let mut run_tail = run_tail.into_iter();
         let tail = self.messages.split_off(from);
         let charges = self.charged.split_off(from);
+        let mut dropped = false;
         for (offset, (m, charge)) in tail.into_iter().zip(charges).enumerate() {
             let old = from + offset;
             let id = message_id(&m).clone();
@@ -1734,6 +1772,7 @@ impl Reducer {
                 self.messages.push(m);
                 self.charged.push(charge);
             } else {
+                dropped = true;
                 self.class_counts[class(&m)] -= 1;
                 self.history_growth = self.history_growth.saturating_sub(signed(charge));
                 if self.index.get(&id) == Some(&old) {
@@ -1757,6 +1796,33 @@ impl Reducer {
             }
         }
         debug_assert!(run_tail.next().is_none(), "run ids outnumber the tail");
+        if dropped {
+            self.release_tables();
+        }
+    }
+
+    /// Releases the storage of history tables left far larger than what they
+    /// hold, after messages were dropped: the slots and index entries
+    /// `ITEM_OVERHEAD` charged for are credited with the message, so they
+    /// must not stay resident. O(len), and only once a table is under a
+    /// quarter full, so it amortises over the drops that emptied it.
+    fn release_tables(&mut self) {
+        use super::oversized;
+        if oversized(self.messages.capacity(), self.messages.len()) {
+            self.messages.shrink_to_fit();
+        }
+        if oversized(self.charged.capacity(), self.charged.len()) {
+            self.charged.shrink_to_fit();
+        }
+        if oversized(self.run_ids.capacity(), self.run_ids.len()) {
+            self.run_ids.shrink_to_fit();
+        }
+        if oversized(self.index.capacity(), self.index.len()) {
+            self.index.shrink_to_fit();
+        }
+        if oversized(self.calls.capacity(), self.calls.len()) {
+            self.calls.shrink_to_fit();
+        }
     }
 
     fn dup_dec(&mut self, id: &MessageId, class: usize) {
@@ -1814,8 +1880,10 @@ impl Reducer {
     }
 
     fn activity_delta(&mut self, e: &ActivityDelta, reporter: &mut Reporter) -> Option<MessageId> {
-        let i = match self.index.get(&e.message_id) {
-            Some(&i) if matches!(self.messages[i], Message::Activity(_)) => i,
+        // `index`'s own key: the budget keeps no id alive that the history
+        // does not already hold (D25).
+        let (key, i) = match self.index.get_key_value(&e.message_id) {
+            Some((key, &i)) if matches!(self.messages[i], Message::Activity(_)) => (key.clone(), i),
             // ACT-12..ACT-14: skipped with a warning, never invented, never fatal.
             _ => {
                 report_missing_activity(reporter, EventType::ActivityDelta);
@@ -1849,7 +1917,7 @@ impl Reducer {
             patch_credit(&content, &e.patch, self.credit_bank)
         };
         let budgets = &mut self.activity_budgets;
-        let budget = match budgets.map.entry(e.message_id.clone()) {
+        let budget = match budgets.map.entry(key) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 let b = PatchBudget::for_document(&content, limits);
@@ -2709,17 +2777,31 @@ fn append_text(m: &mut Message, delta: &str) {
     }
 }
 
+/// The largest completed text whose growth slack is released. Below the
+/// allocator's large-allocation threshold slack pages are resident, so small
+/// text is shrunk to what it is charged for (D14); above it untouched slack
+/// is not resident, and keeping it means a reopened message or call appends
+/// without copying its whole text again.
+const SHRINK_MAX: usize = 128 * 1024;
+
+/// Releases the growth slack of completed text up to [`SHRINK_MAX`].
+fn shrink(text: &mut String) {
+    if text.capacity() > text.len() && text.capacity() <= SHRINK_MAX {
+        text.shrink_to_fit();
+    }
+}
+
 /// Releases the growth slack of the text [`append_text`] appends to.
 fn shrink_text(m: &mut Message) {
     match m {
-        Message::Developer(m) => m.content.shrink_to_fit(),
-        Message::System(m) => m.content.shrink_to_fit(),
+        Message::Developer(m) => shrink(&mut m.content),
+        Message::System(m) => shrink(&mut m.content),
         Message::Assistant(m) => {
             if let Some(text) = &mut m.content {
-                text.shrink_to_fit();
+                shrink(text);
             }
         }
-        Message::Reasoning(m) => m.content.shrink_to_fit(),
+        Message::Reasoning(m) => shrink(&mut m.content),
         Message::User(m) => shrink_content(&mut m.content),
         Message::Tool(m) => shrink_content(&mut m.content),
         Message::Activity(_) => {}
@@ -2728,10 +2810,10 @@ fn shrink_text(m: &mut Message) {
 
 fn shrink_content(content: &mut Content) {
     match content {
-        Content::Text(text) => text.shrink_to_fit(),
+        Content::Text(text) => shrink(text),
         Content::Parts(parts) => {
             if let Some(ContentPart::Text(part)) = parts.last_mut() {
-                part.text.shrink_to_fit();
+                shrink(&mut part.text);
             }
         }
     }
