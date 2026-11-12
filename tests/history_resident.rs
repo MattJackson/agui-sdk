@@ -207,6 +207,23 @@ fn user_messages_with_text_parts() {
 }
 
 #[test]
+fn tool_messages_with_text_parts() {
+    let parts = vec![json!({"type": "text", "text": ""}); 1_000];
+    let messages: Vec<Value> = (0..40)
+        .map(|i| {
+            json!({
+                "id": format!("t{i}"), "role": "tool", "toolCallId": format!("c{i}"),
+                "content": parts,
+            })
+        })
+        .collect();
+    let frames = vec![frame(
+        json!({"type": "MESSAGES_SNAPSHOT", "messages": messages}),
+    )];
+    assert_band("tool text parts", &frames, 0.9);
+}
+
+#[test]
 fn object_grown_by_add_deltas() {
     let mut frames = vec![activity(0, &json!({}))];
     for d in 0..400 {

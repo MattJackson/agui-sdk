@@ -2619,18 +2619,13 @@ fn signed(bytes: usize) -> i64 {
 
 /// What a message is estimated to retain, in resident bytes: the fixed
 /// overhead for it and each call it holds, its own heap, and the part of each
-/// content part's slot beyond the [`Value`] slot [`resident_bytes`] assumes
-/// for every sequence element.
+/// content part's slot (user and tool messages) beyond the [`Value`] slot
+/// [`resident_bytes`] assumes for every sequence element.
 fn message_bytes(m: &Message) -> usize {
     let (calls, parts) = match m {
         Message::Assistant(a) => (a.tool_calls.as_ref().map_or(0, Vec::len), 0),
-        Message::User(u) => (
-            0,
-            match &u.content {
-                crate::content::Content::Parts(p) => p.len(),
-                crate::content::Content::Text(_) => 0,
-            },
-        ),
+        Message::User(u) => (0, parts_of(&u.content)),
+        Message::Tool(t) => (0, parts_of(&t.content)),
         _ => (0, 0),
     };
     const PART_EXTRA: usize =
@@ -2639,6 +2634,14 @@ fn message_bytes(m: &Message) -> usize {
         .saturating_mul(calls.saturating_add(1))
         .saturating_add(resident_bytes(m))
         .saturating_add(parts.saturating_mul(PART_EXTRA))
+}
+
+/// How many content parts `content` holds.
+fn parts_of(content: &Content) -> usize {
+    match content {
+        Content::Parts(p) => p.len(),
+        Content::Text(_) => 0,
+    }
 }
 
 fn new_text_message(opening: &TextOpening<'_>) -> Message {
