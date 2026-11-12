@@ -765,11 +765,23 @@ pub fn apply(
 /// in that case, as the server's state publisher does.
 #[must_use]
 pub fn diff(before: &Value, after: &Value) -> Vec<PatchOperation> {
-    diff_counted(before, walk::count(before), after)
+    diff_or_none(before, None, after).unwrap_or_else(|| {
+        vec![PatchOperation::replace(
+            JsonPointer(String::new()),
+            after.clone(),
+        )]
+    })
 }
 
-/// [`diff`] with the node units of `before` already known.
-pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<PatchOperation> {
+/// [`diff`], given the node units of `before` if already known, returning `None`
+/// where `diff` would fall back to a root `replace` (so a caller that sends
+/// a snapshot then does not copy `after` for nothing).
+pub(crate) fn diff_or_none(
+    before: &Value,
+    nodes: Option<usize>,
+    after: &Value,
+) -> Option<Vec<PatchOperation>> {
+    let nodes = nodes.unwrap_or_else(|| walk::count(before));
     let limits = PatchLimits::default();
     let (node_cap, walk_cap) = caps(limits, nodes, limits.max_nodes);
     let mut cost = Cost {
@@ -794,14 +806,7 @@ pub(crate) fn diff_counted(before: &Value, nodes: usize, after: &Value) -> Vec<P
     let mut out = Vec::new();
     let mut path = String::new();
     diff_into(before, after, &mut path, &mut out, &mut cost);
-    if cost.over() {
-        out.clear();
-        out.push(PatchOperation::replace(
-            JsonPointer(String::new()),
-            after.clone(),
-        ));
-    }
-    out
+    (!cost.over()).then_some(out)
 }
 
 /// Path bytes `diff` emits before it first compares them with the size of
