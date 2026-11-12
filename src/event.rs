@@ -240,14 +240,7 @@ impl Event {
     /// [`ErrorCode::InvalidValue`](crate::ErrorCode::InvalidValue) with the
     /// offending JSON pointer.
     pub fn parse_strict(json: &[u8]) -> Result<Self> {
-        crate::pipeline::enforce::validate_strict("Event", json)?;
-        serde_json::from_slice(json).map_err(|error| {
-            crate::Error::new(
-                crate::ErrorCode::InvalidValue,
-                "event passed strict validation but does not fit the typed model",
-            )
-            .with_source(error)
-        })
+        crate::pipeline::enforce::parse_strict_event(json)
     }
 
     /// Wire JSON for this event, written into `out` (cleared first) so a
