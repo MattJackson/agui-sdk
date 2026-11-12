@@ -1019,32 +1019,42 @@ mod tests {
         render(&set, &parse_freeze(freeze)?, "c0ffee")
     }
 
+    /// The error `gen` must return.
+    fn refused(proto: &str, freeze: &str) -> String {
+        match gen(proto, freeze) {
+            Err(err) => err,
+            Ok(_) => "accepted".to_owned(),
+        }
+    }
+
     /// The `reserved` list rendered for the declaration named `name`.
-    fn reserved_of<'a>(out: &'a str, name: &str) -> &'a str {
+    fn reserved_of(out: &str, name: &str) -> Result<String, String> {
         let start = out
             .find(&format!("name: \"{name}\", "))
-            .unwrap_or_else(|| panic!("no {name} in output"));
+            .ok_or(format!("no {name} in output"))?;
         let rest = &out[start..];
-        let r = rest.find("reserved: &[").expect("reserved list") + "reserved: &[".len();
-        let end = rest[r..].find(']').expect("end of reserved list");
-        &rest[r..r + end]
+        let open = "reserved: &[";
+        let r = rest.find(open).ok_or("no reserved list")? + open.len();
+        let end = rest[r..].find(']').ok_or("unterminated reserved list")?;
+        Ok(rest[r..r + end].to_owned())
     }
 
     #[test]
-    fn reserved_statements_parse_and_match_the_freeze() {
+    fn reserved_statements_parse_and_match_the_freeze() -> Result<(), String> {
         let proto = "syntax = \"proto3\";\n\
                      message M { reserved 2, 4; string a = 1; }\n\
                      enum E { E_A = 0; reserved 1; }\n";
         let freeze = "M.a = 1\nM.b = 2\nM.c = 4\nE.E_A = 0\nE.E_B = 1\n";
-        let out = gen(proto, freeze).unwrap();
-        assert_eq!(reserved_of(&out, "M"), "2, 4");
-        assert_eq!(reserved_of(&out, "E"), "1");
+        let out = gen(proto, freeze)?;
+        assert_eq!(reserved_of(&out, "M")?, "2, 4");
+        assert_eq!(reserved_of(&out, "E")?, "1");
+        Ok(())
     }
 
     #[test]
     fn reserved_statement_disagreeing_with_the_freeze_is_refused() {
         let proto = "syntax = \"proto3\";\nmessage M { reserved 3; string a = 1; }\n";
-        let err = gen(proto, "M.a = 1\nM.b = 2\n").unwrap_err();
+        let err = refused(proto, "M.a = 1\nM.b = 2\n");
         assert!(err.contains("retires [2]"), "{err}");
     }
 
@@ -1055,44 +1065,44 @@ mod tests {
             ("reserved 2 to 4;", "reserved ranges"),
         ] {
             let proto = format!("syntax = \"proto3\";\nmessage M {{ {body} string a = 1; }}\n");
-            let err = gen(&proto, "M.a = 1\n").unwrap_err();
+            let err = refused(&proto, "M.a = 1\n");
             assert!(err.contains(why), "{err}");
         }
     }
 
     #[test]
-    fn slot_of_a_deleted_nested_message_is_not_filed_under_its_parent() {
+    fn slot_of_a_deleted_nested_message_is_not_filed_under_its_parent() -> Result<(), String> {
         let proto = "syntax = \"proto3\";\nmessage Outer { string a = 1; }\n";
-        let out = gen(proto, "Outer.a = 1\nOuter.Inner.x = 1\n").unwrap();
-        assert_eq!(reserved_of(&out, "Outer"), "");
+        let out = gen(proto, "Outer.a = 1\nOuter.Inner.x = 1\n")?;
+        assert_eq!(reserved_of(&out, "Outer")?, "");
+        Ok(())
     }
 
     #[test]
-    fn retired_oneof_member_is_filed_under_its_message() {
+    fn retired_oneof_member_is_filed_under_its_message() -> Result<(), String> {
         let proto = "syntax = \"proto3\";\nmessage M { reserved 2; string a = 1; }\n";
-        let out = gen(proto, "M.a = 1\nM.kind.b = 2\n").unwrap();
-        assert_eq!(reserved_of(&out, "M"), "2");
+        let out = gen(proto, "M.a = 1\nM.kind.b = 2\n")?;
+        assert_eq!(reserved_of(&out, "M")?, "2");
+        Ok(())
     }
 
     #[test]
     fn retired_number_equal_to_a_live_number_is_refused() {
         let proto = "syntax = \"proto3\";\nmessage M { string a = 1; }\n";
-        let err = gen(proto, "M.a = 1\nM.b = 1\n").unwrap_err();
+        let err = refused(proto, "M.a = 1\nM.b = 1\n");
         assert!(err.contains("still uses 1"), "{err}");
     }
 
     #[test]
     fn two_fields_with_one_json_name_are_refused() {
         let proto = "syntax = \"proto3\";\nmessage M { string foo_bar = 1; string fooBar = 2; }\n";
-        match gen(proto, "M.foo_bar = 1\nM.fooBar = 2\n") {
-            Err(err) => assert!(err.contains("JSON name"), "{err}"),
-            Ok(_) => panic!("duplicate JSON name accepted"),
-        }
+        let err = refused(proto, "M.foo_bar = 1\nM.fooBar = 2\n");
+        assert!(err.contains("JSON name"), "{err}");
     }
 
     #[test]
     fn missing_syntax_is_refused() {
-        let err = gen("message M { string a = 1; }\n", "M.a = 1\n").unwrap_err();
+        let err = refused("message M { string a = 1; }\n", "M.a = 1\n");
         assert!(err.contains("syntax"), "{err}");
     }
 }
