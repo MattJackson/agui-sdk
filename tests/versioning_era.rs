@@ -1328,6 +1328,14 @@ fn era_fixtures_hold_at_the_compatibility_stage() {
         let run = drive_with(Processor::new(config), &stream, false);
         run.assert_ok();
         assert_eq!(run.types(), seen, "{name}: shipped path");
+        if let Some(expected) = expect["messages"].as_array() {
+            assert_eq!(
+                run.messages.len(),
+                expected.len(),
+                "{name}: message count {:#?}",
+                run.messages
+            );
+        }
         for (index, wanted) in expect["messages"]
             .as_array()
             .into_iter()
