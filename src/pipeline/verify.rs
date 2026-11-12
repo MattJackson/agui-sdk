@@ -17,8 +17,8 @@
 //! can report it and continue or fail cleanly.
 //!
 //! Both are O(1) per content event: open sets are hash sets of `Arc<str>`
-//! ids. Snapshots and the producer's echoed input and `SUBAGENT_ERROR` are
-//! linear in their payload or the run's open items.
+//! ids. Snapshots and the producer's echoed input are linear in their
+//! payload.
 
 mod consumer;
 mod producer;

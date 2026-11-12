@@ -78,9 +78,8 @@
 //! O(1) per content event: every check is a hash lookup keyed by an id (an
 //! `Arc<str>` newtype, so a key is a reference-count increment), and content
 //! events allocate nothing. Openers are amortized O(1), allocating only when
-//! a table grows. `MESSAGES_SNAPSHOT`, an echoed `RUN_STARTED.input` and a
-//! `SUBAGENT_ERROR` with items still open are linear in the payload or in
-//! the run's open items. Tool and text-message names are compared by
+//! a table grows. `MESSAGES_SNAPSHOT` and an echoed `RUN_STARTED.input` are
+//! linear in the payload. Tool and text-message names are compared by
 //! fingerprint; step names are stored.
 
 use std::collections::{HashMap, HashSet};
@@ -2282,55 +2281,25 @@ impl ProducerState {
                 ),
             );
         }
-        let failed = event_type == "SUBAGENT_ERROR";
+        // `SUBAGENT_ERROR` ends the invocation like `SUBAGENT_FINISHED`; it
+        // closes nothing the invocation opened (subagents.mdx).
         let still_open = self.open_owned.get(id).copied().unwrap_or(0);
-        if still_open > 0 && !failed {
+        if still_open > 0 {
             return refuse(
                 ProducerRule::OpenAtFinish,
                 format!(
-                    "SUBAGENT_FINISHED '{id}' with {still_open} of its items still open; an item \
-                     a subagent opened closes no later than its terminal (STRM-26)",
+                    "{event_type} '{id}' with {still_open} of its items still open; an item a \
+                     subagent opened closes no later than its terminal (STRM-26)",
                     id = shown(id.as_ref())
                 ),
             );
         }
         let owner = Some(id.clone());
         self.close_lane(&owner);
-        if failed && still_open > 0 {
-            self.abandon_owned(id);
-        }
         self.subagents.insert(id.clone(), Sub::Ended);
         self.active_subagents -= 1;
         self.suspended |= suspended;
         Ok(())
-    }
-
-    /// `SUBAGENT_ERROR` ends what the invocation held open.
-    fn abandon_owned(&mut self, id: &SubagentRunId) {
-        let owner = Some(id.clone());
-        let mut closed = 0;
-        for map in [&mut self.text, &mut self.reasoning, &mut self.spans] {
-            for item in map.values_mut() {
-                if item.open && !item.chunk && item.owner == owner {
-                    item.open = false;
-                    closed += 1;
-                }
-            }
-        }
-        for call in self.calls.values_mut() {
-            if call.open && !call.chunk && call.owner == owner {
-                call.open = false;
-                closed += 1;
-            }
-        }
-        for holders in self.steps.values_mut() {
-            let before = holders.len();
-            holders.retain(|(o, _)| *o != owner);
-            closed += before - holders.len();
-        }
-        self.steps.retain(|_, holders| !holders.is_empty());
-        self.open_explicit = self.open_explicit.saturating_sub(closed);
-        self.open_owned.remove(id);
     }
 
     fn activity_snapshot(&mut self, e: &crate::activity::ActivitySnapshot, tag: &Owner) -> Verdict {
@@ -2844,6 +2813,37 @@ mod tests {
             s.calls_order.capacity() <= floor,
             "order {}",
             s.calls_order.capacity()
+        );
+    }
+
+    /// streaming.mdx: an item a subagent opened closes no later than its
+    /// terminal event, `SUBAGENT_ERROR` included (STRM-26).
+    #[test]
+    fn subagent_error_with_an_open_item_is_refused() {
+        use serde_json::json;
+        let mut v = ProducerVerifier::new();
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "RUN_STARTED", "threadId": "t", "runId": "r"}),
+                json!({"type": "SUBAGENT_STARTED", "subagentRunId": "s1", "name": "h"}),
+                json!({"type": "TEXT_MESSAGE_START", "messageId": "m1", "subagentRunId": "s1"}),
+            ],
+        );
+        let err = v
+            .check(&ev(
+                json!({"type": "SUBAGENT_ERROR", "subagentRunId": "s1", "message": "x"}),
+            ))
+            .unwrap_err();
+        assert_eq!(err.rule, ProducerRule::OpenAtFinish);
+        assert!(err.message.starts_with("SUBAGENT_ERROR"), "{}", err.message);
+        feed(
+            &mut v,
+            vec![
+                json!({"type": "TEXT_MESSAGE_END", "messageId": "m1", "subagentRunId": "s1"}),
+                json!({"type": "SUBAGENT_ERROR", "subagentRunId": "s1", "message": "x"}),
+                json!({"type": "RUN_FINISHED", "threadId": "t", "runId": "r"}),
+            ],
         );
     }
 
