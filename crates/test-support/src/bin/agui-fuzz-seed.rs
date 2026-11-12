@@ -6,9 +6,11 @@
 //! cargo run -p agui-test-support --bin agui-fuzz-seed -- fuzz/corpus
 //! ```
 //!
-//! Input formats match the targets in `fuzz/fuzz_targets/`:
-//! byte streams for the decoders, single JSON documents for enforcement and
-//! admission, `document \0 operations` for the patch target.
+//! Input formats match the targets in `fuzz/fuzz_targets/`: a chunk-size
+//! byte then the byte stream for the chunking targets (`sse_decoder`,
+//! `pipeline_json`, `proto_frames`), the bare message for `proto_decode`,
+//! single JSON documents for enforcement and admission,
+//! `document \0 operations` for the patch target.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -48,6 +50,16 @@ fn frame(payload: &[u8]) -> Vec<u8> {
     // PB-08: 4-byte big-endian length, then the payload.
     let mut out = (payload.len() as u32).to_be_bytes().to_vec();
     out.extend_from_slice(payload);
+    out
+}
+
+/// The input of a target that reads its chunk size from the first byte
+/// (`fuzz_targets/common.rs`, `chunking`): `0xFF` (chunks of 256 bytes),
+/// then `body`.
+fn chunked(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + 1);
+    out.push(0xFF);
+    out.extend_from_slice(body);
     out
 }
 
@@ -100,8 +112,8 @@ fn seed(out: &Path) -> std::io::Result<usize> {
 
     for f in &streams {
         let sse = sse_body(f.stream());
-        s.put("sse_decoder", &f.name, &sse)?;
-        s.put("pipeline_json", &f.name, &sse)?;
+        s.put("sse_decoder", &f.name, &chunked(&sse))?;
+        s.put("pipeline_json", &f.name, &chunked(&sse))?;
         for (i, event) in f.stream().iter().enumerate() {
             s.put("enforce_event", &format!("{}-{i}", f.name), &to_vec(event))?;
         }
@@ -142,7 +154,7 @@ fn seed(out: &Path) -> std::io::Result<usize> {
     }
     for p in &protos {
         s.put("proto_decode", &p.name, &p.bytes)?;
-        s.put("proto_frames", &p.name, &frame(&p.bytes))?;
+        s.put("proto_frames", &p.name, &chunked(&frame(&p.bytes)))?;
     }
     for (i, at) in [
         "2026-11-10T12:00:00Z",
@@ -190,6 +202,24 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunking_targets_get_their_body_after_the_size_byte() {
+        // What `fuzz_targets/common.rs` `chunking` does with an input.
+        fn chunking(data: &[u8]) -> (usize, &[u8]) {
+            match data.split_first() {
+                Some((first, rest)) => (usize::from(*first) + 1, rest),
+                None => (1, data),
+            }
+        }
+        let framed = frame(b"payload");
+        let input = chunked(&framed);
+        let (size, body) = chunking(&input);
+        assert_eq!(body, framed.as_slice());
+        assert_eq!(size, 256);
+        let sse = b"data: {}\n\n";
+        assert_eq!(chunking(&chunked(sse)).1, sse.as_slice());
+    }
 
     #[test]
     fn later_deltas_are_seeded_against_the_applied_state() {
