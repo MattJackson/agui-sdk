@@ -46,8 +46,10 @@ fn run(doc: &Value, patch: &[PatchOperation]) -> Result<Value, PatchError> {
     }
 }
 
-/// The component's RFC 6902/6901 case table. Cases whose defect is
-/// structural (enforcement's job, SNAP-09) must fail to deserialize instead.
+/// The component's RFC 6902/6901 case table. Structural (`Malformed*`)
+/// cases (enforcement's job, SNAP-09) either fail to deserialize or, when
+/// the typed form can carry them (an absent or `null` operand), fail with
+/// `MissingMember`.
 #[test]
 fn json_cases() {
     let cases: Vec<Value> = serde_json::from_str(include_str!("cases.json")).unwrap();
@@ -252,7 +254,7 @@ fn copy_bomb_is_refused_cheaply_and_rolled_back() {
     assert_eq!(b.nodes(), 100_000);
 }
 
-/// Security audit 2, H2: the growth allowance is relative to the document,
+/// The growth allowance is relative to the document (docs/DECISIONS.md D14),
 /// so without an absolute ceiling every small patch could double it again.
 #[test]
 fn growth_never_compounds_past_the_absolute_ceiling() {
@@ -587,7 +589,7 @@ fn legitimate_head_removals_still_apply() {
     assert_eq!(out["a"].as_array().unwrap().len(), 99_900);
 }
 
-/// The node ceiling bounds memory, not work (security audit S2): under the default 180,000-unit ceiling a patch still gets the
+/// The node ceiling bounds memory, not work (docs/DECISIONS.md D14): under the default 180,000-unit ceiling a patch still gets the
 /// 4,000,000-unit walk budget of its growth allowance, so 200 head removals
 /// on a 100,000-element array (about 1.25M units of shifts) apply, as they
 /// did with the old 4,000,000-unit ceiling.
@@ -958,14 +960,14 @@ fn commit_budget_failure_names_the_displacing_operation() {
 /// is replaced by a whole-document replace.
 #[test]
 fn diff_of_many_deep_replacements_is_applicable() {
-    let (before, after) = deep_pair(false);
+    let (before, after) = deep_pair();
     let patch = diff(&before, &after);
     assert_eq!(run(&before, &patch).unwrap(), after);
 }
 
 /// Builds `{"d": <100-deep chain ending in 40k scalars>}` and a copy with
 /// every scalar changed.
-pub(crate) fn deep_pair(blob: bool) -> (Value, Value) {
+fn deep_pair() -> (Value, Value) {
     fn build(offset: u64) -> Value {
         let leaf: serde_json::Map<String, Value> = (0..40_000u64)
             .map(|i| (format!("k{i}"), json!(i + offset)))
@@ -976,12 +978,7 @@ pub(crate) fn deep_pair(blob: bool) -> (Value, Value) {
         }
         json!({ "d": v })
     }
-    let (mut b, mut a) = (build(0), build(1));
-    if blob {
-        b["blob"] = json!("x".repeat(12_000_000));
-        a["blob"] = b["blob"].clone();
-    }
-    (b, a)
+    (build(0), build(1))
 }
 
 #[test]
