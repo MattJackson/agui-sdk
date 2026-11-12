@@ -252,7 +252,7 @@ async fn send(
                     continue;
                 }
             }
-            return Err(status_error(inner, response, cancel, clock).await);
+            return Err(status_error(inner, out.purpose, response, cancel, clock).await);
         }
         if retryable_status(status) && attempt < inner.retry.max_retries {
             let retry_after = response
@@ -263,20 +263,20 @@ async fn send(
             if let Some(after) = retry_after.filter(|_| inner.retry.honor_retry_after) {
                 if after > inner.retry.max_retry_after {
                     // Longer than we are willing to wait: report it.
-                    return Err(status_error(inner, response, cancel, clock).await);
+                    return Err(status_error(inner, out.purpose, response, cancel, clock).await);
                 }
             }
             // A wait past the deadline reports the status (with its
             // Retry-After and body), as without a policy.
             let Some(wake) = retry_wake(inner, attempt, retry_after, clock) else {
-                return Err(status_error(inner, response, cancel, clock).await);
+                return Err(status_error(inner, out.purpose, response, cancel, clock).await);
             };
             drop(response);
             pause(wake, cancel, clock).await?;
             attempt += 1;
             continue;
         }
-        return Err(status_error(inner, response, cancel, clock).await);
+        return Err(status_error(inner, out.purpose, response, cancel, clock).await);
     }
 }
 
@@ -371,6 +371,7 @@ async fn read_bounded(
 /// the start of the error body.
 async fn status_error(
     inner: &HttpInner,
+    purpose: Purpose,
     response: Response<Incoming>,
     cancel: &CancelToken,
     clock: &Clock,
@@ -391,14 +392,17 @@ async fn status_error(
     } else {
         ""
     };
-    let mut error = Error::new(
-        ErrorCode::HttpStatus,
-        format!(
+    let message = match purpose {
+        Purpose::Run => format!(
             "the agent answered HTTP {} {reason}{what} before any event stream",
             status.as_u16()
         ),
-    )
-    .with_http_status(status.as_u16());
+        Purpose::Capabilities => format!(
+            "the capabilities endpoint answered HTTP {} {reason}{what}",
+            status.as_u16()
+        ),
+    };
+    let mut error = Error::new(ErrorCode::HttpStatus, message).with_http_status(status.as_u16());
     if let Some(after) = retry_after {
         error = error.with_retry_after(after);
     }
