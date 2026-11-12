@@ -1536,6 +1536,45 @@ fn capabilities_on_another_origin_get_no_transport_credentials() {
     });
 }
 
+/// The request's own headers override the capabilities URL's userinfo,
+/// and every value of a repeated request header is sent, as on a run.
+#[test]
+fn capabilities_request_headers_override_and_repeat() {
+    block(async {
+        let server = MockServer::always(
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"transport": {"streaming": true}}"#),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+        let transport =
+            build(HttpTransport::builder(server.url("/agent")).header("X-Scope", "base"));
+        let caps = format!("http://u:p@{}/caps", server.addr());
+        transport
+            .fetch_capabilities(
+                &CapabilitiesRequest::new(caps)
+                    .bearer_token("t")
+                    .header("X-Scope", "a")
+                    .header("X-Scope", "b"),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let got = server.last_request().unwrap_or_default();
+        assert_eq!(got.header_all("authorization"), ["Bearer t"], "{got:?}");
+        assert_eq!(got.header_all("x-scope"), ["a", "b"], "{got:?}");
+        // Without an explicit Authorization, the URL's userinfo is sent.
+        let caps = format!("http://u:p@{}/caps", server.addr());
+        transport
+            .fetch_capabilities(&CapabilitiesRequest::new(caps))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let got = server.last_request().unwrap_or_default();
+        assert_eq!(got.header_all("authorization"), ["Basic dTpw"], "{got:?}");
+        assert_eq!(got.header_all("x-scope"), ["base"], "{got:?}");
+    });
+}
+
 /// M1: the client's `Limits::max_frame_bytes` bounds protobuf frames as it
 /// bounds SSE events, in the transport, before any decode.
 #[test]

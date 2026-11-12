@@ -532,15 +532,24 @@ pub(super) async fn fetch(
     } else {
         HeaderMap::new()
     };
-    for (name, value) in extra {
-        let header = super::super::Header::new(name.clone(), value.clone());
-        let (name, value) = super::header_pair(&header, ErrorCode::InvalidRequest)?;
-        headers.insert(name, value);
-    }
     if let Some((user, pass)) = &target.userinfo {
         if let Some(auth) = endpoint::basic_auth(user, pass) {
             headers.insert(::http::header::AUTHORIZATION, auth);
         }
+    }
+    // The request's own headers override both, as per-run headers do in
+    // `open`: each name replaces the values above, and several values of
+    // one name are all sent.
+    let mut own = Vec::with_capacity(extra.len());
+    for (name, value) in extra {
+        let header = super::super::Header::new(name.clone(), value.clone());
+        own.push(super::header_pair(&header, ErrorCode::InvalidRequest)?);
+    }
+    for (name, _) in &own {
+        headers.remove(name);
+    }
+    for (name, value) in own {
+        headers.append(name, value);
     }
     headers.insert(ACCEPT, HeaderValue::from_static(JSON_MEDIA_TYPE));
     if let Some(auth) = inner.proxy_auth_for(&target.uri) {
