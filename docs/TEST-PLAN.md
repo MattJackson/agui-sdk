@@ -266,7 +266,7 @@ it never affects the library.
 | `sse_decode` | 1 MB stream of typical events, chunked 1 KiB / 64 KiB | 0 allocs/event steady state |
 | `proto_decode` | framing + decode, same stream | 0 allocs/event for framing; decode ≤ owned fields |
 | `pipeline_push_json` | enforce + expand + verify + reduce, text-heavy stream | allocs/event ≤ owned strings per event (counted from fixture) |
-| `pipeline_push_value` | same through the middleware path | as above + 0 extra |
+| `pipeline_push_value` | same through the middleware path | exact count in `budgets.toml`: the JSON path's minus the strings the parse allocates (the values are built outside the measured region) |
 | `reducer_deltas` | 100k `TEXT_MESSAGE_CONTENT` into one message, updates dropped (`one_message`) or held (`one_message_held`) | O(1) amortized: allocs ≤ log2(total bytes) when dropped (the `Arc` is recycled); + one `Arc<Event>` per event when held |
 | `messages_snapshot` | reconcile 10k messages | O(n) time |
 | `patch_apply` | 1k-op patches on 1 MB state; failing patches | allocated bytes ≤ 8 × ops' size + 4 KiB (no document clone); exact allocation count in `budgets.toml` |
