@@ -246,8 +246,11 @@ fn a_media_part_a_0_0_47_peer_cannot_read_is_dropped_with_its_own_warning() {
     // The attribution strip survives the media part.
     assert!(result.get("subagentRunId").is_none(), "{result}");
     // The part the peer cannot read is gone, and said so exactly once.
-    let parts = result["content"].as_array().expect("parts");
-    assert!(parts.iter().all(|p| p["type"] == "text"), "{result}");
+    assert_eq!(
+        result["content"],
+        serde_json::json!([{"type": "text", "text": "here"}]),
+        "{result}"
+    );
     let images: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.message.contains("image"))
